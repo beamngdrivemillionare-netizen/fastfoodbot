@@ -206,9 +206,52 @@ function daysKeyboard(reqId) {
         { text: '30 kun', callback_data: `apr:${reqId}:30` }
       ],
       [{ text: 'Doimiy ruxsat', callback_data: `apr:${reqId}:p` }],
+      [{ text: '✏️ Boshqa son (kun kiritish)', callback_data: `custom:${reqId}` }],
       [{ text: '❌ Rad etish', callback_data: `rej:${reqId}` }]
     ]
   };
+}
+
+// ====== "Boshqa son" — admin qo'lda kun sonini yozmoqchi bo'lganda, shu so'rov navbatda kutib turadi ======
+const AWAITING_FILE = path.join(DATA_DIR, 'awaiting.json');
+
+function getAwaitingCustom() {
+  try {
+    const raw = fs.readFileSync(AWAITING_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function setAwaitingCustom(reqId, promptMessageId) {
+  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ reqId, promptMessageId }), 'utf8');
+}
+
+function clearAwaitingCustom() {
+  try { fs.unlinkSync(AWAITING_FILE); } catch (e) {}
+}
+
+// Bitta so'rovni belgilangan kun soni (yoki doimiy, days=null) bilan tasdiqlash — tugma va matn orqali kirish uchun umumiy funksiya
+function approveRequest(reqInfo, days) {
+  const expiresAt = days === null ? null : new Date(Date.now() + days * 86400000).toISOString();
+  const owners = loadOwners();
+  const already = findOwner(owners, reqInfo.userId);
+  if (already) {
+    already.expiresAt = expiresAt;
+    already.username = reqInfo.username || already.username;
+  } else {
+    owners.push({
+      id: reqInfo.userId,
+      username: reqInfo.username || null,
+      addedAt: new Date().toISOString(),
+      expiresAt
+    });
+  }
+  saveOwners(owners);
+  removeRequest(reqInfo.reqId);
+  const label = days === null ? 'Doimiy' : `${days} kun`;
+  return label;
 }
 
 // ====== Telegram yangilanishlarini (webhook) qayta ishlash ======
@@ -218,6 +261,44 @@ async function handleTelegramUpdate(update) {
     const text = msg.text.trim();
     const from = msg.from;
     const chatId = msg.chat.id;
+
+    // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
+    if (isAdminId(from.id) && !text.startsWith('/')) {
+      const awaiting = getAwaitingCustom();
+      if (awaiting && awaiting.reqId) {
+        const reqInfo = findRequest(awaiting.reqId);
+        if (!reqInfo) {
+          clearAwaitingCustom();
+          await sendMessage(chatId, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+          return;
+        }
+        const n = parseInt(text, 10);
+        if (!Number.isInteger(n) || n <= 0 || String(n) !== text) {
+          await sendMessage(chatId, 'Iltimos, faqat musbat butun son yuboring (masalan: 14). Bekor qilish uchun /bekor yozing.');
+          return;
+        }
+        clearAwaitingCustom();
+        const label = approveRequest(reqInfo, n);
+        if (awaiting.promptMessageId) {
+          await editMessageText(chatId, awaiting.promptMessageId,
+            `✅ <b>Tasdiqlandi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\nRuxsat muddati: ${label}`);
+        } else {
+          await sendMessage(chatId, `✅ Tasdiqlandi. Ruxsat muddati: ${label}`);
+        }
+        await sendMessage(reqInfo.userId,
+          `✅ So'rovingiz tasdiqlandi! Sizga <b>${label}</b> muddatga kirish huquqi berildi.\nMini App tugmasi orqali oching.`);
+        return;
+      }
+    }
+
+    if (isAdminId(from.id) && text === '/bekor') {
+      const awaiting = getAwaitingCustom();
+      if (awaiting) {
+        clearAwaitingCustom();
+        await sendMessage(chatId, 'Bekor qilindi.');
+      }
+      return;
+    }
 
     if (text.startsWith('/start')) {
       const parts = text.split(' ');
@@ -279,6 +360,21 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
+    if (data.startsWith('custom:')) {
+      const [, reqId] = data.split(':');
+      const reqInfo = findRequest(reqId);
+      if (!reqInfo) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        return;
+      }
+      setAwaitingCustom(reqId, messageId);
+      await editMessageText(chatId, messageId,
+        `🆕 <b>Yangi do'kon egasi so'rovi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\n\n` +
+        `✏️ Necha kunga ruxsat berishni istaysiz? Kun sonini oddiy xabar qilib yuboring (masalan: 14).\nBekor qilish uchun /bekor yozing.`);
+      await answerCallbackQuery(cq.id);
+      return;
+    }
+
     if (data.startsWith('apr:')) {
       const [, reqId, daysKey] = data.split(':');
       const reqInfo = findRequest(reqId);
@@ -287,30 +383,9 @@ async function handleTelegramUpdate(update) {
         return;
       }
 
-      let expiresAt = null;
-      let days = null;
-      if (daysKey !== 'p') {
-        days = parseInt(daysKey, 10);
-        expiresAt = new Date(Date.now() + days * 86400000).toISOString();
-      }
+      const days = daysKey === 'p' ? null : parseInt(daysKey, 10);
+      const label = approveRequest(reqInfo, days);
 
-      const owners = loadOwners();
-      const already = findOwner(owners, reqInfo.userId);
-      if (already) {
-        already.expiresAt = expiresAt;
-        already.username = reqInfo.username || already.username;
-      } else {
-        owners.push({
-          id: reqInfo.userId,
-          username: reqInfo.username || null,
-          addedAt: new Date().toISOString(),
-          expiresAt
-        });
-      }
-      saveOwners(owners);
-      removeRequest(reqId);
-
-      const label = DAY_LABELS[daysKey] || daysKey;
       await editMessageText(chatId, messageId,
         `✅ <b>Tasdiqlandi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\nRuxsat muddati: ${label}`);
       await sendMessage(reqInfo.userId,
@@ -426,7 +501,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/add-owner') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, input } = payload;
+      const { initData, input, days } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -435,6 +510,15 @@ const server = http.createServer((req, res) => {
 
       const resolved = await resolveUserInput(input);
       if (resolved.error) return sendJSON(res, 200, { ok: false, reason: resolved.error });
+
+      let expiresAt = null;
+      if (days !== undefined && days !== null && days !== '') {
+        const n = parseInt(days, 10);
+        if (!Number.isInteger(n) || n <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (doimiy).' });
+        }
+        expiresAt = new Date(Date.now() + n * 86400000).toISOString();
+      }
 
       const owners = loadOwners();
       if (isAdminId(resolved.id)) {
@@ -447,7 +531,8 @@ const server = http.createServer((req, res) => {
       const newOwner = {
         id: resolved.id,
         username: resolved.username || null,
-        addedAt: new Date().toISOString()
+        addedAt: new Date().toISOString(),
+        expiresAt
       };
       owners.push(newOwner);
       saveOwners(owners);
