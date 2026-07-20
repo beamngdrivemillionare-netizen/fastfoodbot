@@ -119,6 +119,30 @@
   }
   .badge.paid { background: #e3f7e9; color: #2fa84f; }
   .badge.unpaid { background: #fdeaea; color: #d33; }
+
+  textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid #ccc;
+    font-size: 15px;
+    font-family: inherit;
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #111111);
+    margin-bottom: 10px;
+    resize: vertical;
+    min-height: 60px;
+  }
+  label.field-label { display: block; font-size: 13px; opacity: 0.7; margin: 4px 0 6px; }
+  .logo-preview {
+    width: 64px; height: 64px; border-radius: 12px; object-fit: cover;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    margin-bottom: 10px;
+  }
+  .profile-view { display: flex; gap: 12px; align-items: center; }
+  .profile-view .info { flex: 1; }
+  .profile-row { font-size: 14px; margin-top: 4px; }
+  .profile-row b { opacity: 0.7; font-weight: 600; }
   .link-box {
     display: flex;
     gap: 6px;
@@ -213,6 +237,7 @@
             <div>
               <div class="owner-id">${escapeHtml(o.id)}</div>
               ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
+              ${o.profile && o.profile.name ? `<div class="owner-username">🍽 ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username">Profil to'ldirilmagan</div>`}
               <div class="owner-expiry">${escapeHtml(expiryText(o))}</div>
               <div class="owner-price" data-edit-price="${escapeHtml(o.id)}" style="cursor:pointer; text-decoration:underline dotted;">
                 Obuna narxi: ${o.price ? escapeHtml(String(o.price)) + ' so\'m/oy' : 'kiritilmagan'} ✏️
@@ -391,6 +416,80 @@
     });
   }
 
+  // ---- Do'kon egasi: profilni to'ldirish formasi ----
+  function renderProfileForm(existing) {
+    const p = existing || {};
+    ekran(`
+      <div class="panel">
+        <div class="salom">${existing ? 'Profilni tahrirlash' : 'Profilni to\'ldiring'}</div>
+        <div class="bosh">${existing ? 'Ma\'lumotlaringizni yangilang.' : 'Ishni boshlash uchun oshxonangiz haqida ma\'lumot kiriting.'}</div>
+        <div class="kartochka">
+          <label class="field-label">Oshxona nomi *</label>
+          <input type="text" id="pName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(p.name || '')}">
+          <label class="field-label">Manzil *</label>
+          <input type="text" id="pAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(p.address || '')}">
+          <label class="field-label">Telefon *</label>
+          <input type="text" id="pPhone" placeholder="+998901234567" value="${escapeHtml(p.phone || '')}">
+          <label class="field-label">Ish vaqti</label>
+          <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
+          <label class="field-label">Logotip havolasi (ixtiyoriy, rasm linki)</label>
+          <input type="text" id="pLogo" placeholder="https://..." value="${escapeHtml(p.logoUrl || '')}">
+          <button class="btn" id="saveProfileBtn" style="margin-top:6px;">Saqlash</button>
+          <div class="xabar" id="profileMsg"></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('saveProfileBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('profileMsg');
+      const body = {
+        initData,
+        name: document.getElementById('pName').value.trim(),
+        address: document.getElementById('pAddress').value.trim(),
+        phone: document.getElementById('pPhone').value.trim(),
+        workHours: document.getElementById('pWorkHours').value.trim(),
+        logoUrl: document.getElementById('pLogo').value.trim()
+      };
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/save-profile', body);
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      renderProfileView(res.profile);
+    });
+  }
+
+  // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
+  function renderProfileView(profile) {
+    ekran(`
+      <div class="panel">
+        <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
+        <div class="kartochka">
+          <div class="profile-view">
+            ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
+            <div class="info">
+              <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
+              <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
+              ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
+            </div>
+          </div>
+          <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
+        </div>
+        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (kassir, sklad, hisobotlar) tez orada shu yerga qo'shiladi.</div>
+      </div>
+    `);
+    document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+  }
+
+  async function loadOwnProfileAndRender() {
+    const res = await apiPost('/api/my-profile', { initData });
+    if (res.ok && res.profile) renderProfileView(res.profile);
+    else renderProfileForm(res.ok ? res.profile : null);
+  }
+
   async function loadOwnersAndRender() {
     const res = await apiPost('/api/owners', { initData });
     renderAdminPanel(res.ok ? res.owners : []);
@@ -417,7 +516,7 @@
         if (data.isAdmin) {
           loadOwnersAndRender();
         } else {
-          ekran('<div class="salom">Salom</div>');
+          loadOwnProfileAndRender();
         }
       })
       .catch(() => {
