@@ -222,6 +222,7 @@
         <div class="kartochka">
           <h2>Do'kon egasini ID orqali qo'shish</h2>
           <input type="text" id="ownerInput" placeholder="Telegram ID, @username yoki t.me havolasi">
+          <input type="text" id="ownerDaysInput" placeholder="Necha kunga (bo'sh qoldirsangiz — doimiy)" inputmode="numeric">
           <button class="btn" id="addOwnerBtn">Do'kon egasi qo'shish</button>
           <div class="xabar" id="addMsg"></div>
         </div>
@@ -274,6 +275,7 @@
 
     document.getElementById('addOwnerBtn').addEventListener('click', () => {
       const val = document.getElementById('ownerInput').value.trim();
+      const daysVal = document.getElementById('ownerDaysInput').value.trim();
       const msgEl = document.getElementById('addMsg');
       msgEl.textContent = '';
       msgEl.className = 'xabar';
@@ -282,8 +284,14 @@
         msgEl.className = 'xabar err';
         return;
       }
+      if (daysVal && (!/^\d+$/.test(daysVal) || parseInt(daysVal, 10) <= 0)) {
+        msgEl.textContent = 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
       document.getElementById('confirmText').textContent =
-        `"${val}" ni do'kon egasi sifatida qo'shib, mini appga kirish huquqini berasizmi?`;
+        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi?`;
       document.getElementById('confirmOverlay').classList.remove('hidden');
 
       document.getElementById('confirmCancel').onclick = () => {
@@ -293,11 +301,12 @@
         document.getElementById('confirmOverlay').classList.add('hidden');
         msgEl.textContent = 'Qo\'shilmoqda...';
         msgEl.className = 'xabar';
-        const res = await apiPost('/api/add-owner', { initData, input: val });
+        const res = await apiPost('/api/add-owner', { initData, input: val, days: daysVal || null });
         if (res.ok) {
           msgEl.textContent = 'Muvaffaqiyatli qo\'shildi.';
           msgEl.className = 'xabar ok';
           document.getElementById('ownerInput').value = '';
+          document.getElementById('ownerDaysInput').value = '';
           loadOwnersAndRender();
         } else {
           msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
