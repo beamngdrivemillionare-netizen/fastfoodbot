@@ -137,6 +137,20 @@ function findStaffInfo(owners, userId) {
   return null;
 }
 
+// Berilgan userId qaysi oshxonaga tegishli ekanini aniqlaydi (egasining o'zi yoki uning xodimi)
+// Qaytaradi: { owner, role } — role: 'egasi' yoki 'kassir'/'oshpaz'/'sklad'/'dostavka'; topilmasa null
+function resolveOwnerContext(owners, userId) {
+  const owner = findOwner(owners, userId);
+  if (isOwnerAccessValid(owner)) return { owner, role: 'egasi' };
+
+  const staffInfo = findStaffInfo(owners, userId);
+  if (staffInfo) {
+    const staffOwner = owners.find(o => String(o.id) === String(staffInfo.ownerId));
+    if (staffOwner) return { owner: staffOwner, role: staffInfo.role };
+  }
+  return null;
+}
+
 // Telegram Bot API'ga so'rov yuborish (masalan @username orqali foydalanuvchini topish uchun)
 function telegramApi(method, params) {
   return new Promise((resolve, reject) => {
@@ -176,6 +190,13 @@ function displayName(user) {
   if (!user) return 'Noma\'lum';
   const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
   return name || (user.username ? '@' + user.username : String(user.id));
+}
+
+// Telegram xabarlari HTML parse_mode bilan yuborilgani uchun, foydalanuvchi kiritgan matnni xavfsiz qilib chiqaramiz
+function escapeHtmlServer(str) {
+  return String(str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 // ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
@@ -651,6 +672,151 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: menyuni olish (egasi yoki uning xodimlari — masalan kassir) ----
+  if (req.method === 'POST' && req.url === '/api/menu-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q' });
+
+      return sendJSON(res, 200, { ok: true, menu: ctx.owner.menu || [], role: ctx.role });
+    });
+    return;
+  }
+
+  // ---- API: menyuga taom qo'shish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, price, category } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi menyuni boshqara oladi' });
+
+      const nameTrim = String(name || '').trim();
+      const priceNum = Number(price);
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
+      if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+
+      if (!owner.menu) owner.menu = [];
+      const item = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: nameTrim,
+        price: priceNum,
+        category: String(category || '').trim() || null,
+        addedAt: new Date().toISOString()
+      };
+      owner.menu.push(item);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, item });
+    });
+    return;
+  }
+
+  // ---- API: menyudan taomni o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.menu = (owner.menu || []).filter(m => m.id !== id);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
+  const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+  const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
+
+  if (req.method === 'POST' && req.url === '/api/create-order') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, items, orderType, tableNumber, paymentType } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || (ctx.role !== 'kassir' && ctx.role !== 'egasi')) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir buyurtma yaratishi mumkin' });
+      }
+
+      if (!Array.isArray(items) || !items.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
+      }
+      if (orderType === 'stol' && !String(tableNumber || '').trim()) {
+        return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
+      }
+
+      // Narxlarni klientdan emas, serverdagi menyudan olamiz (soxtalashtirilmasligi uchun)
+      const menu = ctx.owner.menu || [];
+      const orderItems = [];
+      for (const it of items) {
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
+        const qty = parseInt(it.qty, 10);
+        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty });
+      }
+      const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      if (!ctx.owner.orders) ctx.owner.orders = [];
+      const order = {
+        id: crypto.randomBytes(4).toString('hex'),
+        items: orderItems,
+        total,
+        orderType,
+        tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
+        paymentType,
+        status: 'yangi',
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      };
+      ctx.owner.orders.push(order);
+      saveOwners(owners);
+
+      // Oshxonaga (egaga + oshpazlarga) xabar yuboriladi
+      const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+        `${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => s.role === 'oshpaz').map(s => s.id))];
+      for (const targetId of new Set(notifyTargets)) {
+        sendMessage(targetId, notifyText);
+      }
+
+      return sendJSON(res, 200, { ok: true, orderId: order.id, total });
     });
     return;
   }
