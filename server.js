@@ -749,6 +749,41 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- Sklad (ombor) — birliklar, harakatlar tarixi va kam qolish ogohlantirish yordamchilari ----
+  const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+
+  function findStockItem(owner, id) {
+    return (owner.stock || []).find(s => s.id === id);
+  }
+
+  // Sklad harakati (kirim/chiqim/audit tuzatish) tarixga yoziladi — kim, qachon, nima
+  function addStockMovement(owner, entry) {
+    if (!owner.stockMovements) owner.stockMovements = [];
+    owner.stockMovements.unshift(Object.assign({
+      id: crypto.randomBytes(4).toString('hex'),
+      createdAt: new Date().toISOString()
+    }, entry));
+    if (owner.stockMovements.length > 500) owner.stockMovements.length = 500;
+  }
+
+  // Mahsulot chegaradan kam qolsa — egasi va sklad xodimlariga bir marta ogohlantirish yuboradi
+  function checkLowStockAlert(owner, item, excludeUserId) {
+    if (item.minQty === null || item.minQty === undefined) return;
+    if (item.qty <= item.minQty) {
+      if (!item.lowStockAlertSent) {
+        item.lowStockAlertSent = true;
+        const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
+        const targets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'sklad').map(s => s.id))];
+        for (const t of new Set(targets)) {
+          if (String(t) === String(excludeUserId)) continue;
+          sendMessage(t, text);
+        }
+      }
+    } else {
+      item.lowStockAlertSent = false;
+    }
+  }
+
   // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
   const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
@@ -802,6 +837,26 @@ const server = http.createServer((req, res) => {
         orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty });
       }
       const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      // Retsept asosida skladdan mahsulot avtomatik yechiladi (taom tayyorlansa ingredient kamayadi)
+      if (!ctx.owner.stock) ctx.owner.stock = [];
+      for (const it of orderItems) {
+        const menuItem = menu.find(m => m.id === it.id);
+        const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+        for (const ing of recipe) {
+          const stockItem = findStockItem(ctx.owner, ing.stockId);
+          if (!stockItem) continue;
+          const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+          stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+          addStockMovement(ctx.owner, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+            qty: consumeQty, unit: stockItem.unit,
+            note: `Buyurtma: ${menuItem.name} x${it.qty}`,
+            userId
+          });
+          checkLowStockAlert(ctx.owner, stockItem, userId);
+        }
+      }
 
       if (!ctx.owner.orders) ctx.owner.orders = [];
       const order = {
@@ -908,6 +963,256 @@ const server = http.createServer((req, res) => {
       }
 
       return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
+  // ---- API: sklad ro'yxatini olish (egasi, sklad mas'uli) ----
+  if (req.method === 'POST' && req.url === '/api/stock-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+
+      const stock = (ctx.owner.stock || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+      return sendJSON(res, 200, { ok: true, stock, units: STOCK_UNITS });
+    });
+    return;
+  }
+
+  // ---- API: skladga mahsulot kiritish (yangi mahsulot yoki mavjudiga kirim qo'shish) ----
+  if (req.method === 'POST' && req.url === '/api/stock-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, qty, unit, price, minQty } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+
+      const nameTrim = String(name || '').trim();
+      const qtyNum = Number(qty);
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Mahsulot nomini kiriting.' });
+      if (!Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Birlikni tanlang (kg, g, l, ml, dona).' });
+      }
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
+      }
+      let priceNum = 0;
+      if (price !== undefined && price !== null && price !== '') {
+        priceNum = Number(price);
+        if (!Number.isFinite(priceNum) || priceNum < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+      }
+      let minQtyNum = null;
+      if (minQty !== undefined && minQty !== null && minQty !== '') {
+        minQtyNum = Number(minQty);
+        if (!Number.isFinite(minQtyNum) || minQtyNum < 0) return sendJSON(res, 200, { ok: false, reason: 'Kam qolish chegarasi musbat son bo\'lishi kerak.' });
+      }
+
+      if (!ctx.owner.stock) ctx.owner.stock = [];
+      let item = ctx.owner.stock.find(s => s.name.toLowerCase() === nameTrim.toLowerCase() && s.unit === unit);
+
+      if (item) {
+        item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
+        if (priceNum) item.price = priceNum;
+        if (minQtyNum !== null) item.minQty = minQtyNum;
+      } else {
+        item = {
+          id: crypto.randomBytes(4).toString('hex'),
+          name: nameTrim,
+          qty: qtyNum,
+          unit,
+          price: priceNum,
+          minQty: minQtyNum,
+          lowStockAlertSent: false,
+          addedAt: new Date().toISOString()
+        };
+        ctx.owner.stock.push(item);
+      }
+
+      addStockMovement(ctx.owner, {
+        stockId: item.id, stockName: item.name, type: 'kirim',
+        qty: qtyNum, unit, note: 'Qo\'lda kiritildi', userId
+      });
+      checkLowStockAlert(ctx.owner, item, userId);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, item });
+    });
+    return;
+  }
+
+  // ---- API: sklad mahsulotini butunlay o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/stock-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.stock = (owner.stock || []).filter(s => s.id !== id);
+      // Bu mahsulotga bog'langan retseptlardan ham olib tashlanadi
+      (owner.menu || []).forEach(m => {
+        if (Array.isArray(m.recipe)) m.recipe = m.recipe.filter(r => r.stockId !== id);
+      });
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: sklad harakatlari tarixi (kim, qachon, nima kiritdi/chiqardi) ----
+  if (req.method === 'POST' && req.url === '/api/stock-movements') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+
+      const movements = (ctx.owner.stockMovements || []).slice(0, 200);
+      return sendJSON(res, 200, { ok: true, movements });
+    });
+    return;
+  }
+
+  // ---- API: taom uchun retsept (ingredientlar) belgilash (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-set-recipe') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, menuId, recipe } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi retsept belgilay oladi' });
+
+      const menuItem = (owner.menu || []).find(m => m.id === menuId);
+      if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
+      if (!Array.isArray(recipe)) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri retsept formati.' });
+
+      const cleanRecipe = [];
+      for (const r of recipe) {
+        const stockItem = findStockItem(owner, r.stockId);
+        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Retseptda mavjud bo\'lmagan sklad mahsuloti bor.' });
+        const qtyNum = Number(r.qty);
+        if (!Number.isFinite(qtyNum) || qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Retsept miqdori musbat son bo\'lishi kerak.' });
+        cleanRecipe.push({ stockId: r.stockId, qty: qtyNum });
+      }
+
+      menuItem.recipe = cleanRecipe;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, menuItem });
+    });
+    return;
+  }
+
+  // ---- API: kunlik audit topshirish (rejadagi vs haqiqiy qoldiq, farqlar avtomatik hisoblanadi) ----
+  if (req.method === 'POST' && req.url === '/api/audit-submit') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, entries } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+      if (!Array.isArray(entries) || !entries.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Audit uchun kamida bitta mahsulot kiriting.' });
+      }
+
+      const auditEntries = [];
+      for (const e of entries) {
+        const stockItem = findStockItem(ctx.owner, e.stockId);
+        if (!stockItem) continue;
+        const actualNum = Number(e.actualQty);
+        if (!Number.isFinite(actualNum) || actualNum < 0) {
+          return sendJSON(res, 200, { ok: false, reason: `${stockItem.name} uchun haqiqiy qoldiqni to\'g\'ri kiriting.` });
+        }
+        const systemQty = stockItem.qty;
+        const diff = Math.round((actualNum - systemQty) * 1000) / 1000;
+        auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: actualNum, diff });
+
+        if (diff !== 0) {
+          addStockMovement(ctx.owner, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
+            qty: diff, unit: stockItem.unit,
+            note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
+            userId
+          });
+        }
+        stockItem.qty = actualNum;
+        checkLowStockAlert(ctx.owner, stockItem, userId);
+      }
+
+      if (!auditEntries.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Hech qanday mos mahsulot topilmadi.' });
+      }
+
+      if (!ctx.owner.audits) ctx.owner.audits = [];
+      const audit = {
+        id: crypto.randomBytes(4).toString('hex'),
+        date: new Date().toISOString().slice(0, 10),
+        entries: auditEntries,
+        createdBy: userId,
+        createdAt: new Date().toISOString()
+      };
+      ctx.owner.audits.unshift(audit);
+      if (ctx.owner.audits.length > 60) ctx.owner.audits.length = 60;
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, audit });
+    });
+    return;
+  }
+
+  // ---- API: audit tarixini olish ----
+  if (req.method === 'POST' && req.url === '/api/audit-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+
+      return sendJSON(res, 200, { ok: true, audits: (ctx.owner.audits || []).slice(0, 30) });
     });
     return;
   }
