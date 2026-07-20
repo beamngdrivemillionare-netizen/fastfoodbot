@@ -240,6 +240,7 @@
   }
   .order-action-btn.start { background: #f0a500; }
   .order-action-btn.ready { background: #2fa84f; }
+  .menu-item.low-stock { border: 1px solid #e5484d; }
   .link-box {
     display: flex;
     gap: 6px;
@@ -619,10 +620,18 @@
           <h2>Menyu</h2>
           <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
-        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (sklad, hisobotlar) tez orada shu yerga qo'shiladi.</div>
+        <div class="kartochka">
+          <h2>Sklad</h2>
+          <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
+          <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">📦 Sklad boshqaruvini ochish</button>
+        </div>
+        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (moliya, hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+    document.getElementById('openStockBtn').addEventListener('click', () => {
+      renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
+    });
 
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
       const name = document.getElementById('menuNameInput').value.trim();
@@ -699,9 +708,12 @@
         <div>
           <div class="m-name">${escapeHtml(m.name)}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
-          <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+          <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ' · retsept ✓' : ''}</div>
         </div>
-        <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+          <button data-recipe-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Retsept</button>
+          <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
+        </div>
       </div>
     `).join('');
   }
@@ -710,12 +722,20 @@
     const listEl = document.getElementById('menuList');
     if (!listEl) return;
     const res = await apiPost('/api/menu-list', { initData });
-    listEl.innerHTML = ownerMenuListHtml(res.ok ? res.menu : []);
+    const menu = res.ok ? res.menu : [];
+    listEl.innerHTML = ownerMenuListHtml(menu);
     listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id') });
         loadMenuAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-recipe-menu-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-recipe-menu-id');
+        const menuItem = menu.find(m => m.id === id);
+        if (menuItem) openRecipeEditor(menuItem);
       });
     });
   }
@@ -728,6 +748,11 @@
     }
     if (role === 'oshpaz') {
       renderKitchenScreen(restaurantName);
+      return;
+    }
+    if (role === 'sklad') {
+      currentStockRole = 'sklad';
+      renderStockScreen(restaurantName, 'sklad', null);
       return;
     }
     ekran(`
@@ -1041,6 +1066,283 @@
       </div>
     `);
     startOrdersPolling('oshpaz');
+  }
+
+  // ---- Sklad: birliklar, ro'yxat, kirim formasi, harakatlar tarixi, kunlik audit ----
+  const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+  let stockState = { stock: [] };
+  let currentStockRole = null;
+
+  function stockListHtml(stock, canRemove) {
+    if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
+    return stock.map(s => {
+      const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
+      return `
+        <div class="menu-item ${low ? 'low-stock' : ''}">
+          <div>
+            <div class="m-name">${escapeHtml(s.name)}${low ? ' ⚠️' : ''}</div>
+            <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
+          </div>
+          ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:#e5484d;font-size:13px;font-weight:600;cursor:pointer;">O'chirish</button>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function movementTypeLabel(type) {
+    return { kirim: 'Kirim', chiqim: 'Chiqim', audit_tuzatish: 'Audit tuzatish' }[type] || type;
+  }
+
+  function movementsListHtml(movements) {
+    if (!movements || !movements.length) return `<div class="bosh">Hozircha harakatlar yo'q.</div>`;
+    return movements.map(mv => `
+      <div class="menu-item">
+        <div>
+          <div class="m-name">${escapeHtml(mv.stockName)} — ${movementTypeLabel(mv.type)}</div>
+          ${mv.note ? `<div class="m-cat">${escapeHtml(mv.note)}</div>` : ''}
+          <div class="m-price">${mv.qty > 0 ? '+' : ''}${mv.qty} ${escapeHtml(mv.unit)} · ${timeAgo(mv.createdAt)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderStockScreen(restaurantName, role, onBack) {
+    currentStockRole = role;
+    ekran(`
+      <div class="panel">
+        ${onBack ? `<button class="btn ikkinchi" id="stockBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        <div class="salom" style="font-size:20px;">Sklad</div>
+        <div class="kartochka">
+          <h2>Mahsulot kiritish (kirim)</h2>
+          <input type="text" id="stockNameInput" placeholder="Mahsulot nomi">
+          <input type="text" id="stockQtyInput" placeholder="Miqdor" inputmode="decimal">
+          <select id="stockUnitInput">
+            ${Object.entries(STOCK_UNIT_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
+          </select>
+          <input type="text" id="stockPriceInput" placeholder="Narxi, so'm (ixtiyoriy)" inputmode="numeric">
+          <input type="text" id="stockMinInput" placeholder="Kam qolish chegarasi (ixtiyoriy)" inputmode="decimal">
+          <button class="btn" id="stockAddBtn">Qo'shish</button>
+          <div class="xabar" id="stockAddMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Sklad qoldig'i</h2>
+          <div id="stockList"><div class="bosh">Yuklanmoqda...</div></div>
+          <button class="btn ikkinchi" id="openAuditBtn" style="margin-top:10px;">📋 Kunlik audit qilish</button>
+        </div>
+        <div class="kartochka">
+          <h2>Harakatlar tarixi</h2>
+          <div id="stockMovements"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    if (onBack) document.getElementById('stockBackBtn').addEventListener('click', onBack);
+
+    document.getElementById('stockAddBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('stockAddMsg');
+      const name = document.getElementById('stockNameInput').value.trim();
+      const qty = document.getElementById('stockQtyInput').value.trim();
+      const unit = document.getElementById('stockUnitInput').value;
+      const price = document.getElementById('stockPriceInput').value.trim();
+      const minQty = document.getElementById('stockMinInput').value.trim();
+      if (!name || !qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        msgEl.textContent = 'Nomi va to\'g\'ri miqdorni kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/stock-add', { initData, name, qty, unit, price, minQty });
+      if (res.ok) {
+        msgEl.textContent = 'Qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('stockNameInput').value = '';
+        document.getElementById('stockQtyInput').value = '';
+        document.getElementById('stockPriceInput').value = '';
+        document.getElementById('stockMinInput').value = '';
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('openAuditBtn').addEventListener('click', () => openAuditForm());
+
+    loadStockAndRender();
+    loadMovementsAndRender();
+  }
+
+  async function loadStockAndRender() {
+    const el = document.getElementById('stockList');
+    if (!el) return;
+    const res = await apiPost('/api/stock-list', { initData });
+    stockState.stock = res.ok ? res.stock : [];
+    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi');
+    el.querySelectorAll('[data-remove-stock-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await apiPost('/api/stock-remove', { initData, id: btn.getAttribute('data-remove-stock-id') });
+        loadStockAndRender();
+      });
+    });
+  }
+
+  async function loadMovementsAndRender() {
+    const el = document.getElementById('stockMovements');
+    if (!el) return;
+    const res = await apiPost('/api/stock-movements', { initData });
+    el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
+  }
+
+  // ---- Kunlik audit: haqiqiy qoldiqni kiritish oynasi ----
+  function openAuditForm() {
+    const stock = stockState.stock;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    const rowsHtml = stock.length ? stock.map(s => `
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+        <div style="flex:1; font-size:14px;">${escapeHtml(s.name)} <span style="opacity:.6;">(tizimda: ${s.qty} ${escapeHtml(s.unit)})</span></div>
+        <input type="text" inputmode="decimal" data-audit-qty="${escapeHtml(s.id)}" placeholder="${s.qty}" style="width:80px; margin:0;">
+      </div>
+    `).join('') : `<div class="bosh">Sklad bo'sh.</div>`;
+
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
+        <h3>Kunlik audit</h3>
+        <p>Har bir mahsulotning haqiqiy (ko'zdan kechirilgan) qoldig'ini kiriting. Bo'sh qoldirilsa — o'zgarmaydi.</p>
+        <div>${rowsHtml}</div>
+        <div class="xabar" id="auditMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="auditCancelBtn">Bekor qilish</button>
+          <button class="btn" id="auditSubmitBtn">Yuborish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('auditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('auditSubmitBtn').onclick = async () => {
+      const entries = [];
+      overlay.querySelectorAll('[data-audit-qty]').forEach(inp => {
+        const val = inp.value.trim();
+        if (val === '') return;
+        const num = Number(val);
+        if (Number.isFinite(num) && num >= 0) {
+          entries.push({ stockId: inp.getAttribute('data-audit-qty'), actualQty: num });
+        }
+      });
+      const msgEl = document.getElementById('auditMsg');
+      if (!entries.length) {
+        msgEl.textContent = 'Kamida bitta mahsulot uchun qoldiq kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Yuborilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/audit-submit', { initData, entries });
+      if (res.ok) {
+        overlay.remove();
+        showAuditReport(res.audit);
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
+  }
+
+  function showAuditReport(audit) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    const rows = audit.entries.map(e => `
+      <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;">
+        <span>${escapeHtml(e.name)}</span>
+        <span style="font-weight:700; color:${e.diff === 0 ? '#2fa84f' : (e.diff > 0 ? '#2fa84f' : '#d33')};">
+          ${e.diff > 0 ? '+' : ''}${e.diff} ${escapeHtml(e.unit)}
+        </span>
+      </div>
+    `).join('');
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px;">
+        <h3>Audit natijasi</h3>
+        <p>Farqlar (haqiqiy − tizimdagi):</p>
+        <div>${rows}</div>
+        <div class="btn-row">
+          <button class="btn" id="auditReportOkBtn">Yopish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('auditReportOkBtn').onclick = () => {
+      overlay.remove();
+      loadStockAndRender();
+      loadMovementsAndRender();
+    };
+  }
+
+  // ---- Egasi: taom uchun retsept (ingredientlar) tahrirlash oynasi ----
+  let recipeEditorMenuId = null;
+  let recipeEditorStock = [];
+
+  async function openRecipeEditor(menuItem) {
+    recipeEditorMenuId = menuItem.id;
+    const res = await apiPost('/api/stock-list', { initData });
+    recipeEditorStock = res.ok ? res.stock : [];
+    renderRecipeEditorOverlay(menuItem);
+  }
+
+  function renderRecipeEditorOverlay(menuItem) {
+    const existingMap = {};
+    (menuItem.recipe || []).forEach(r => { existingMap[r.stockId] = r.qty; });
+    const rowsHtml = recipeEditorStock.length
+      ? recipeEditorStock.map(s => `
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+            <div style="flex:1; font-size:14px;">${escapeHtml(s.name)} <span style="opacity:.6;">(${escapeHtml(s.unit)})</span></div>
+            <input type="text" inputmode="decimal" data-recipe-qty="${escapeHtml(s.id)}" placeholder="0" value="${existingMap[s.id] != null ? existingMap[s.id] : ''}" style="width:80px; margin:0;">
+          </div>
+        `).join('')
+      : `<div class="bosh">Avval skladga mahsulot qo'shing.</div>`;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
+        <h3>Retsept: ${escapeHtml(menuItem.name)}</h3>
+        <p>Har bir taom uchun sarflanadigan miqdorni kiriting (bo'sh = ishlatilmaydi).</p>
+        <div>${rowsHtml}</div>
+        <div class="xabar" id="recipeMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="recipeCancelBtn">Bekor qilish</button>
+          <button class="btn" id="recipeSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('recipeCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('recipeSaveBtn').onclick = async () => {
+      const recipe = [];
+      overlay.querySelectorAll('[data-recipe-qty]').forEach(inp => {
+        const val = inp.value.trim();
+        if (!val) return;
+        const num = Number(val);
+        if (Number.isFinite(num) && num > 0) {
+          recipe.push({ stockId: inp.getAttribute('data-recipe-qty'), qty: num });
+        }
+      });
+      const msgEl = document.getElementById('recipeMsg');
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/menu-set-recipe', { initData, menuId: recipeEditorMenuId, recipe });
+      if (res.ok) {
+        overlay.remove();
+        loadMenuAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
   }
 
   async function loadOwnProfileAndRender() {
