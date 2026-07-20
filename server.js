@@ -525,8 +525,77 @@ const server = http.createServer((req, res) => {
       return sendJSON(res, 200, {
         ok,
         isAdmin: admin,
+        hasProfile: !admin && !!(owner && owner.profile && owner.profile.completedAt),
         reason: ok ? null : 'Bu ilova faqat administrator va tasdiqlangan do\'kon egalari uchun.'
       });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasining o'z profilini olish ----
+  if (req.method === 'POST' && req.url === '/api/my-profile') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
+
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q yoki muddati tugagan' });
+
+      return sendJSON(res, 200, { ok: true, profile: owner.profile || null });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasi o'z profilini to'ldiradi/yangilaydi ----
+  if (req.method === 'POST' && req.url === '/api/save-profile') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, address, phone, workHours, logoUrl } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
+
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q yoki muddati tugagan' });
+
+      const nameTrim = String(name || '').trim();
+      const addressTrim = String(address || '').trim();
+      const phoneTrim = String(phone || '').trim();
+      const workHoursTrim = String(workHours || '').trim();
+      const logoTrim = String(logoUrl || '').trim();
+
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Oshxona nomini kiriting.' });
+      if (!addressTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzilni kiriting.' });
+      if (!phoneTrim || !/^[\d+\-\s()]{6,20}$/.test(phoneTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini to\'g\'ri kiriting.' });
+      }
+      if (logoTrim && !/^https?:\/\//i.test(logoTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Logotip uchun to\'g\'ri havola (https://...) kiriting.' });
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, userId);
+      const wasCompleted = !!(target.profile && target.profile.completedAt);
+      target.profile = {
+        name: nameTrim,
+        address: addressTrim,
+        phone: phoneTrim,
+        workHours: workHoursTrim || null,
+        logoUrl: logoTrim || null,
+        completedAt: wasCompleted ? target.profile.completedAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, { ok: true, profile: target.profile });
     });
     return;
   }
