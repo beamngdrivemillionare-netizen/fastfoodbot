@@ -1033,6 +1033,7 @@ const server = http.createServer((req, res) => {
       }
 
       if (!ctx.owner.orders) ctx.owner.orders = [];
+      const orderBranchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const order = {
         id: crypto.randomBytes(4).toString('hex'),
         items: orderItems,
@@ -1041,6 +1042,7 @@ const server = http.createServer((req, res) => {
         tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
         paymentType,
         status: 'yangi',
+        branchId: orderBranchId,
         createdAt: new Date().toISOString(),
         createdBy: userId
       };
@@ -1330,6 +1332,74 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: markaziy skladdan filialga mahsulot o'tkazish (transfer) — faqat egasi ----
+  if (req.method === 'POST' && req.url === '/api/stock-transfer') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, stockId, branchId, qty } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi transfer qila oladi' });
+
+      if (!branchId) return sendJSON(res, 200, { ok: false, reason: 'Qaysi filialga o\'tkazishni tanlang.' });
+      const branch = findBranch(owner, branchId);
+      if (!branch) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+
+      const centralItem = findStockItem(owner, stockId);
+      if (!centralItem) return sendJSON(res, 200, { ok: false, reason: 'Markaziy skladda bunday mahsulot topilmadi.' });
+
+      const qtyNum = Number(qty);
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
+      }
+      if (qtyNum > centralItem.qty) {
+        return sendJSON(res, 200, { ok: false, reason: `Markaziy skladda yetarli emas (bor: ${centralItem.qty} ${centralItem.unit}).` });
+      }
+
+      // Markaziy skladdan kamaytiriladi
+      centralItem.qty = Math.round((centralItem.qty - qtyNum) * 1000) / 1000;
+      addStockMovement(owner, {
+        stockId: centralItem.id, stockName: centralItem.name, type: 'chiqim',
+        qty: qtyNum, unit: centralItem.unit,
+        note: `Filialga o'tkazildi: ${branch.name}`, userId
+      });
+      checkLowStockAlert(owner, centralItem, userId, null);
+
+      // Filial skladiga qo'shiladi (nomi+birligi mos kelsa — ustiga, bo'lmasa — yangi yozuv)
+      if (!branch.stock) branch.stock = [];
+      let branchItem = branch.stock.find(s => s.name.toLowerCase() === centralItem.name.toLowerCase() && s.unit === centralItem.unit);
+      if (branchItem) {
+        branchItem.qty = Math.round((branchItem.qty + qtyNum) * 1000) / 1000;
+      } else {
+        branchItem = {
+          id: crypto.randomBytes(4).toString('hex'),
+          name: centralItem.name,
+          qty: qtyNum,
+          unit: centralItem.unit,
+          price: centralItem.price || 0,
+          minQty: null,
+          lowStockAlertSent: false,
+          addedAt: new Date().toISOString()
+        };
+        branch.stock.push(branchItem);
+      }
+      addStockMovement(branch, {
+        stockId: branchItem.id, stockName: branchItem.name, type: 'kirim',
+        qty: qtyNum, unit: branchItem.unit,
+        note: 'Markaziy skladdan transfer', userId
+      });
+      checkLowStockAlert(owner, branchItem, userId, branchId);
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, centralItem, branchItem });
+    });
+    return;
+  }
+
   // ---- API: taom uchun retsept (ingredientlar) belgilash (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/menu-set-recipe') {
     readBody(req, (err, payload) => {
@@ -1612,6 +1682,46 @@ const server = http.createServer((req, res) => {
     if (period === 'all') return new Date(0);
     const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
     return todayStart;
+  }
+
+  // ---- API: filiallar kesimida solishtiruv hisobot — qaysi filial ko'proq sotmoqda (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/branch-report') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const fromDate = resolvePeriodStart(period);
+      const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+
+      const buckets = new Map();
+      buckets.set(null, { branchId: null, branchName: 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+      for (const b of (owner.branches || [])) {
+        buckets.set(b.id, { branchId: b.id, branchName: b.name, orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+      }
+
+      for (const o of orders) {
+        const key = buckets.has(o.branchId || null) ? (o.branchId || null) : null;
+        const bucket = buckets.get(key);
+        bucket.orderCount += 1;
+        bucket.income += (o.total || 0);
+        if (o.orderType === 'dostavka') bucket.dostavkaIncome += (o.total || 0);
+        else bucket.kassaIncome += (o.total || 0);
+      }
+
+      const report = Array.from(buckets.values())
+        .map(b => Object.assign({}, b, { avgCheck: b.orderCount ? Math.round(b.income / b.orderCount) : 0 }))
+        .sort((a, b) => b.income - a.income);
+
+      return sendJSON(res, 200, { ok: true, report });
+    });
+    return;
   }
 
   // ---- API: dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
