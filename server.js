@@ -117,6 +117,15 @@ const STAFF_ROLES = {
   dostavka: 'Dostavkachi'
 };
 
+// ====== Xarajat kategoriyalari (F. Moliya bo'limi uchun) ======
+const EXPENSE_CATEGORIES = {
+  ijara: 'Ijara',
+  maosh: 'Maosh',
+  kommunal: 'Kommunal',
+  mahsulot: 'Mahsulot xaridi',
+  boshqa: 'Boshqa'
+};
+
 function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
 }
@@ -1232,13 +1241,21 @@ const server = http.createServer((req, res) => {
     return monday;
   }
 
-  // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda va buyurtmalar sonini hisoblaydi
+  // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda, buyurtmalar soni va xarajat kategoriyalari bo'yicha taqsimotni hisoblaydi
   function cashflowBucket(owner, fromDate) {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
     const income = orders.reduce((sum, o) => sum + (o.total || 0), 0);
     const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-    return { income, expense, net: income - expense, orderCount: orders.length };
+
+    const byCategory = {};
+    for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
+    for (const e of expenses) {
+      const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+      byCategory[cat] = (byCategory[cat] || 0) + (e.amount || 0);
+    }
+
+    return { income, expense, net: income - expense, orderCount: orders.length, byCategory };
   }
 
   // Egaga tegishli to'liq cashflow hisobotini shakllantiradi: bugun/hafta/oy + oxirgi 14 kunlik seriya
@@ -1272,7 +1289,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/expense-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, amount, note } = payload;
+      const { initData, amount, note, category } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -1285,12 +1302,14 @@ const server = http.createServer((req, res) => {
       if (!Number.isFinite(amountNum) || amountNum <= 0) {
         return sendJSON(res, 200, { ok: false, reason: 'Summani to\'g\'ri kiriting.' });
       }
+      const categoryKey = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, category) ? category : 'boshqa';
       const noteStr = String(note || '').trim().slice(0, 200);
 
       if (!owner.expenses) owner.expenses = [];
       const expense = {
         id: crypto.randomBytes(4).toString('hex'),
         amount: amountNum,
+        category: categoryKey,
         note: noteStr,
         createdAt: new Date().toISOString(),
         createdBy: userId
@@ -1342,7 +1361,7 @@ const server = http.createServer((req, res) => {
       const cashflow = computeCashflow(owner);
       const recentExpenses = (owner.expenses || []).slice(0, 30);
 
-      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses });
+      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES });
     });
     return;
   }
