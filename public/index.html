@@ -1435,6 +1435,7 @@
         <div class="salom" style="font-size:20px;">Moliya</div>
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">🛵 Dostavkachilar hisoboti</button>
+        <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">📋 Kunlik Z-hisobot</button>
         <div class="tab-row">
           <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
           <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
@@ -1459,6 +1460,9 @@
     document.getElementById('cfBackBtn').addEventListener('click', () => onBack && onBack());
     document.getElementById('cfCourierReportBtn').addEventListener('click', () => {
       renderCourierReportScreen(profile, () => renderCashflowScreen(profile, onBack));
+    });
+    document.getElementById('cfZReportBtn').addEventListener('click', () => {
+      renderZReportScreen(profile, () => renderCashflowScreen(profile, onBack));
     });
 
     document.querySelector('.tab-row').addEventListener('click', (e) => {
@@ -1606,6 +1610,86 @@
       commissionInput.value = res.commissionPercent;
     }
     listEl.innerHTML = courierReportRowsHtml(res.report);
+  }
+
+  // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
+  function zReportCardHtml(z) {
+    const netClass = z.net >= 0 ? 'positive' : 'negative';
+    const paymentRows = Object.entries(z.paymentBreakdown || {})
+      .filter(([, sum]) => sum > 0)
+      .map(([key, sum]) => `<div class="profile-row"><b>${escapeHtml(PAYMENT_TYPE_LABELS[key] || key)}:</b> ${cfFormatSum(sum)}</div>`)
+      .join('');
+    return `
+      <div class="kartochka">
+        <h2>${escapeHtml(z.date)}</h2>
+        <div class="cf-stats">
+          <div class="cf-stat income">
+            <div class="cf-label">Savdo</div>
+            <div class="cf-val">${cfFormatSum(z.income)}</div>
+          </div>
+          <div class="cf-stat expense">
+            <div class="cf-label">Xarajat</div>
+            <div class="cf-val">${cfFormatSum(z.expense)}</div>
+          </div>
+          <div class="cf-stat net ${netClass}" style="grid-column: 1 / -1;">
+            <div class="cf-label">Sof foyda</div>
+            <div class="cf-val">${cfFormatSum(z.net)}</div>
+          </div>
+        </div>
+        <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${z.orderCount} | Kassa: ${cfFormatSum(z.kassaIncome)} | Dostavka: ${cfFormatSum(z.dostavkaIncome)}</div>
+        ${paymentRows ? `<div style="margin-top:8px;">${paymentRows}</div>` : ''}
+      </div>
+    `;
+  }
+
+  function zReportListHtml(reports) {
+    if (!reports.length) return `<div class="bosh">Hali Z-hisobot yopilmagan.</div>`;
+    return reports.map(z => zReportCardHtml(z)).join('');
+  }
+
+  function renderZReportScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Kunlik Z-hisobot</div>
+        <button class="btn ikkinchi" id="zrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <div class="bosh">Kunni yopib, bugungi savdo/xarajat/sof foydani rasmiy hisobot sifatida saqlaydi.</div>
+          <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
+          <div class="xabar" id="zrMsg"></div>
+        </div>
+        <div id="zrList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+
+    document.getElementById('zrBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.getElementById('zrCreateBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('zrMsg');
+      msgEl.textContent = 'Yopilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/z-report-create', { initData });
+      if (res.ok) {
+        msgEl.textContent = res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.';
+        msgEl.className = 'xabar ok';
+        loadZReportList();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadZReportList();
+  }
+
+  async function loadZReportList() {
+    const listEl = document.getElementById('zrList');
+    if (!listEl) return;
+    const res = await apiPost('/api/z-report-list', { initData });
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    listEl.innerHTML = zReportListHtml(res.reports);
   }
 
   function showAuditReport(audit) {
