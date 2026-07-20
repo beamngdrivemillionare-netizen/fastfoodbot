@@ -1278,7 +1278,7 @@
   let currentStockRole = null;
   let currentStockBranchId = null;
 
-  function stockListHtml(stock, canRemove) {
+  function stockListHtml(stock, canRemove, canTransfer) {
     if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
     return stock.map(s => {
       const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
@@ -1288,7 +1288,10 @@
             <div class="m-name">${escapeHtml(s.name)}${low ? ' ⚠️' : ''}</div>
             <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
           </div>
-          ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:#e5484d;font-size:13px;font-weight:600;cursor:pointer;">O'chirish</button>` : ''}
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+            ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:var(--tg-theme-button-color,#2ea6ff);font-size:13px;font-weight:600;cursor:pointer;">Filialga o'tkazish</button>` : ''}
+            ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:#e5484d;font-size:13px;font-weight:600;cursor:pointer;">O'chirish</button>` : ''}
+          </div>
         </div>
       `;
     }).join('');
@@ -1398,7 +1401,8 @@
     if (!el) return;
     const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
     stockState.stock = res.ok ? res.stock : [];
-    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi');
+    const canTransfer = currentStockRole === 'egasi' && !currentStockBranchId && branchState.branches.length > 0;
+    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi', canTransfer);
     el.querySelectorAll('[data-remove-stock-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
@@ -1406,6 +1410,61 @@
         loadStockAndRender();
       });
     });
+    el.querySelectorAll('[data-transfer-stock-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-transfer-stock-id');
+        const item = stockState.stock.find(s => s.id === id);
+        if (item) openTransferForm(item);
+      });
+    });
+  }
+
+  // ---- Markaziy skladdan filialga o'tkazish (transfer) oynasi ----
+  function openTransferForm(item) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px;">
+        <h3>Filialga o'tkazish</h3>
+        <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
+        <select id="transferBranchSelect">${branchOptionsHtml(null).replace('<option value="">— Markaziy (filialsiz) —</option>', '')}</select>
+        <input type="text" id="transferQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
+        <div class="xabar" id="transferMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="transferCancelBtn">Bekor qilish</button>
+          <button class="btn" id="transferSubmitBtn">O'tkazish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('transferCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('transferSubmitBtn').onclick = async () => {
+      const branchId = document.getElementById('transferBranchSelect').value;
+      const qty = document.getElementById('transferQtyInput').value.trim();
+      const msgEl = document.getElementById('transferMsg');
+      if (!branchId) {
+        msgEl.textContent = 'Filialni tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        msgEl.textContent = 'To\'g\'ri miqdor kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'O\'tkazilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/stock-transfer', { initData, stockId: item.id, branchId, qty });
+      if (res.ok) {
+        overlay.remove();
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
   }
 
   async function loadMovementsAndRender() {
@@ -1552,6 +1611,11 @@
           <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
         </div>
         <div id="cfStats"><div class="bosh">Yuklanmoqda...</div></div>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Filiallar solishtiruvi</h2>
+          <div id="cfBranchReport"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>` : ''}
         <div class="kartochka">
           <h2>Xarajat qo'shish</h2>
           <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
@@ -1606,6 +1670,30 @@
     });
 
     loadCashflowData();
+    if (branchState.branches.length) loadBranchReportAndRender();
+  }
+
+  function branchReportHtml(report) {
+    if (!report || !report.length) return `<div class="bosh">Ma'lumot yo'q.</div>`;
+    const maxIncome = Math.max(1, ...report.map(r => r.income));
+    return report.map(r => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${escapeHtml(r.branchName)}</div>
+          <div class="m-price">${cfFormatSum(r.income)} · ${r.orderCount} buyurtma · o'rtacha chek: ${cfFormatSum(r.avgCheck)}</div>
+          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
+            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(r.income / maxIncome * 100)}%;"></div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadBranchReportAndRender() {
+    const el = document.getElementById('cfBranchReport');
+    if (!el) return;
+    const res = await apiPost('/api/branch-report', { initData, period: cashflowState.period });
+    el.innerHTML = branchReportHtml(res.ok ? res.report : []);
   }
 
   async function loadCashflowData() {
