@@ -709,6 +709,16 @@
           <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
           <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">💰 Moliyani ochish</button>
         </div>
+        <div class="kartochka">
+          <h2>AI tahlil</h2>
+          <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
+          <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">🤖 AI tahlilni ochish</button>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar nazorati</h2>
+          <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
+          <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">👥 Xodimlar nazoratini ochish</button>
+        </div>
         <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
@@ -718,6 +728,12 @@
     });
     document.getElementById('openCashflowBtn').addEventListener('click', () => {
       renderCashflowScreen(profile, () => renderProfileView(profile));
+    });
+    document.getElementById('openAiBtn').addEventListener('click', () => {
+      renderAiScreen(profile, () => renderProfileView(profile));
+    });
+    document.getElementById('openStaffControlBtn').addEventListener('click', () => {
+      renderStaffControlScreen(profile, () => renderProfileView(profile));
     });
 
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
@@ -1718,6 +1734,220 @@
         loadCashflowData();
       });
     });
+  }
+
+  // ---- Egasi: H. AI analitika (32-34-bosqich) — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ----
+  let aiState = { period: 'week' };
+
+  function aiTopItemsHtml(topItems) {
+    if (!topItems || !topItems.length) return `<div class="bosh">Bu davrda buyurtma bo'lmagan.</div>`;
+    const maxQty = Math.max(1, ...topItems.map(it => it.qty));
+    return topItems.map((it, i) => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${i + 1}. ${escapeHtml(it.name)}</div>
+          <div class="m-price">${it.qty} dona · ${cfFormatSum(it.revenue)}</div>
+          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
+            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(it.qty / maxQty * 100)}%;"></div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function aiPeakHtml(topHours, topDays) {
+    const hoursText = (topHours && topHours.length)
+      ? topHours.map(h => `${h.hour}:00 (${h.count} ta)`).join(', ')
+      : 'Ma\'lumot yo\'q';
+    const daysText = (topDays && topDays.length)
+      ? topDays.map(d => `${d.dayLabel} (${d.count} ta)`).join(', ')
+      : 'Ma\'lumot yo\'q';
+    return `
+      <div class="profile-row"><b>Eng band soatlar:</b> ${escapeHtml(hoursText)}</div>
+      <div class="profile-row"><b>Eng band kunlar:</b> ${escapeHtml(daysText)}</div>
+    `;
+  }
+
+  function aiForecastHtml(forecast) {
+    if (!forecast || !forecast.length) return `<div class="bosh">Prognoz uchun yetarli sklad harakati tarixi yo'q (oxirgi 7 kun).</div>`;
+    return forecast.slice(0, 10).map(f => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${escapeHtml(f.name)}${f.shortage ? ' ⚠️' : ''}</div>
+          <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)} · Ertangi ehtiyoj: ${f.predictedNeed} ${escapeHtml(f.unit)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderAiScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">AI tahlil</div>
+        <button class="btn ikkinchi" id="aiBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${aiState.period === 'week' ? 'selected' : ''}" data-ai-period="week">Hafta</div>
+          <div class="tab-opt ${aiState.period === 'month' ? 'selected' : ''}" data-ai-period="month">Oy</div>
+          <div class="tab-opt ${aiState.period === 'all' ? 'selected' : ''}" data-ai-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Eng ko'p sotilgan taomlar</h2>
+          <div id="aiTopItems"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Pik vaqtlar</h2>
+          <div id="aiPeak"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Ertangi sklad ehtiyoji (prognoz)</h2>
+          <div id="aiForecast"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>AI'dan so'rang</h2>
+          <input type="text" id="aiQuestionInput" placeholder="Masalan: bugun foyda qancha bo'ldi?">
+          <button class="btn" id="aiAskBtn">Yuborish</button>
+          <div class="xabar" id="aiAskMsg"></div>
+          <div id="aiAnswer" style="margin-top:10px; white-space:pre-line;"></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('aiBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-ai-period');
+      if (!p || p === aiState.period) return;
+      aiState.period = p;
+      renderAiScreen(profile, onBack);
+    });
+
+    document.getElementById('aiAskBtn').addEventListener('click', async () => {
+      const question = document.getElementById('aiQuestionInput').value.trim();
+      const msgEl = document.getElementById('aiAskMsg');
+      const answerEl = document.getElementById('aiAnswer');
+      if (!question) {
+        msgEl.textContent = 'Savolingizni kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'AI javob tayyorlamoqda...';
+      msgEl.className = 'xabar';
+      answerEl.textContent = '';
+      const res = await apiPost('/api/ai-ask', { initData, question });
+      if (res.ok) {
+        msgEl.textContent = '';
+        msgEl.className = 'xabar';
+        answerEl.textContent = res.answer;
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadAiData();
+  }
+
+  async function loadAiData() {
+    const topEl = document.getElementById('aiTopItems');
+    const peakEl = document.getElementById('aiPeak');
+    const forecastEl = document.getElementById('aiForecast');
+    if (!topEl) return;
+    const res = await apiPost('/api/ai-analytics', { initData, period: aiState.period });
+    if (!res.ok) {
+      topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      peakEl.innerHTML = '';
+      forecastEl.innerHTML = '';
+      return;
+    }
+    topEl.innerHTML = aiTopItemsHtml(res.topItems);
+    peakEl.innerHTML = aiPeakHtml(res.topHours, res.topDays);
+    forecastEl.innerHTML = aiForecastHtml(res.forecast);
+  }
+
+  // ---- Egasi: I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ----
+  let staffControlState = { period: 'month' };
+  const STAFF_ACTION_LABELS = {
+    buyurtma_yaratdi: 'Buyurtma yaratdi',
+    holat_tayyorlanmoqda: 'Tayyorlanmoqda deb belgiladi',
+    holat_tayyor: 'Tayyor deb belgiladi',
+    yetkazdi: 'Yetkazib berdi',
+    sklad_kirim: 'Skladga kirim qildi',
+    audit_topshirdi: 'Audit topshirdi'
+  };
+
+  function staffPerformanceHtml(report) {
+    if (!report || !report.length) return `<div class="bosh">Hali xodim qo'shilmagan.</div>`;
+    return report.map((s, i) => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${i + 1}. ${s.username ? '@' + escapeHtml(s.username) : 'ID: ' + escapeHtml(s.id)}${s.isTop ? ' 🏆' : ''}</div>
+          <div class="owner-username">${escapeHtml(s.roleLabel)}</div>
+          <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
+        </div>
+        <div style="text-align:right; font-weight:700; color:#2ea6ff;">${s.score}<div style="font-size:11px; opacity:.6; font-weight:400;">ball</div></div>
+      </div>
+    `).join('');
+  }
+
+  function staffActivityLogHtml(entries) {
+    if (!entries || !entries.length) return `<div class="bosh">Hali amal qayd etilmagan.</div>`;
+    return entries.map(e => `
+      <div class="cf-expense-item">
+        <div>
+          <div class="cf-e-note"><b>${escapeHtml(e.displayName)}</b> (${escapeHtml(e.roleLabel)}) — ${escapeHtml(STAFF_ACTION_LABELS[e.action] || e.action)}</div>
+          ${e.note ? `<div class="cf-e-note">${escapeHtml(e.note)}</div>` : ''}
+          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderStaffControlScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Xodimlar nazorati</div>
+        <button class="btn ikkinchi" id="scBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${staffControlState.period === 'week' ? 'selected' : ''}" data-sc-period="week">Hafta</div>
+          <div class="tab-opt ${staffControlState.period === 'month' ? 'selected' : ''}" data-sc-period="month">30 kun</div>
+          <div class="tab-opt ${staffControlState.period === 'all' ? 'selected' : ''}" data-sc-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar reytingi</h2>
+          <div id="scRating"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>So'nggi amallar (jurnal)</h2>
+          <div id="scLog"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('scBackBtn').addEventListener('click', () => onBack && onBack());
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-sc-period');
+      if (!p || p === staffControlState.period) return;
+      staffControlState.period = p;
+      renderStaffControlScreen(profile, onBack);
+    });
+
+    loadStaffControlData();
+  }
+
+  async function loadStaffControlData() {
+    const ratingEl = document.getElementById('scRating');
+    const logEl = document.getElementById('scLog');
+    if (!ratingEl) return;
+
+    const perfRes = await apiPost('/api/staff-performance-report', { initData, period: staffControlState.period });
+    ratingEl.innerHTML = perfRes.ok
+      ? staffPerformanceHtml(perfRes.report)
+      : `<div class="xabar err">${escapeHtml(perfRes.reason || 'Xatolik yuz berdi.')}</div>`;
+
+    const logRes = await apiPost('/api/staff-activity-log', { initData, limit: 50 });
+    logEl.innerHTML = logRes.ok
+      ? staffActivityLogHtml(logRes.entries)
+      : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
   }
 
   // ---- Egasi: Dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
