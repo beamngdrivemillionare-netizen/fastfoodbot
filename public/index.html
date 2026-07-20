@@ -108,6 +108,17 @@
   }
   .bosh { font-size: 13px; opacity: 0.6; margin-top: 4px; }
   .owner-item .owner-expiry { font-size: 12px; opacity: 0.6; margin-top: 2px; }
+  .owner-item .owner-price { font-size: 12px; opacity: 0.8; margin-top: 2px; }
+  .owner-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 20px;
+  }
+  .badge.paid { background: #e3f7e9; color: #2fa84f; }
+  .badge.unpaid { background: #fdeaea; color: #d33; }
   .link-box {
     display: flex;
     gap: 6px;
@@ -203,8 +214,16 @@
               <div class="owner-id">${escapeHtml(o.id)}</div>
               ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
               <div class="owner-expiry">${escapeHtml(expiryText(o))}</div>
+              <div class="owner-price" data-edit-price="${escapeHtml(o.id)}" style="cursor:pointer; text-decoration:underline dotted;">
+                Obuna narxi: ${o.price ? escapeHtml(String(o.price)) + ' so\'m/oy' : 'kiritilmagan'} ✏️
+              </div>
             </div>
-            <button data-remove-id="${escapeHtml(o.id)}">O'chirish</button>
+            <div class="owner-actions">
+              <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}" style="cursor:pointer;">
+                ${o.paid ? "To'langan ✅" : "To'lanmagan ❌"}
+              </span>
+              <button data-remove-id="${escapeHtml(o.id)}">O'chirish</button>
+            </div>
           </div>
         `).join('')
       : `<div class="bosh">Hozircha do'kon egalari yo'q.</div>`;
@@ -223,6 +242,10 @@
           <h2>Do'kon egasini ID orqali qo'shish</h2>
           <input type="text" id="ownerInput" placeholder="Telegram ID, @username yoki t.me havolasi">
           <input type="text" id="ownerDaysInput" placeholder="Necha kunga (bo'sh qoldirsangiz — doimiy)" inputmode="numeric">
+          <input type="text" id="ownerPriceInput" placeholder="Obuna narxi, so'm/oy (ixtiyoriy)" inputmode="numeric">
+          <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-bottom:10px;">
+            <input type="checkbox" id="ownerPaidInput" style="width:auto; margin:0;"> To'lov qabul qilindi
+          </label>
           <button class="btn" id="addOwnerBtn">Do'kon egasi qo'shish</button>
           <div class="xabar" id="addMsg"></div>
         </div>
@@ -276,6 +299,8 @@
     document.getElementById('addOwnerBtn').addEventListener('click', () => {
       const val = document.getElementById('ownerInput').value.trim();
       const daysVal = document.getElementById('ownerDaysInput').value.trim();
+      const priceVal = document.getElementById('ownerPriceInput').value.trim();
+      const paidVal = document.getElementById('ownerPaidInput').checked;
       const msgEl = document.getElementById('addMsg');
       msgEl.textContent = '';
       msgEl.className = 'xabar';
@@ -289,9 +314,15 @@
         msgEl.className = 'xabar err';
         return;
       }
+      if (priceVal && (!/^\d+$/.test(priceVal) || parseInt(priceVal, 10) < 0)) {
+        msgEl.textContent = 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
+      const narxMatn = priceVal ? `, obuna narxi ${priceVal} so'm/oy` : '';
       document.getElementById('confirmText').textContent =
-        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi?`;
+        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi${narxMatn}?`;
       document.getElementById('confirmOverlay').classList.remove('hidden');
 
       document.getElementById('confirmCancel').onclick = () => {
@@ -301,12 +332,17 @@
         document.getElementById('confirmOverlay').classList.add('hidden');
         msgEl.textContent = 'Qo\'shilmoqda...';
         msgEl.className = 'xabar';
-        const res = await apiPost('/api/add-owner', { initData, input: val, days: daysVal || null });
+        const res = await apiPost('/api/add-owner', {
+          initData, input: val, days: daysVal || null,
+          price: priceVal || null, paid: paidVal
+        });
         if (res.ok) {
           msgEl.textContent = 'Muvaffaqiyatli qo\'shildi.';
           msgEl.className = 'xabar ok';
           document.getElementById('ownerInput').value = '';
           document.getElementById('ownerDaysInput').value = '';
+          document.getElementById('ownerPriceInput').value = '';
+          document.getElementById('ownerPaidInput').checked = false;
           loadOwnersAndRender();
         } else {
           msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -316,10 +352,41 @@
     });
 
     document.getElementById('ownerList').addEventListener('click', async (e) => {
-      const id = e.target.getAttribute('data-remove-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/remove-owner', { initData, id });
+      const removeId = e.target.getAttribute('data-remove-id');
+      if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/remove-owner', { initData, id: removeId });
+        loadOwnersAndRender();
+        return;
+      }
+
+      const toggleId = e.target.getAttribute('data-toggle-paid');
+      if (toggleId) {
+        const current = e.target.getAttribute('data-paid') === '1';
+        await apiPost('/api/update-owner-billing', { initData, id: toggleId, paid: !current });
+        loadOwnersAndRender();
+        return;
+      }
+
+      const editId = e.target.getAttribute('data-edit-price');
+      if (editId && !e.target.querySelector('input')) {
+        e.target.innerHTML = `
+          <input type="text" inputmode="numeric" placeholder="Yangi narx" style="margin:0; padding:6px 8px; font-size:13px;" data-price-field="${escapeHtml(editId)}">
+          <button data-save-price="${escapeHtml(editId)}" style="border:none; border-radius:8px; background:var(--tg-theme-button-color,#2ea6ff); color:var(--tg-theme-button-text-color,#fff); font-size:12px; padding:6px 10px; margin-left:6px;">Saqlash</button>
+        `;
+      }
+    });
+
+    document.getElementById('ownerList').addEventListener('click', async (e) => {
+      const saveId = e.target.getAttribute('data-save-price');
+      if (!saveId) return;
+      const input = document.querySelector(`input[data-price-field="${saveId}"]`);
+      const val = input ? input.value.trim() : '';
+      if (val && (!/^\d+$/.test(val) || parseInt(val, 10) < 0)) {
+        alert('Narx musbat son bo\'lishi kerak.');
+        return;
+      }
+      await apiPost('/api/update-owner-billing', { initData, id: saveId, price: val || 0 });
       loadOwnersAndRender();
     });
   }
