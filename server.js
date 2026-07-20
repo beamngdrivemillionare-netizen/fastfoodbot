@@ -150,6 +150,50 @@ function displayName(user) {
   return name || (user.username ? '@' + user.username : String(user.id));
 }
 
+// ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
+const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000; // har soatda tekshiradi
+const REMINDER_BEFORE_MS = 24 * 60 * 60 * 1000; // muddat tugashiga 1 kun qolganda eslatma yuboradi
+
+function ownerLabel(owner) {
+  return owner.username ? '@' + owner.username : `ID: ${owner.id}`;
+}
+
+async function checkOwnerExpirations() {
+  const owners = loadOwners();
+  const now = Date.now();
+  let changed = false;
+  const stillActive = [];
+
+  for (const owner of owners) {
+    if (!owner.expiresAt) { stillActive.push(owner); continue; }
+    const expiresMs = new Date(owner.expiresAt).getTime();
+
+    if (expiresMs <= now) {
+      // Muddati tugadi — ro'yxatdan chiqariladi (stillActive'ga qo'shilmaydi) va xabar beriladi
+      changed = true;
+      await sendMessage(ADMIN_ID,
+        `⏰ <b>Obuna muddati tugadi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish avtomatik yopildi.`);
+      await sendMessage(owner.id,
+        `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish yopildi.\nDavom ettirish uchun administrator bilan bog'laning.`);
+      continue;
+    }
+
+    if (!owner.reminderSentAt && expiresMs - now <= REMINDER_BEFORE_MS) {
+      changed = true;
+      owner.reminderSentAt = new Date().toISOString();
+      const daysLeft = Math.max(1, Math.ceil((expiresMs - now) / 86400000));
+      await sendMessage(ADMIN_ID,
+        `🔔 <b>Obuna tugashiga oz qoldi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) — taxminan ${daysLeft} kundan keyin tugaydi.`);
+      await sendMessage(owner.id,
+        `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun administrator bilan bog'laning.`);
+    }
+
+    stillActive.push(owner);
+  }
+
+  if (changed) saveOwners(stillActive);
+}
+
 // ====== Bir martalik taklif havolalari (invites) ======
 function createInvite() {
   const token = crypto.randomBytes(16).toString('hex');
@@ -240,6 +284,7 @@ function approveRequest(reqInfo, days) {
   if (already) {
     already.expiresAt = expiresAt;
     already.username = reqInfo.username || already.username;
+    already.reminderSentAt = null;
   } else {
     owners.push({
       id: reqInfo.userId,
@@ -672,6 +717,12 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
+
+  // Obuna muddatlarini tekshirish — darhol bir marta, keyin har soatda
+  checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
+  setInterval(() => {
+    checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
+  }, EXPIRY_CHECK_INTERVAL_MS);
 
   if (PUBLIC_URL) {
     try {
