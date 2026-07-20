@@ -150,6 +150,13 @@ const EXPENSE_CATEGORIES = {
   boshqa: 'Boshqa'
 };
 
+// ====== Sklad birliklari va buyurtma turlari (module darajasida — bir nechta joyda ishlatiladi) ======
+const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
+// ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
+const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
+
 function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
 }
@@ -182,6 +189,49 @@ function resolveOwnerContext(owners, userId) {
     if (staffOwner) return { owner: staffOwner, role: staffInfo.role, branchId: staffInfo.staff.branchId || null };
   }
   return null;
+}
+
+// ====== J. Mijozlar uchun menyu (38-40-bosqich) — mijozlar, sevimlilar, aksiyalar, bonus ======
+// Owner ichida mijozlarni topadi/kerak bo'lsa yangi yozuv yaratadi (favorites, bonus ballari shu yerda saqlanadi)
+function findCustomer(owner, userId) {
+  return (owner.customers || []).find(c => String(c.id) === String(userId));
+}
+
+function findOrCreateCustomer(owner, userId, tgUser) {
+  if (!owner.customers) owner.customers = [];
+  let c = findCustomer(owner, userId);
+  if (!c) {
+    c = {
+      id: String(userId),
+      username: (tgUser && tgUser.username) || null,
+      firstName: (tgUser && tgUser.first_name) || null,
+      favorites: [],
+      bonusPoints: 0,
+      ordersCount: 0,
+      totalSpent: 0,
+      createdAt: new Date().toISOString()
+    };
+    owner.customers.push(c);
+  } else {
+    if (tgUser && tgUser.username) c.username = tgUser.username;
+    if (tgUser && tgUser.first_name) c.firstName = tgUser.first_name;
+  }
+  return c;
+}
+
+// Berilgan promoId bo'yicha faol aksiyani topadi va chegirmani hisoblaydi
+function findActivePromo(owner, promoId) {
+  if (!promoId) return null;
+  const promo = (owner.promotions || []).find(p => p.id === promoId && p.active);
+  return promo || null;
+}
+
+function applyPromoDiscount(owner, promoId, subtotal) {
+  const promo = findActivePromo(owner, promoId);
+  if (!promo) return { promo: null, discountAmount: 0 };
+  if (promo.minTotal && subtotal < promo.minTotal) return { promo: null, discountAmount: 0 };
+  const discountAmount = Math.round(subtotal * (promo.discountPercent / 100));
+  return { promo, discountAmount };
 }
 
 // ====== I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ======
@@ -450,6 +500,27 @@ async function handleTelegramUpdate(update) {
         await sendMessage(chatId, isAdminId(from.id)
           ? 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.'
           : 'Salom! Ushbu botdan foydalanish uchun sizga taklif havolasi kerak.');
+        return;
+      }
+
+      // Mijoz uchun oshxona menyusi havolasi: /start menu_<ownerId>
+      if (payload.startsWith('menu_')) {
+        const ownerId = payload.replace(/^menu_/, '').trim();
+        const owners = pruneExpiredOwners();
+        const owner = findOwner(owners, ownerId);
+        if (!owner || !isOwnerAccessValid(owner)) {
+          await sendMessage(chatId, 'Kechirasiz, bu oshxona menyusi hozircha mavjud emas.');
+          return;
+        }
+        if (!PUBLIC_URL) {
+          await sendMessage(chatId, 'Menyu havolasi hozircha sozlanmagan. Iltimos, oshxona bilan bog\'laning.');
+          return;
+        }
+        const restaurantName = (owner.profile && owner.profile.name) || 'Oshxona';
+        const menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
+        await sendMessage(chatId, `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`, {
+          inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]]
+        });
         return;
       }
 
@@ -887,7 +958,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/menu-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, name, price, category } = payload;
+      const { initData, name, price, category, description, imageUrl } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -900,6 +971,10 @@ const server = http.createServer((req, res) => {
       const priceNum = Number(price);
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
       if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+      const imageTrim = String(imageUrl || '').trim();
+      if (imageTrim && !/^https?:\/\//i.test(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun to\'g\'ri havola (https://...) kiriting.' });
+      }
 
       if (!owner.menu) owner.menu = [];
       const item = {
@@ -907,9 +982,56 @@ const server = http.createServer((req, res) => {
         name: nameTrim,
         price: priceNum,
         category: String(category || '').trim() || null,
+        description: String(description || '').trim() || null,
+        imageUrl: imageTrim || null,
+        available: true,
         addedAt: new Date().toISOString()
       };
       owner.menu.push(item);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, item });
+    });
+    return;
+  }
+
+  // ---- API: menyudagi taom ma'lumotlarini tahrirlash / ko'rinish holatini almashtirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-update') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name, price, category, description, imageUrl, available } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi menyuni boshqara oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const item = (owner.menu || []).find(m => m.id === id);
+      if (!item) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
+
+      if (name !== undefined) {
+        const nameTrim = String(name || '').trim();
+        if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
+        item.name = nameTrim;
+      }
+      if (price !== undefined) {
+        const priceNum = Number(price);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+        item.price = priceNum;
+      }
+      if (category !== undefined) item.category = String(category || '').trim() || null;
+      if (description !== undefined) item.description = String(description || '').trim() || null;
+      if (imageUrl !== undefined) {
+        const imageTrim = String(imageUrl || '').trim();
+        if (imageTrim && !/^https?:\/\//i.test(imageTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun to\'g\'ri havola (https://...) kiriting.' });
+        }
+        item.imageUrl = imageTrim || null;
+      }
+      if (available !== undefined) item.available = !!available;
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, item });
@@ -939,9 +1061,384 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- Sklad (ombor) — birliklar, harakatlar tarixi va kam qolish ogohlantirish yordamchilari ----
-  const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+  // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
 
+  // ---- API: egasi uchun mijoz-menyu havolasini olish ----
+  if (req.method === 'POST' && req.url === '/api/customer-link') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+      const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}`;
+      return sendJSON(res, 200, { ok: true, link });
+    });
+    return;
+  }
+
+  // ---- API: aksiyalar ro'yxati (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+      return sendJSON(res, 200, { ok: true, promotions: owner.promotions || [] });
+    });
+    return;
+  }
+
+  // ---- API: aksiya/chegirma qo'shish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, title, description, discountPercent, minTotal } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi qo\'sha oladi' });
+
+      const titleTrim = String(title || '').trim();
+      const percentNum = Number(discountPercent);
+      if (!titleTrim) return sendJSON(res, 200, { ok: false, reason: 'Aksiya nomini kiriting.' });
+      if (!Number.isFinite(percentNum) || percentNum <= 0 || percentNum > 90) {
+        return sendJSON(res, 200, { ok: false, reason: 'Chegirma foizi 1-90 oralig\'ida bo\'lishi kerak.' });
+      }
+      let minTotalNum = null;
+      if (minTotal !== undefined && minTotal !== null && minTotal !== '') {
+        const n = Number(minTotal);
+        if (!Number.isFinite(n) || n < 0) return sendJSON(res, 200, { ok: false, reason: 'Minimal summa noto\'g\'ri.' });
+        minTotalNum = n;
+      }
+
+      if (!owner.promotions) owner.promotions = [];
+      const promo = {
+        id: crypto.randomBytes(4).toString('hex'),
+        title: titleTrim,
+        description: String(description || '').trim() || null,
+        discountPercent: percentNum,
+        minTotal: minTotalNum,
+        active: true,
+        createdAt: new Date().toISOString()
+      };
+      owner.promotions.push(promo);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, promo });
+    });
+    return;
+  }
+
+  // ---- API: aksiyani faol/nofaol qilish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+
+      const promo = (owner.promotions || []).find(p => p.id === id);
+      if (!promo) return sendJSON(res, 200, { ok: false, reason: 'Aksiya topilmadi.' });
+      promo.active = !promo.active;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, promo });
+    });
+    return;
+  }
+
+  // ---- API: aksiyani o'chirish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.promotions = (owner.promotions || []).filter(p => p.id !== id);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: bonus tizimi sozlamalarini olish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+      return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
+    });
+    return;
+  }
+
+  // ---- API: bonus tizimi sozlamalarini saqlash (egasi) — qaytgan mijozlarga necha % bonus berish ----
+  if (req.method === 'POST' && req.url === '/api/bonus-settings-save') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, enabled, earnPercent } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi saqlay oladi' });
+
+      const percentNum = Number(earnPercent);
+      if (!Number.isFinite(percentNum) || percentNum < 0 || percentNum > 50) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bonus foizi 0-50 oralig\'ida bo\'lishi kerak.' });
+      }
+      owner.bonusSettings = { enabled: !!enabled, earnPercent: percentNum };
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings });
+    });
+    return;
+  }
+
+  // ---- API: mijoz — initData tekshirib, oshxona kontekstiga kiradi (avtomatik ro'yxatga oladi) ----
+  if (req.method === 'POST' && req.url === '/api/customer-verify') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      }
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, {
+        ok: true,
+        restaurant: {
+          id: owner.id,
+          name: (owner.profile && owner.profile.name) || 'Oshxona',
+          address: (owner.profile && owner.profile.address) || null,
+          phone: (owner.profile && owner.profile.phone) || null,
+          workHours: (owner.profile && owner.profile.workHours) || null,
+          logoUrl: (owner.profile && owner.profile.logoUrl) || null
+        },
+        customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints },
+        bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
+      });
+    });
+    return;
+  }
+
+  // ---- API: mijoz uchun katalog-menyu (faqat "available" taomlar) + faol aksiyalar ----
+  if (req.method === 'POST' && req.url === '/api/customer-menu-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+
+      const menu = (owner.menu || []).filter(m => m.available !== false);
+      const promotions = (owner.promotions || []).filter(p => p.active);
+      return sendJSON(res, 200, { ok: true, menu, promotions });
+    });
+    return;
+  }
+
+  // ---- API: mijoz — sevimlilarga qo'shish/olib tashlash ----
+  if (req.method === 'POST' && req.url === '/api/customer-favorite-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, itemId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!itemId) return sendJSON(res, 200, { ok: false, reason: 'Taom ko\'rsatilmagan.' });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      const idx = customer.favorites.indexOf(itemId);
+      if (idx >= 0) customer.favorites.splice(idx, 1);
+      else customer.favorites.push(itemId);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, favorites: customer.favorites });
+    });
+    return;
+  }
+
+  // ---- API: mijozning o'z buyurtmalari tarixi ----
+  if (req.method === 'POST' && req.url === '/api/customer-orders-history') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+
+      const orders = (owner.orders || [])
+        .filter(o => String(o.customerId) === userId)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 50);
+
+      return sendJSON(res, 200, { ok: true, orders });
+    });
+    return;
+  }
+
+  // ---- API: mijoz o'zi to'g'ridan-to'g'ri buyurtma beradi (katalog-menyu orqali) ----
+  if (req.method === 'POST' && req.url === '/api/customer-order') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+
+      if (!Array.isArray(items) || !items.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
+      }
+      if (orderType === 'stol' && !String(tableNumber || '').trim()) {
+        return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
+      }
+
+      const menu = (owner.menu || []).filter(m => m.available !== false);
+      const orderItems = [];
+      for (const it of items) {
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
+        const qty = parseInt(it.qty, 10);
+        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty });
+      }
+      const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      // Aksiya (agar tanlangan bo'lsa) chegirmasi
+      const { promo, discountAmount } = applyPromoDiscount(owner, promoId, subtotal);
+      let total = Math.max(0, subtotal - discountAmount);
+
+      // Bonus ballaridan foydalanish (1 ball = 1 so'm)
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      let pointsUsed = 0;
+      if (usePoints) {
+        const requested = Math.max(0, Math.floor(Number(usePoints) || 0));
+        pointsUsed = Math.min(requested, customer.bonusPoints, total);
+        total -= pointsUsed;
+      }
+
+      // Retsept asosida skladdan mahsulot avtomatik yechiladi
+      if (!owner.stock) owner.stock = [];
+      for (const it of orderItems) {
+        const menuItem = menu.find(m => m.id === it.id);
+        const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+        for (const ing of recipe) {
+          const stockItem = findStockItem(owner, ing.stockId);
+          if (!stockItem) continue;
+          const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+          stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+          addStockMovement(owner, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+            qty: consumeQty, unit: stockItem.unit,
+            note: `Mijoz buyurtmasi: ${menuItem.name} x${it.qty}`,
+            userId
+          });
+          checkLowStockAlert(owner, stockItem, userId);
+        }
+      }
+
+      // Bonus ballari to'planishi (sozlamada yoqilgan bo'lsa)
+      let pointsEarned = 0;
+      if (owner.bonusSettings && owner.bonusSettings.enabled) {
+        pointsEarned = Math.floor(total * (owner.bonusSettings.earnPercent || 0) / 100);
+      }
+      customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
+      customer.ordersCount = (customer.ordersCount || 0) + 1;
+      customer.totalSpent = (customer.totalSpent || 0) + total;
+
+      if (!owner.orders) owner.orders = [];
+      const order = {
+        id: crypto.randomBytes(4).toString('hex'),
+        items: orderItems,
+        subtotal,
+        promoId: promo ? promo.id : null,
+        promoTitle: promo ? promo.title : null,
+        discountAmount,
+        pointsUsed,
+        pointsEarned,
+        total,
+        orderType,
+        tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
+        paymentType,
+        status: 'yangi',
+        branchId: null,
+        customerId: userId,
+        customerName: displayName(check.user),
+        source: 'customer',
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      };
+      owner.orders.push(order);
+      logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${total} so'm` });
+      saveOwners(owners);
+
+      const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+        `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+      const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'oshpaz' || s.role === 'kassir').map(s => s.id))];
+      for (const targetId of new Set(notifyTargets)) {
+        sendMessage(targetId, notifyText);
+      }
+
+      return sendJSON(res, 200, { ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned, bonusBalance: customer.bonusPoints });
+    });
+    return;
+  }
+
+  // ---- Sklad (ombor) — birliklar, harakatlar tarixi va kam qolish ogohlantirish yordamchilari ----
   function findStockItem(pool, id) {
     return (pool.stock || []).find(s => s.id === id);
   }
@@ -975,11 +1472,6 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
-  const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-  const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
-  // ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
-  const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
-
   // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi
   function canSetOrderStatus(role, newStatus) {
     if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
