@@ -162,6 +162,45 @@
     color: var(--tg-theme-text-color, #111111);
     margin-bottom: 10px;
   }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--tg-theme-bg-color, #ffffff);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 14px;
+    margin-bottom: 8px;
+  }
+  .menu-item .m-name { font-weight: 600; }
+  .menu-item .m-cat { font-size: 12px; opacity: 0.6; }
+  .menu-item .m-price { font-size: 13px; opacity: 0.8; margin-top: 2px; }
+  .qty-controls { display: flex; align-items: center; gap: 8px; }
+  .qty-controls button {
+    width: 30px; height: 30px; border-radius: 8px; border: none;
+    background: var(--tg-theme-button-color, #2ea6ff); color: #fff;
+    font-size: 16px; font-weight: 700; cursor: pointer;
+  }
+  .qty-controls .qty-val { min-width: 18px; text-align: center; font-weight: 600; }
+  .cart-bar {
+    position: sticky; bottom: 0;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-top: 14px;
+  }
+  .cart-total { display: flex; justify-content: space-between; font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+  .type-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .type-opt {
+    flex: 1; min-width: 90px; text-align: center;
+    padding: 10px 6px; border-radius: 10px; font-size: 13px; font-weight: 600;
+    border: 1px solid #ccc; cursor: pointer; background: var(--tg-theme-bg-color, #ffffff);
+  }
+  .type-opt.selected {
+    background: var(--tg-theme-button-color, #2ea6ff);
+    color: var(--tg-theme-button-text-color, #ffffff);
+    border-color: transparent;
+  }
   .link-box {
     display: flex;
     gap: 6px;
@@ -529,10 +568,48 @@
           <h2>Xodimlar ro'yxati</h2>
           <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
-        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (kassir menyusi, sklad, hisobotlar) tez orada shu yerga qo'shiladi.</div>
+        <div class="kartochka">
+          <h2>Menyuga taom qo'shish</h2>
+          <input type="text" id="menuNameInput" placeholder="Taom nomi">
+          <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
+          <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
+          <button class="btn" id="addMenuBtn">Qo'shish</button>
+          <div class="xabar" id="menuMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Menyu</h2>
+          <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (sklad, hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+
+    document.getElementById('addMenuBtn').addEventListener('click', async () => {
+      const name = document.getElementById('menuNameInput').value.trim();
+      const price = document.getElementById('menuPriceInput').value.trim();
+      const category = document.getElementById('menuCategoryInput').value.trim();
+      const msgEl = document.getElementById('menuMsg');
+      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
+        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/menu-add', { initData, name, price, category });
+      if (res.ok) {
+        msgEl.textContent = 'Qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('menuNameInput').value = '';
+        document.getElementById('menuPriceInput').value = '';
+        document.getElementById('menuCategoryInput').value = '';
+        loadMenuAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
 
     document.getElementById('addStaffBtn').addEventListener('click', async () => {
       const val = document.getElementById('staffInput').value.trim();
@@ -566,6 +643,7 @@
     });
 
     loadStaffAndRender();
+    loadMenuAndRender();
   }
 
   async function loadStaffAndRender() {
@@ -575,8 +653,40 @@
     listEl.innerHTML = staffListHtml(res.ok ? res.staff : []);
   }
 
-  // ---- Xodim (kassir/oshpaz/sklad/dostavka): oddiy rol ekrani ----
-  function renderStaffScreen(roleLabel, restaurantName) {
+  function ownerMenuListHtml(menu) {
+    if (!menu || !menu.length) return `<div class="bosh">Menyu hali bo'sh.</div>`;
+    return menu.map(m => `
+      <div class="menu-item">
+        <div>
+          <div class="m-name">${escapeHtml(m.name)}</div>
+          ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
+          <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+        </div>
+        <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
+      </div>
+    `).join('');
+  }
+
+  async function loadMenuAndRender() {
+    const listEl = document.getElementById('menuList');
+    if (!listEl) return;
+    const res = await apiPost('/api/menu-list', { initData });
+    listEl.innerHTML = ownerMenuListHtml(res.ok ? res.menu : []);
+    listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id') });
+        loadMenuAndRender();
+      });
+    });
+  }
+
+  // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
+  function renderStaffScreen(role, roleLabel, restaurantName) {
+    if (role === 'kassir') {
+      renderCashierScreen(restaurantName);
+      return;
+    }
     ekran(`
       <div class="panel" style="text-align:center;">
         <div class="salom">Salom!</div>
@@ -593,6 +703,155 @@
         </div>
       </div>
     `);
+  }
+
+  // ---- Kassir: buyurtma ekrani (menyu → savat → tur/to'lov → yuborish) ----
+  const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
+
+  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '' };
+
+  function cashierCartTotal() {
+    return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
+  }
+
+  function renderCashierScreen(restaurantName) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        <div class="bosh">Taomni bosib savatga qo'shing.</div>
+        <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+        <div class="cart-bar">
+          <div class="type-row" id="orderTypeRow">
+            ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+              <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
+            `).join('')}
+          </div>
+          <div id="tableNumberWrap" class="${cashierState.orderType === 'stol' ? '' : 'hidden'}">
+            <input type="text" id="tableNumberInput" placeholder="Stol raqami" value="${escapeHtml(cashierState.tableNumber)}" inputmode="numeric">
+          </div>
+          <div class="type-row" id="paymentTypeRow">
+            ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
+              <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
+            `).join('')}
+          </div>
+          <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${cashierCartTotal()} so'm</span></div>
+          <button class="btn" id="sendOrderBtn">Oshxonaga yuborish</button>
+          <div class="xabar" id="orderMsg"></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('orderTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-order-type');
+      if (!t) return;
+      cashierState.orderType = t;
+      renderCashierScreen(restaurantName);
+    });
+    document.getElementById('paymentTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-payment-type');
+      if (!t) return;
+      cashierState.paymentType = t;
+      renderCashierScreen(restaurantName);
+    });
+    const tableInput = document.getElementById('tableNumberInput');
+    if (tableInput) tableInput.addEventListener('input', (e) => { cashierState.tableNumber = e.target.value; });
+
+    document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName));
+
+    loadCashierMenu(restaurantName);
+  }
+
+  function cashierMenuHtml() {
+    if (!cashierState.menu.length) return `<div class="bosh">Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang.</div>`;
+    return cashierState.menu.map(m => {
+      const qty = cashierState.cart[m.id] || 0;
+      return `
+        <div class="menu-item">
+          <div>
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+          </div>
+          <div class="qty-controls">
+            <button data-qty-minus="${escapeHtml(m.id)}">-</button>
+            <span class="qty-val">${qty}</span>
+            <button data-qty-plus="${escapeHtml(m.id)}">+</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function loadCashierMenu(restaurantName) {
+    const el = document.getElementById('cashierMenu');
+    const res = await apiPost('/api/menu-list', { initData });
+    cashierState.menu = res.ok ? res.menu : [];
+    el.innerHTML = cashierMenuHtml();
+    attachQtyHandlers(restaurantName);
+  }
+
+  function attachQtyHandlers(restaurantName) {
+    const el = document.getElementById('cashierMenu');
+    el.querySelectorAll('[data-qty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-qty-plus');
+      cashierState.cart[id] = (cashierState.cart[id] || 0) + 1;
+      el.innerHTML = cashierMenuHtml();
+      attachQtyHandlers(restaurantName);
+      updateCartTotal();
+    });
+    el.querySelectorAll('[data-qty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-qty-minus');
+      cashierState.cart[id] = Math.max(0, (cashierState.cart[id] || 0) - 1);
+      el.innerHTML = cashierMenuHtml();
+      attachQtyHandlers(restaurantName);
+      updateCartTotal();
+    });
+  }
+
+  function updateCartTotal() {
+    const el = document.getElementById('cartTotalVal');
+    if (el) el.textContent = cashierCartTotal() + " so'm";
+  }
+
+  async function sendCashierOrder(restaurantName) {
+    const msgEl = document.getElementById('orderMsg');
+    const items = Object.entries(cashierState.cart)
+      .filter(([, qty]) => qty > 0)
+      .map(([id, qty]) => ({ id, qty }));
+
+    if (!items.length) {
+      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+    if (cashierState.orderType === 'stol' && !cashierState.tableNumber.trim()) {
+      msgEl.textContent = 'Stol raqamini kiriting.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+
+    msgEl.textContent = 'Yuborilmoqda...';
+    msgEl.className = 'xabar';
+    const res = await apiPost('/api/create-order', {
+      initData,
+      items,
+      orderType: cashierState.orderType,
+      tableNumber: cashierState.tableNumber,
+      paymentType: cashierState.paymentType
+    });
+
+    if (res.ok) {
+      cashierState.cart = {};
+      msgEl.textContent = '';
+      renderCashierScreen(restaurantName);
+      const topMsg = document.createElement('div');
+      topMsg.className = 'xabar ok';
+      topMsg.textContent = `✅ Buyurtma yuborildi (${res.total} so'm)`;
+      document.querySelector('.panel').prepend(topMsg);
+    } else {
+      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+      msgEl.className = 'xabar err';
+    }
   }
 
 
@@ -630,7 +889,7 @@
         } else if (data.isOwner) {
           loadOwnProfileAndRender();
         } else if (data.role) {
-          renderStaffScreen(data.roleLabel, data.ownerRestaurantName);
+          renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
         } else {
           ekran('<div class="xato">Kirish rad etildi.<br>Sizga ruxsat berilmagan.</div>');
         }
