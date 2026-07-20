@@ -1242,10 +1242,16 @@ const server = http.createServer((req, res) => {
   }
 
   // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda, buyurtmalar soni va xarajat kategoriyalari bo'yicha taqsimotni hisoblaydi
+  // Kirim ikkiga ajratiladi: kassaIncome (stolga/olib ketish — kassada turgan pul) va dostavkaIncome (dostavka orqali — dostavkachi qo'lida, kassadan alohida)
   function cashflowBucket(owner, fromDate) {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
-    const income = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+
+    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
+    const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
+    const kassaIncome = kassaOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+    const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+    const income = kassaIncome + dostavkaIncome;
     const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
     const byCategory = {};
@@ -1255,7 +1261,10 @@ const server = http.createServer((req, res) => {
       byCategory[cat] = (byCategory[cat] || 0) + (e.amount || 0);
     }
 
-    return { income, expense, net: income - expense, orderCount: orders.length, byCategory };
+    return {
+      income, expense, net: income - expense, orderCount: orders.length, byCategory,
+      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length
+    };
   }
 
   // Egaga tegishli to'liq cashflow hisobotini shakllantiradi: bugun/hafta/oy + oxirgi 14 kunlik seriya
