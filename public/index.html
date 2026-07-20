@@ -317,6 +317,36 @@
   .modal h3 { font-size: 16px; margin-bottom: 8px; }
   .modal p { font-size: 14px; opacity: 0.8; line-height: 1.4; margin-bottom: 16px; word-break: break-all; }
   .hidden { display: none !important; }
+
+  /* ---- J. Mijozlar uchun menyu (katalog, sevimlilar, aksiya, bonus) ---- */
+  .cat-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-top: 10px; }
+  .cat-opt {
+    flex: 0 0 auto; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7); cursor: pointer; white-space: nowrap;
+  }
+  .cat-opt.selected {
+    background: var(--tg-theme-button-color, #2ea6ff);
+    color: var(--tg-theme-button-text-color, #ffffff);
+  }
+  .catalog-item {
+    background: var(--tg-theme-bg-color, #ffffff);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    border: 1px solid rgba(0,0,0,0.06);
+    text-align: left;
+  }
+  .catalog-img { width: 100%; height: 140px; object-fit: cover; display: block; background: var(--tg-theme-secondary-bg-color, #f2f2f7); }
+  .catalog-body { padding: 12px 14px; }
+  .catalog-desc { font-size: 13px; opacity: 0.7; margin-top: 4px; line-height: 1.4; }
+  .fav-btn { border: none; background: none; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 0 0 8px; }
+  .promo-banner {
+    background: linear-gradient(135deg, #fff3d6, #ffe9b8);
+    border-radius: 12px; padding: 12px 14px; margin-top: 10px; font-size: 13px;
+    border: 2px solid transparent; cursor: pointer; color: #7a5200;
+  }
+  .promo-banner.selected { border-color: #f0a500; }
+  .customer-link-hint { font-size: 12px; opacity: 0.65; margin-top: 8px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -692,6 +722,8 @@
           <input type="text" id="menuNameInput" placeholder="Taom nomi">
           <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
           <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
+          <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
+          <input type="text" id="menuImageInput" placeholder="Rasm havolasi (ixtiyoriy, https://...)">
           <button class="btn" id="addMenuBtn">Qo'shish</button>
           <div class="xabar" id="menuMsg"></div>
         </div>
@@ -719,6 +751,37 @@
           <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
           <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">👥 Xodimlar nazoratini ochish</button>
         </div>
+        <div class="kartochka">
+          <h2>Mijozlar uchun menyu</h2>
+          <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
+          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">🔗 Mijozlar havolasini olish</button>
+          <div id="customerLinkWrap"></div>
+          <div class="xabar" id="customerLinkMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Aksiya/chegirma qo'shish</h2>
+          <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
+          <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
+          <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
+          <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
+          <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
+          <div class="xabar" id="promoMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Aksiyalar ro'yxati</h2>
+          <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Bonus tizimi</h2>
+          <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
+          <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-top:10px;">
+            <input type="checkbox" id="bonusEnabledInput">
+            Bonus tizimini yoqish
+          </label>
+          <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
+          <button class="btn" id="saveBonusBtn">Saqlash</button>
+          <div class="xabar" id="bonusMsg"></div>
+        </div>
         <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
@@ -740,6 +803,8 @@
       const name = document.getElementById('menuNameInput').value.trim();
       const price = document.getElementById('menuPriceInput').value.trim();
       const category = document.getElementById('menuCategoryInput').value.trim();
+      const description = document.getElementById('menuDescriptionInput').value.trim();
+      const imageUrl = document.getElementById('menuImageInput').value.trim();
       const msgEl = document.getElementById('menuMsg');
       if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
         msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
@@ -748,13 +813,15 @@
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, category });
+      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl });
       if (res.ok) {
         msgEl.textContent = 'Qo\'shildi.';
         msgEl.className = 'xabar ok';
         document.getElementById('menuNameInput').value = '';
         document.getElementById('menuPriceInput').value = '';
         document.getElementById('menuCategoryInput').value = '';
+        document.getElementById('menuDescriptionInput').value = '';
+        document.getElementById('menuImageInput').value = '';
         loadMenuAndRender();
       } else {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -836,8 +903,138 @@
       loadBranchAndRender();
     });
 
+    document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('customerLinkMsg');
+      const wrap = document.getElementById('customerLinkWrap');
+      msgEl.textContent = 'Yaratilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/customer-link', { initData });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        wrap.innerHTML = '';
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span>${escapeHtml(res.link)}</span>
+          <button id="copyCustomerLinkBtn">Nusxalash</button>
+        </div>
+        <div class="customer-link-hint">Bu havolani mijozlaringizga (masalan, ijtimoiy tarmoqlarda yoki stol ustida QR kod qilib) ulashing.</div>
+      `;
+      document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          msgEl.textContent = 'Havola nusxalandi.';
+          msgEl.className = 'xabar ok';
+        }).catch(() => {
+          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
+          msgEl.className = 'xabar err';
+        });
+      });
+    });
+
+    document.getElementById('addPromoBtn').addEventListener('click', async () => {
+      const title = document.getElementById('promoTitleInput').value.trim();
+      const description = document.getElementById('promoDescInput').value.trim();
+      const discountPercent = document.getElementById('promoPercentInput').value.trim();
+      const minTotal = document.getElementById('promoMinInput').value.trim();
+      const msgEl = document.getElementById('promoMsg');
+      if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
+        msgEl.textContent = 'Aksiya nomi va chegirma foizini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/promo-add', { initData, title, description, discountPercent, minTotal });
+      if (res.ok) {
+        msgEl.textContent = 'Aksiya qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('promoTitleInput').value = '';
+        document.getElementById('promoDescInput').value = '';
+        document.getElementById('promoPercentInput').value = '';
+        document.getElementById('promoMinInput').value = '';
+        loadPromoAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('promoList').addEventListener('click', async (e) => {
+      const toggleId = e.target.getAttribute('data-toggle-promo-id');
+      const removeId = e.target.getAttribute('data-remove-promo-id');
+      if (toggleId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-toggle', { initData, id: toggleId });
+        loadPromoAndRender();
+      } else if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-remove', { initData, id: removeId });
+        loadPromoAndRender();
+      }
+    });
+
+    document.getElementById('saveBonusBtn').addEventListener('click', async () => {
+      const enabled = document.getElementById('bonusEnabledInput').checked;
+      const earnPercent = document.getElementById('bonusPercentInput').value.trim();
+      const msgEl = document.getElementById('bonusMsg');
+      if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
+        msgEl.textContent = 'Bonus foizini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/bonus-settings-save', { initData, enabled, earnPercent: earnPercent || 0 });
+      if (res.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
     loadBranchAndRender().then(loadStaffAndRender);
     loadMenuAndRender();
+    loadPromoAndRender();
+    loadBonusSettingsAndRender();
+  }
+
+  function promoListHtml(promotions) {
+    if (!promotions || !promotions.length) return `<div class="bosh">Hali aksiya qo'shilmagan.</div>`;
+    return promotions.map(p => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div>
+          <div class="owner-id">${escapeHtml(p.title)} — ${p.discountPercent}%</div>
+          ${p.description ? `<div class="owner-username">${escapeHtml(p.description)}</div>` : ''}
+          ${p.minTotal ? `<div class="owner-username">Min: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${p.active ? 'paid' : 'unpaid'}">${p.active ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-promo-id="${escapeHtml(p.id)}">${p.active ? 'To\'xtatish' : 'Yoqish'}</button>
+          <button data-remove-promo-id="${escapeHtml(p.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadPromoAndRender() {
+    const listEl = document.getElementById('promoList');
+    if (!listEl) return;
+    const res = await apiPost('/api/promo-list', { initData });
+    listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
+  }
+
+  async function loadBonusSettingsAndRender() {
+    const enabledEl = document.getElementById('bonusEnabledInput');
+    if (!enabledEl) return;
+    const res = await apiPost('/api/bonus-settings-get', { initData });
+    const settings = res.ok ? res.settings : { enabled: false, earnPercent: 5 };
+    enabledEl.checked = !!settings.enabled;
+    document.getElementById('bonusPercentInput').value = settings.earnPercent || '';
   }
 
   async function loadStaffAndRender() {
@@ -852,12 +1049,13 @@
     return menu.map(m => `
       <div class="menu-item">
         <div>
-          <div class="m-name">${escapeHtml(m.name)}</div>
+          <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
           <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ' · retsept ✓' : ''}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
           <button data-recipe-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Retsept</button>
+          <button data-toggle-avail-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
           <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
         </div>
       </div>
@@ -882,6 +1080,15 @@
         const id = btn.getAttribute('data-recipe-menu-id');
         const menuItem = menu.find(m => m.id === id);
         if (menuItem) openRecipeEditor(menuItem);
+      });
+    });
+    listEl.querySelectorAll('[data-toggle-avail-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-toggle-avail-id');
+        const menuItem = menu.find(m => m.id === id);
+        btn.disabled = true;
+        await apiPost('/api/menu-update', { initData, id, available: menuItem ? menuItem.available === false : true });
+        loadMenuAndRender();
       });
     });
   }
@@ -2224,6 +2431,354 @@
     renderAdminPanel(res.ok ? res.owners : []);
   }
 
+  // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
+  // Mijoz "Mijozlar havolasi" orqali kirganda bot ?customer=<ownerId> bilan Mini App'ni ochadi
+  let customerState = {
+    ownerId: null,
+    restaurant: null,
+    menu: [],
+    promotions: [],
+    favorites: [],
+    bonusPoints: 0,
+    bonusEnabled: false,
+    cart: {},
+    orderType: 'stol',
+    paymentType: 'naqd',
+    tableNumber: '',
+    tab: 'menyu',
+    category: 'hammasi',
+    promoId: '',
+    usePoints: false
+  };
+
+  function customerCartTotal() {
+    return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
+  }
+
+  function customerTabRowHtml() {
+    return `
+      <div class="tab-row">
+        <div class="tab-opt ${customerState.tab === 'menyu' ? 'selected' : ''}" data-customer-tab="menyu">Menyu</div>
+        <div class="tab-opt ${customerState.tab === 'sevimli' ? 'selected' : ''}" data-customer-tab="sevimli">Sevimlilar</div>
+        <div class="tab-opt ${customerState.tab === 'tarix' ? 'selected' : ''}" data-customer-tab="tarix">Buyurtmalarim</div>
+      </div>
+    `;
+  }
+
+  function customerHeaderHtml() {
+    const r = customerState.restaurant || {};
+    return `
+      <div class="profile-view" style="margin-bottom:12px;">
+        ${r.logoUrl ? `<img class="logo-preview" src="${escapeHtml(r.logoUrl)}" onerror="this.style.display='none'">` : ''}
+        <div class="info">
+          <div class="salom" style="font-size:20px; margin-bottom:2px;">${escapeHtml(r.name || 'Oshxona')}</div>
+          ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
+          ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">⭐ Bonus: ${customerState.bonusPoints} ball</div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function customerCategoriesHtml() {
+    const cats = ['hammasi', ...new Set(customerState.menu.map(m => m.category).filter(Boolean))];
+    if (cats.length <= 1) return '';
+    return `
+      <div class="cat-row">
+        ${cats.map(c => `<div class="cat-opt ${customerState.category === c ? 'selected' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c === 'hammasi' ? 'Hammasi' : c)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  function customerItemCardHtml(m) {
+    const qty = customerState.cart[m.id] || 0;
+    const isFav = customerState.favorites.includes(m.id);
+    return `
+      <div class="catalog-item">
+        ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : ''}
+        <div class="catalog-body">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${isFav ? '❤️' : '🤍'}</button>
+          </div>
+          ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+            <div class="qty-controls">
+              <button data-cqty-minus="${escapeHtml(m.id)}">-</button>
+              <span class="qty-val">${qty}</span>
+              <button data-cqty-plus="${escapeHtml(m.id)}">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function customerMenuListHtml() {
+    const filtered = customerState.category === 'hammasi'
+      ? customerState.menu
+      : customerState.menu.filter(m => m.category === customerState.category);
+    if (!filtered.length) return `<div class="bosh">Bu kategoriyada taom yo'q.</div>`;
+    return filtered.map(customerItemCardHtml).join('');
+  }
+
+  function customerPromoBannerHtml() {
+    if (!customerState.promotions.length) return '';
+    return customerState.promotions.map(p => `
+      <div class="promo-banner ${customerState.promoId === p.id ? 'selected' : ''}" data-promo-id="${escapeHtml(p.id)}">
+        <div style="font-weight:700;">🎁 ${escapeHtml(p.title)} — ${p.discountPercent}% chegirma</div>
+        ${p.description ? `<div style="font-size:12px; opacity:0.8; margin-top:2px;">${escapeHtml(p.description)}</div>` : ''}
+        ${p.minTotal ? `<div style="font-size:12px; opacity:0.7; margin-top:2px;">Minimal buyurtma: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  function attachCustomerCatalogHandlers() {
+    const listEl = document.getElementById('customerMenuList');
+    if (!listEl) return;
+    listEl.querySelectorAll('[data-cqty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-plus');
+      customerState.cart[id] = (customerState.cart[id] || 0) + 1;
+      listEl.innerHTML = customerState.tab === 'sevimli'
+        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
+        : customerMenuListHtml();
+      attachCustomerCatalogHandlers();
+      updateCustomerCartTotal();
+    });
+    listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-minus');
+      customerState.cart[id] = Math.max(0, (customerState.cart[id] || 0) - 1);
+      listEl.innerHTML = customerState.tab === 'sevimli'
+        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
+        : customerMenuListHtml();
+      attachCustomerCatalogHandlers();
+      updateCustomerCartTotal();
+    });
+    listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute('data-fav-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
+      if (res.ok) customerState.favorites = res.favorites;
+      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+      else {
+        listEl.innerHTML = customerMenuListHtml();
+        attachCustomerCatalogHandlers();
+      }
+    });
+  }
+
+  function updateCustomerCartTotal() {
+    const el = document.getElementById('cCartTotalVal');
+    if (el) el.textContent = customerCartTotal() + " so'm";
+  }
+
+  function renderCustomerMenuTab() {
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        ${customerPromoBannerHtml()}
+        ${customerCategoriesHtml()}
+        <div id="customerMenuList" style="margin-top:10px;">${customerMenuListHtml()}</div>
+        <div class="cart-bar">
+          <div class="type-row" id="cOrderTypeRow">
+            ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+              <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
+            `).join('')}
+          </div>
+          <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
+            <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
+          </div>
+          <div class="type-row" id="cPaymentTypeRow">
+            ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
+              <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
+            `).join('')}
+          </div>
+          ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:8px;">
+              <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
+              Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
+            </label>
+          ` : ''}
+          <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${customerCartTotal()} so'm</span></div>
+          <button class="btn" id="cSendOrderBtn">Buyurtma berish</button>
+          <div class="xabar" id="cOrderMsg"></div>
+        </div>
+      </div>
+    `);
+
+    attachCustomerCatalogHandlers();
+    attachCustomerTabHandlers();
+
+    const catRow = document.querySelector('.cat-row');
+    if (catRow) catRow.addEventListener('click', (e) => {
+      const c = e.target.getAttribute('data-cat');
+      if (!c) return;
+      customerState.category = c;
+      renderCustomerMenuTab();
+    });
+
+    document.querySelectorAll('[data-promo-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-promo-id');
+        customerState.promoId = customerState.promoId === id ? '' : id;
+        renderCustomerMenuTab();
+      });
+    });
+
+    document.getElementById('cOrderTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-corder-type');
+      if (!t) return;
+      customerState.orderType = t;
+      renderCustomerMenuTab();
+    });
+    document.getElementById('cPaymentTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-cpayment-type');
+      if (!t) return;
+      customerState.paymentType = t;
+      renderCustomerMenuTab();
+    });
+    const tableInput = document.getElementById('cTableInput');
+    if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
+    const pointsCheckbox = document.getElementById('cUsePoints');
+    if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
+
+    document.getElementById('cSendOrderBtn').addEventListener('click', sendCustomerOrder);
+  }
+
+  function attachCustomerTabHandlers() {
+    const tabRow = document.querySelector('.tab-row');
+    if (!tabRow) return;
+    tabRow.addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-customer-tab');
+      if (!t || t === customerState.tab) return;
+      customerState.tab = t;
+      if (t === 'sevimli') renderCustomerFavoritesTab();
+      else if (t === 'tarix') renderCustomerHistoryTab();
+      else renderCustomerMenuTab();
+    });
+  }
+
+  function renderCustomerFavoritesTab() {
+    const favItems = customerState.menu.filter(m => customerState.favorites.includes(m.id));
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerMenuList" style="margin-top:10px;">
+          ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda 🤍 tugmasini bosing.</div>`}
+        </div>
+      </div>
+    `);
+    attachCustomerCatalogHandlers();
+    attachCustomerTabHandlers();
+  }
+
+  function customerOrderHistoryCardHtml(o) {
+    const itemsText = o.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
+            <div class="order-time">${timeAgo(o.createdAt)}</div>
+          </div>
+          <span class="status-badge ${o.status}">${ORDER_STATUS_LABELS[o.status] || o.status}</span>
+        </div>
+        <div class="order-items">${itemsText}</div>
+        <div class="order-bottom">
+          <div class="order-total">${o.total} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${o.discountAmount})</span>` : ''}</div>
+          ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderCustomerHistoryTab() {
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    attachCustomerTabHandlers();
+    const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
+    const listEl = document.getElementById('customerHistoryList');
+    if (!listEl) return;
+    const orders = res.ok ? res.orders : [];
+    listEl.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
+  }
+
+  async function sendCustomerOrder() {
+    const msgEl = document.getElementById('cOrderMsg');
+    const items = Object.entries(customerState.cart)
+      .filter(([, qty]) => qty > 0)
+      .map(([id, qty]) => ({ id, qty }));
+
+    if (!items.length) {
+      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+    if (customerState.orderType === 'stol' && !customerState.tableNumber.trim()) {
+      msgEl.textContent = 'Stol raqamini kiriting.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+
+    msgEl.textContent = 'Yuborilmoqda...';
+    msgEl.className = 'xabar';
+    const res = await apiPost('/api/customer-order', {
+      initData,
+      ownerId: customerState.ownerId,
+      items,
+      orderType: customerState.orderType,
+      tableNumber: customerState.tableNumber,
+      paymentType: customerState.paymentType,
+      promoId: customerState.promoId || null,
+      usePoints: customerState.usePoints ? customerState.bonusPoints : 0
+    });
+
+    if (res.ok) {
+      customerState.cart = {};
+      customerState.usePoints = false;
+      customerState.bonusPoints = res.bonusBalance;
+      renderCustomerMenuTab();
+      const topMsg = document.createElement('div');
+      topMsg.className = 'xabar ok';
+      topMsg.textContent = `✅ Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+      document.querySelector('.panel').prepend(topMsg);
+    } else {
+      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+      msgEl.className = 'xabar err';
+    }
+  }
+
+  async function renderCustomerApp(ownerId) {
+    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
+    if (!verifyRes.ok) {
+      ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(verifyRes.reason || 'Bu menyu hozircha mavjud emas.')}</div>`);
+      return;
+    }
+    customerState.ownerId = ownerId;
+    customerState.restaurant = verifyRes.restaurant;
+    customerState.favorites = verifyRes.customer.favorites || [];
+    customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
+    customerState.bonusEnabled = !!verifyRes.bonusEnabled;
+
+    const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
+    customerState.menu = menuRes.ok ? menuRes.menu : [];
+    customerState.promotions = menuRes.ok ? menuRes.promotions : [];
+
+    renderCustomerMenuTab();
+  }
+
+  // ==================== Bosh oynani ochish ====================
+  const urlParams = new URLSearchParams(location.search);
+  const customerOwnerId = urlParams.get('customer');
+
   if (!tg || !initData) {
     // Oddiy brauzerdan yoki Telegram tashqarisidan ochilsa — kirish rad etiladi
     ekran('<div class="xato">Kirish rad etildi.<br>Bu ilova faqat Telegram orqali ishlaydi.</div>');
@@ -2231,30 +2786,34 @@
     tg.ready();
     tg.expand();
 
-    fetch('/api/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData })
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.ok) {
-          ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(data.reason || 'Bu ilovaga ruxsatingiz yo\'q.')}</div>`);
-          return;
-        }
-        if (data.isAdmin) {
-          loadOwnersAndRender();
-        } else if (data.isOwner) {
-          loadOwnProfileAndRender();
-        } else if (data.role) {
-          renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
-        } else {
-          ekran('<div class="xato">Kirish rad etildi.<br>Sizga ruxsat berilmagan.</div>');
-        }
+    if (customerOwnerId) {
+      renderCustomerApp(customerOwnerId);
+    } else {
+      fetch('/api/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData })
       })
-      .catch(() => {
-        ekran('<div class="xato">Xatolik yuz berdi.<br>Qaytadan urinib ko\'ring.</div>');
-      });
+        .then(r => r.json())
+        .then(data => {
+          if (!data.ok) {
+            ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(data.reason || 'Bu ilovaga ruxsatingiz yo\'q.')}</div>`);
+            return;
+          }
+          if (data.isAdmin) {
+            loadOwnersAndRender();
+          } else if (data.isOwner) {
+            loadOwnProfileAndRender();
+          } else if (data.role) {
+            renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
+          } else {
+            ekran('<div class="xato">Kirish rad etildi.<br>Sizga ruxsat berilmagan.</div>');
+          }
+        })
+        .catch(() => {
+          ekran('<div class="xato">Xatolik yuz berdi.<br>Qaytadan urinib ko\'ring.</div>');
+        });
+    }
   }
 </script>
 </body>
