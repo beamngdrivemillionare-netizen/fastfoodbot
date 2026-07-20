@@ -143,6 +143,25 @@
   .profile-view .info { flex: 1; }
   .profile-row { font-size: 14px; margin-top: 4px; }
   .profile-row b { opacity: 0.7; font-weight: 600; }
+  .role-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 20px;
+    background: var(--tg-theme-secondary-bg-color, #eef2ff);
+    color: var(--tg-theme-button-color, #2ea6ff);
+  }
+  select {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid #ccc;
+    font-size: 15px;
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #111111);
+    margin-bottom: 10px;
+  }
   .link-box {
     display: flex;
     gap: 6px;
@@ -463,6 +482,22 @@
   }
 
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
+  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Dostavkachi' };
+
+  function staffListHtml(staff) {
+    if (!staff || !staff.length) return `<div class="bosh">Hozircha xodimlar yo'q.</div>`;
+    return staff.map(s => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(s.id)}</div>
+          ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
+          <div class="owner-expiry"><span class="role-badge">${escapeHtml(ROLE_LABELS[s.role] || s.role)}</span></div>
+        </div>
+        <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
+      </div>
+    `).join('');
+  }
+
   function renderProfileView(profile) {
     ekran(`
       <div class="panel">
@@ -478,11 +513,88 @@
           </div>
           <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
         </div>
-        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (kassir, sklad, hisobotlar) tez orada shu yerga qo'shiladi.</div>
+        <div class="kartochka">
+          <h2>Xodim qo'shish</h2>
+          <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
+          <select id="staffRoleInput">
+            <option value="kassir">Kassir</option>
+            <option value="oshpaz">Oshpaz</option>
+            <option value="sklad">Sklad mas'uli</option>
+            <option value="dostavka">Dostavkachi</option>
+          </select>
+          <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
+          <div class="xabar" id="staffMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar ro'yxati</h2>
+          <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (kassir menyusi, sklad, hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+
+    document.getElementById('addStaffBtn').addEventListener('click', async () => {
+      const val = document.getElementById('staffInput').value.trim();
+      const role = document.getElementById('staffRoleInput').value;
+      const msgEl = document.getElementById('staffMsg');
+      if (!val) {
+        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/add-staff', { initData, input: val, role });
+      if (res.ok) {
+        msgEl.textContent = 'Xodim qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('staffInput').value = '';
+        loadStaffAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('staffList').addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-remove-staff-id');
+      if (!id) return;
+      e.target.disabled = true;
+      await apiPost('/api/remove-staff', { initData, id });
+      loadStaffAndRender();
+    });
+
+    loadStaffAndRender();
   }
+
+  async function loadStaffAndRender() {
+    const listEl = document.getElementById('staffList');
+    if (!listEl) return;
+    const res = await apiPost('/api/staff-list', { initData });
+    listEl.innerHTML = staffListHtml(res.ok ? res.staff : []);
+  }
+
+  // ---- Xodim (kassir/oshpaz/sklad/dostavka): oddiy rol ekrani ----
+  function renderStaffScreen(roleLabel, restaurantName) {
+    ekran(`
+      <div class="panel" style="text-align:center;">
+        <div class="salom">Salom!</div>
+        <div class="kartochka">
+          <div class="bosh" style="text-align:center; font-size:15px;">
+            Siz <b>${escapeHtml(restaurantName || 'oshxona')}</b> jamoasida
+          </div>
+          <div style="text-align:center; margin-top:10px;">
+            <span class="role-badge" style="font-size:14px; padding:8px 16px;">${escapeHtml(roleLabel)}</span>
+          </div>
+          <div class="bosh" style="text-align:center; margin-top:14px;">
+            Sizning ish bo'limingiz tez orada shu yerga qo'shiladi.
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
 
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
@@ -515,8 +627,12 @@
         }
         if (data.isAdmin) {
           loadOwnersAndRender();
-        } else {
+        } else if (data.isOwner) {
           loadOwnProfileAndRender();
+        } else if (data.role) {
+          renderStaffScreen(data.roleLabel, data.ownerRestaurantName);
+        } else {
+          ekran('<div class="xato">Kirish rad etildi.<br>Sizga ruxsat berilmagan.</div>');
         }
       })
       .catch(() => {
