@@ -1217,6 +1217,136 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ====== F. Moliya (Cashflow) — kirim (buyurtmalar savdosi) / chiqim (xarajatlar), kunlik/haftalik/oylik ======
+  function dateKeyOf(iso) {
+    return String(iso).slice(0, 10); // YYYY-MM-DD
+  }
+
+  // Haftaning boshlanishi — Dushanba, soat 00:00
+  function startOfWeek(now) {
+    const day = now.getDay(); // 0=yakshanba,1=dushanba,...
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + diffToMonday);
+    monday.setHours(0, 0, 0, 0);
+    return monday;
+  }
+
+  // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda va buyurtmalar sonini hisoblaydi
+  function cashflowBucket(owner, fromDate) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+    const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
+    const income = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+    const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+    return { income, expense, net: income - expense, orderCount: orders.length };
+  }
+
+  // Egaga tegishli to'liq cashflow hisobotini shakllantiradi: bugun/hafta/oy + oxirgi 14 kunlik seriya
+  function computeCashflow(owner) {
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const weekStart = startOfWeek(now);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const orders = owner.orders || [];
+    const expenses = owner.expenses || [];
+    const dailySeries = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i);
+      const key = dateKeyOf(d.toISOString());
+      const dayIncome = orders.filter(o => dateKeyOf(o.createdAt) === key).reduce((s, o) => s + (o.total || 0), 0);
+      const dayExpense = expenses.filter(e => dateKeyOf(e.createdAt) === key).reduce((s, e) => s + (e.amount || 0), 0);
+      dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
+    }
+
+    return {
+      today: cashflowBucket(owner, todayStart),
+      week: cashflowBucket(owner, weekStart),
+      month: cashflowBucket(owner, monthStart),
+      dailySeries
+    };
+  }
+
+  // ---- API: xarajat (chiqim) qo'shish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/expense-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, amount, note } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi xarajat kirita oladi' });
+
+      const amountNum = Number(amount);
+      if (!Number.isFinite(amountNum) || amountNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Summani to\'g\'ri kiriting.' });
+      }
+      const noteStr = String(note || '').trim().slice(0, 200);
+
+      if (!owner.expenses) owner.expenses = [];
+      const expense = {
+        id: crypto.randomBytes(4).toString('hex'),
+        amount: amountNum,
+        note: noteStr,
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      };
+      owner.expenses.unshift(expense);
+      if (owner.expenses.length > 500) owner.expenses.length = 500;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, expense });
+    });
+    return;
+  }
+
+  // ---- API: xarajat yozuvini o'chirish (faqat egasi, xato kiritilganda tuzatish uchun) ----
+  if (req.method === 'POST' && req.url === '/api/expense-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const before = (owner.expenses || []).length;
+      owner.expenses = (owner.expenses || []).filter(e => e.id !== id);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, removed: before !== owner.expenses.length });
+    });
+    return;
+  }
+
+  // ---- API: umumiy cashflow — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik hisobot (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/cashflow') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const cashflow = computeCashflow(owner);
+      const recentExpenses = (owner.expenses || []).slice(0, 30);
+
+      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses });
+    });
+    return;
+  }
+
   // ---- API: do'kon egasining o'z profilini olish ----
   if (req.method === 'POST' && req.url === '/api/my-profile') {
     readBody(req, (err, payload) => {
