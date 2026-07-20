@@ -790,6 +790,10 @@
       renderStockScreen(restaurantName, 'sklad', null);
       return;
     }
+    if (role === 'dostavka') {
+      renderDeliveryScreen(restaurantName);
+      return;
+    }
     ekran(`
       <div class="panel" style="text-align:center;">
         <div class="salom">Salom!</div>
@@ -1103,6 +1107,76 @@
     startOrdersPolling('oshpaz');
   }
 
+  // ---- Dostavkachi: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
+  function deliveryCardHtml(order) {
+    const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">Dostavka</div>
+            <div class="order-time">${timeAgo(order.createdAt)}</div>
+          </div>
+          <span class="status-badge tayyor">${ORDER_STATUS_LABELS.tayyor}</span>
+        </div>
+        <div class="order-items">${itemsHtml}</div>
+        <div class="order-bottom">
+          <span class="order-total">${order.total} so'm (${PAYMENT_TYPE_LABELS[order.paymentType] || order.paymentType})</span>
+          <button class="order-action-btn ready" data-deliver-order-id="${escapeHtml(order.id)}">Yetkazildi</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function deliveryBoardHtml(orders) {
+    if (!orders || !orders.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
+    return orders.map(o => deliveryCardHtml(o)).join('');
+  }
+
+  function attachDeliveryBoardHandlers() {
+    const board = document.getElementById('ordersBoard');
+    if (!board) return;
+    board.querySelectorAll('[data-deliver-order-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-deliver-order-id');
+        const res = await apiPost('/api/deliver-order', { initData, orderId });
+        if (!res.ok) alert(res.reason || 'Xatolik yuz berdi.');
+        lastOrdersSnapshot = null;
+        await refreshDeliveryBoard();
+      });
+    });
+  }
+
+  async function refreshDeliveryBoard() {
+    const board = document.getElementById('ordersBoard');
+    if (!board) { stopOrdersPolling(); return; }
+    const res = await apiPost('/api/orders-list', { initData });
+    if (!res.ok) return;
+    const snapshot = JSON.stringify(res.orders);
+    if (snapshot === lastOrdersSnapshot) return;
+    lastOrdersSnapshot = snapshot;
+    board.innerHTML = deliveryBoardHtml(res.orders);
+    attachDeliveryBoardHandlers();
+  }
+
+  function startDeliveryPolling() {
+    stopOrdersPolling();
+    refreshDeliveryBoard();
+    ordersPollTimer = setInterval(refreshDeliveryBoard, 4000);
+  }
+
+  function renderDeliveryScreen(restaurantName) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Oshxona')}</div>
+        <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
+        <div id="ordersBoard" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    startDeliveryPolling();
+  }
+
   // ---- Sklad: birliklar, ro'yxat, kirim formasi, harakatlar tarixi, kunlik audit ----
   const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
   let stockState = { stock: [] };
@@ -1360,6 +1434,7 @@
       <div class="panel">
         <div class="salom" style="font-size:20px;">Moliya</div>
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">🛵 Dostavkachilar hisoboti</button>
         <div class="tab-row">
           <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
           <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
@@ -1382,6 +1457,9 @@
     `);
 
     document.getElementById('cfBackBtn').addEventListener('click', () => onBack && onBack());
+    document.getElementById('cfCourierReportBtn').addEventListener('click', () => {
+      renderCourierReportScreen(profile, () => renderCashflowScreen(profile, onBack));
+    });
 
     document.querySelector('.tab-row').addEventListener('click', (e) => {
       const p = e.target.getAttribute('data-cf-period');
@@ -1438,6 +1516,96 @@
         loadCashflowData();
       });
     });
+  }
+
+  // ---- Egasi: Dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
+  let courierReportState = { period: 'today' };
+
+  function courierReportRowsHtml(report) {
+    if (!report.length) return `<div class="bosh">Dostavkachilar hali qo'shilmagan.</div>`;
+    return report.map(c => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(c.id)}</div>
+          ${c.username ? `<div class="owner-username">@${escapeHtml(c.username)}</div>` : ''}
+          <div class="owner-expiry">Buyurtmalar: ${c.orderCount} ta</div>
+          <div class="owner-price">Jami pul: ${cfFormatSum(c.totalAmount)}</div>
+        </div>
+        <div style="text-align:right; font-weight:700; color:#2ea6ff;">${cfFormatSum(c.commission)}<div style="font-size:11px; opacity:.6; font-weight:400;">komissiya</div></div>
+      </div>
+    `).join('');
+  }
+
+  function renderCourierReportScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Dostavkachilar hisoboti</div>
+        <button class="btn ikkinchi" id="crBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${courierReportState.period === 'today' ? 'selected' : ''}" data-cr-period="today">Bugun</div>
+          <div class="tab-opt ${courierReportState.period === 'week' ? 'selected' : ''}" data-cr-period="week">Hafta</div>
+          <div class="tab-opt ${courierReportState.period === 'month' ? 'selected' : ''}" data-cr-period="month">Oy</div>
+          <div class="tab-opt ${courierReportState.period === 'all' ? 'selected' : ''}" data-cr-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Komissiya foizi</h2>
+          <input type="text" id="crCommissionInput" placeholder="Masalan: 10" inputmode="numeric">
+          <button class="btn ikkinchi" id="crSaveCommissionBtn">Saqlash</button>
+          <div class="xabar" id="crCommissionMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Dostavkachilar</h2>
+          <div id="crList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('crBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-cr-period');
+      if (!p || p === courierReportState.period) return;
+      courierReportState.period = p;
+      renderCourierReportScreen(profile, onBack);
+    });
+
+    document.getElementById('crSaveCommissionBtn').addEventListener('click', async () => {
+      const percent = document.getElementById('crCommissionInput').value.trim();
+      const msgEl = document.getElementById('crCommissionMsg');
+      if (!/^\d+(\.\d+)?$/.test(percent)) {
+        msgEl.textContent = 'To\'g\'ri foiz kiriting (0-100).';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/set-courier-commission', { initData, percent });
+      if (res.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+        loadCourierReport();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadCourierReport();
+  }
+
+  async function loadCourierReport() {
+    const listEl = document.getElementById('crList');
+    const commissionInput = document.getElementById('crCommissionInput');
+    if (!listEl) return;
+    const res = await apiPost('/api/courier-report', { initData, period: courierReportState.period });
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (commissionInput && document.activeElement !== commissionInput) {
+      commissionInput.value = res.commissionPercent;
+    }
+    listEl.innerHTML = courierReportRowsHtml(res.report);
   }
 
   function showAuditReport(audit) {
