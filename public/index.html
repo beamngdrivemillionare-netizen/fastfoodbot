@@ -201,6 +201,45 @@
     color: var(--tg-theme-button-text-color, #ffffff);
     border-color: transparent;
   }
+  /* ---- Oshxona / buyurtmalar taxtasi ---- */
+  .tab-row { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab-opt {
+    flex: 1; text-align: center; padding: 10px 6px; border-radius: 10px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+  }
+  .tab-opt.selected {
+    background: var(--tg-theme-button-color, #2ea6ff);
+    color: var(--tg-theme-button-text-color, #ffffff);
+  }
+  .order-card {
+    background: var(--tg-theme-bg-color, #ffffff);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    border: 1px solid rgba(0,0,0,0.06);
+  }
+  .order-card .order-top {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+  }
+  .order-card .order-type { font-size: 14px; font-weight: 700; }
+  .order-card .order-time { font-size: 12px; opacity: 0.55; margin-top: 2px; }
+  .order-card .order-items { font-size: 14px; line-height: 1.5; margin-bottom: 8px; }
+  .order-card .order-bottom { display: flex; align-items: center; justify-content: space-between; }
+  .order-card .order-total { font-size: 14px; font-weight: 700; }
+  .status-badge {
+    display: inline-block; font-size: 11px; font-weight: 700;
+    padding: 4px 10px; border-radius: 20px; white-space: nowrap;
+  }
+  .status-badge.yangi { background: #fdeaea; color: #d33; }
+  .status-badge.tayyorlanmoqda { background: #fff6dd; color: #b8860b; }
+  .status-badge.tayyor { background: #e3f7e9; color: #2fa84f; }
+  .order-card .order-action-btn {
+    border: none; border-radius: 10px; padding: 9px 14px; font-size: 13px; font-weight: 600;
+    color: var(--tg-theme-button-text-color, #ffffff); cursor: pointer;
+  }
+  .order-action-btn.start { background: #f0a500; }
+  .order-action-btn.ready { background: #2fa84f; }
   .link-box {
     display: flex;
     gap: 6px;
@@ -687,6 +726,10 @@
       renderCashierScreen(restaurantName);
       return;
     }
+    if (role === 'oshpaz') {
+      renderKitchenScreen(restaurantName);
+      return;
+    }
     ekran(`
       <div class="panel" style="text-align:center;">
         <div class="salom">Salom!</div>
@@ -709,16 +752,31 @@
   const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
 
-  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '' };
+  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '', tab: 'yaratish' };
 
   function cashierCartTotal() {
     return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
   }
 
+  function cashierTabRowHtml() {
+    return `
+      <div class="tab-row">
+        <div class="tab-opt ${cashierState.tab === 'yaratish' ? 'selected' : ''}" data-cashier-tab="yaratish">Yangi buyurtma</div>
+        <div class="tab-opt ${cashierState.tab === 'holat' ? 'selected' : ''}" data-cashier-tab="holat">Buyurtmalar holati</div>
+      </div>
+    `;
+  }
+
   function renderCashierScreen(restaurantName) {
+    stopOrdersPolling();
+    if (cashierState.tab === 'holat') {
+      renderCashierOrdersTab(restaurantName);
+      return;
+    }
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        ${cashierTabRowHtml()}
         <div class="bosh">Taomni bosib savatga qo'shing.</div>
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="cart-bar">
@@ -742,6 +800,13 @@
       </div>
     `);
 
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-cashier-tab');
+      if (!t || t === cashierState.tab) return;
+      cashierState.tab = t;
+      renderCashierScreen(restaurantName);
+    });
+
     document.getElementById('orderTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-order-type');
       if (!t) return;
@@ -760,6 +825,24 @@
     document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName));
 
     loadCashierMenu(restaurantName);
+  }
+
+  // ---- Kassir: "Buyurtmalar holati" tabi — real-vaqtda ro'yxat, faqat "Tayyor" tugmasi bilan ----
+  function renderCashierOrdersTab(restaurantName) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        ${cashierTabRowHtml()}
+        <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-cashier-tab');
+      if (!t || t === cashierState.tab) return;
+      cashierState.tab = t;
+      renderCashierScreen(restaurantName);
+    });
+    startOrdersPolling('kassir');
   }
 
   function cashierMenuHtml() {
@@ -854,6 +937,111 @@
     }
   }
 
+
+  // ---- Oshpaz va kassir uchun umumiy: buyurtmalar taxtasi (real-vaqtda) ----
+  const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
+  let ordersPollTimer = null;
+  let lastOrdersSnapshot = null;
+
+  function stopOrdersPolling() {
+    if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
+    lastOrdersSnapshot = null;
+  }
+
+  function timeAgo(iso) {
+    const ms = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'hozirgina';
+    if (min < 60) return `${min} daqiqa oldin`;
+    const soat = Math.floor(min / 60);
+    return `${soat} soat oldin`;
+  }
+
+  function orderCardHtml(order, role) {
+    const orderLabel = `${ORDER_TYPE_LABELS[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtml(order.tableNumber) : ''}`;
+    const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
+
+    let actionBtn = '';
+    if (order.status === 'yangi') {
+      if (role === 'oshpaz') {
+        actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyorlanmoqda">Boshlash</button>`;
+      } else if (role === 'kassir' || role === 'egasi') {
+        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+      }
+    } else if (order.status === 'tayyorlanmoqda') {
+      actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+    }
+
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${orderLabel}</div>
+            <div class="order-time">${timeAgo(order.createdAt)}</div>
+          </div>
+          <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
+        </div>
+        <div class="order-items">${itemsHtml}</div>
+        <div class="order-bottom">
+          <span class="order-total">${order.total} so'm</span>
+          ${actionBtn}
+        </div>
+      </div>
+    `;
+  }
+
+  function ordersBoardHtml(orders, role) {
+    if (!orders || !orders.length) return `<div class="bosh">Hozircha buyurtmalar yo'q.</div>`;
+    return orders.map(o => orderCardHtml(o, role)).join('');
+  }
+
+  function attachOrdersBoardHandlers(role) {
+    const board = document.getElementById('ordersBoard');
+    if (!board) return;
+    board.querySelectorAll('[data-set-status]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-order-id');
+        const status = btn.getAttribute('data-set-status');
+        const res = await apiPost('/api/update-order-status', { initData, orderId, status });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+        }
+        lastOrdersSnapshot = null; // majburiy qayta chizish
+        await refreshOrdersBoard(role);
+      });
+    });
+  }
+
+  async function refreshOrdersBoard(role) {
+    const board = document.getElementById('ordersBoard');
+    if (!board) { stopOrdersPolling(); return; }
+    const res = await apiPost('/api/orders-list', { initData });
+    if (!res.ok) return;
+    const snapshot = JSON.stringify(res.orders);
+    if (snapshot === lastOrdersSnapshot) return; // o'zgarish yo'q — qayta chizmaymiz
+    lastOrdersSnapshot = snapshot;
+    board.innerHTML = ordersBoardHtml(res.orders, role);
+    attachOrdersBoardHandlers(role);
+  }
+
+  function startOrdersPolling(role) {
+    stopOrdersPolling();
+    refreshOrdersBoard(role);
+    ordersPollTimer = setInterval(() => refreshOrdersBoard(role), 4000);
+  }
+
+  // ---- Oshpaz: kelgan buyurtmalar ro'yxati real-vaqtda, holatni bosqichma-bosqich o'zgartirish ----
+  function renderKitchenScreen(restaurantName) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Oshxona')}</div>
+        <div class="bosh">Kelgan buyurtmalar — pastdagi tugmalar bilan holatini o'zgartiring.</div>
+        <div id="ordersBoard" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    startOrdersPolling('oshpaz');
+  }
 
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
