@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mini App</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #111111);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  #app {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+  }
+  .salom {
+    font-size: 28px;
+    font-weight: 600;
+  }
+  .xato {
+    font-size: 16px;
+    color: #d33;
+    max-width: 320px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div id="app"><div class="xato">Tekshirilmoqda...</div></div>
+
+<script>
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const appEl = document.getElementById('app');
+
+  function ekran(html) {
+    appEl.innerHTML = html;
+  }
+
+  if (!tg || !tg.initData) {
+    // Oddiy brauzerdan yoki Telegram tashqarisidan ochilsa — kirish rad etiladi
+    ekran('<div class="xato">Kirish rad etildi.<br>Bu ilova faqat Telegram orqali ishlaydi.</div>');
+  } else {
+    tg.ready();
+    tg.expand();
+
+    fetch('/api/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: tg.initData })
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          ekran('<div class="salom">Salom</div>');
+        } else {
+          ekran('<div class="xato">Kirish rad etildi.<br>Bu ilova faqat administrator uchun.</div>');
+        }
+      })
+      .catch(() => {
+        ekran('<div class="xato">Xatolik yuz berdi.<br>Qaytadan urinib ko\'ring.</div>');
+      });
+  }
+</script>
+</body>
+</html>
