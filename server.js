@@ -896,7 +896,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi — real-vaqtda polling uchun) ----
+  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi, dostavkachi — real-vaqtda polling uchun) ----
   if (req.method === 'POST' && req.url === '/api/orders-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -906,15 +906,20 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'kassir', 'oshpaz'].includes(ctx.role)) {
+      if (!ctx || !['egasi', 'kassir', 'oshpaz', 'dostavka'].includes(ctx.role)) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
 
-      const orders = (ctx.owner.orders || [])
+      let orders = (ctx.owner.orders || [])
         .slice()
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .slice(0, 100);
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
+      // Dostavkachiga faqat "Tayyor" bo'lgan, hali hech kim yetkazib bermagan dostavka buyurtmalari ko'rinadi
+      if (ctx.role === 'dostavka') {
+        orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
+      }
+
+      orders = orders.slice(0, 100);
       return sendJSON(res, 200, { ok: true, orders, role: ctx.role });
     });
     return;
@@ -970,6 +975,39 @@ const server = http.createServer((req, res) => {
           sendMessage(targetId, readyText);
         }
       }
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
+  // ---- API: dostavkachi buyurtmani "Yetkazildi" deb belgilaydi (F/26-bosqich: dostavkachi hisoboti uchun asos) ----
+  if (req.method === 'POST' && req.url === '/api/deliver-order') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || ctx.role !== 'dostavka') {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat dostavkachi bu amalni bajara oladi' });
+      }
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.orderType !== 'dostavka') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma dostavka turi emas.' });
+      }
+      if (order.deliveredBy) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
+      }
+
+      order.deliveredBy = userId;
+      order.deliveredAt = new Date().toISOString();
+      saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, order });
     });
@@ -1371,6 +1409,79 @@ const server = http.createServer((req, res) => {
       const recentExpenses = (owner.expenses || []).slice(0, 30);
 
       return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES });
+    });
+    return;
+  }
+
+  // Davr nomidan (bugun/hafta/oy/hammasi) boshlanish sanasini qaytaradi — cashflow va kuryerlar hisoboti uchun umumiy
+  function resolvePeriodStart(period) {
+    const now = new Date();
+    if (period === 'week') return startOfWeek(now);
+    if (period === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+    if (period === 'all') return new Date(0);
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    return todayStart;
+  }
+
+  // ---- API: dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/courier-report') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const fromDate = resolvePeriodStart(period);
+      const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
+
+      const couriers = (owner.staff || []).filter(s => s.role === 'dostavka');
+      const deliveredOrders = (owner.orders || []).filter(o =>
+        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= fromDate);
+
+      const report = couriers.map(c => {
+        const mine = deliveredOrders.filter(o => String(o.deliveredBy) === String(c.id));
+        const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
+        return {
+          id: c.id,
+          username: c.username || null,
+          orderCount: mine.length,
+          totalAmount,
+          commission: Math.round(totalAmount * commissionPercent / 100)
+        };
+      });
+      report.sort((a, b) => b.orderCount - a.orderCount);
+
+      return sendJSON(res, 200, { ok: true, report, commissionPercent });
+    });
+    return;
+  }
+
+  // ---- API: dostavkachilar komissiya foizini o'zgartirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/set-courier-commission') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, percent } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+
+      const p = Number(percent);
+      if (!Number.isFinite(p) || p < 0 || p > 100) {
+        return sendJSON(res, 200, { ok: false, reason: 'Komissiya foizi 0 dan 100 gacha bo\'lishi kerak.' });
+      }
+      owner.courierCommissionPercent = p;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, commissionPercent: p });
     });
     return;
   }
