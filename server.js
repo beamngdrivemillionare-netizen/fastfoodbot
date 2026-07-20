@@ -752,6 +752,17 @@ const server = http.createServer((req, res) => {
   // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
   const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
+  // ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
+  const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
+
+  // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi
+  function canSetOrderStatus(role, newStatus) {
+    if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
+    if (role === 'egasi') return true; // egasi istalgan holatga o'tkaza oladi (tuzatish uchun)
+    if (role === 'oshpaz') return newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor';
+    if (role === 'kassir') return newStatus === 'tayyor'; // kassir ham "Tayyor" tugmasini bosa oladi
+    return false;
+  }
 
   if (req.method === 'POST' && req.url === '/api/create-order') {
     readBody(req, async (err, payload) => {
@@ -817,6 +828,86 @@ const server = http.createServer((req, res) => {
       }
 
       return sendJSON(res, 200, { ok: true, orderId: order.id, total });
+    });
+    return;
+  }
+
+  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi — real-vaqtda polling uchun) ----
+  if (req.method === 'POST' && req.url === '/api/orders-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'kassir', 'oshpaz'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+
+      const orders = (ctx.owner.orders || [])
+        .slice()
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 100);
+
+      return sendJSON(res, 200, { ok: true, orders, role: ctx.role });
+    });
+    return;
+  }
+
+  // ---- API: buyurtma holatini o'zgartirish (Yangi -> Tayyorlanmoqda -> Tayyor) ----
+  if (req.method === 'POST' && req.url === '/api/update-order-status') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId, status } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !['egasi', 'kassir', 'oshpaz'].includes(ctx.role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+
+      if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri holat.' });
+      }
+      if (!canSetOrderStatus(ctx.role, status)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Sizga bu holatni belgilashga ruxsat yo\'q.' });
+      }
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.status === status) {
+        return sendJSON(res, 200, { ok: true, order }); // allaqachon shu holatda
+      }
+
+      order.status = status;
+      order.updatedAt = new Date().toISOString();
+      order.updatedBy = userId;
+      if (status === 'tayyorlanmoqda' && !order.startedAt) order.startedAt = order.updatedAt;
+      if (status === 'tayyor' && !order.readyAt) order.readyAt = order.updatedAt;
+
+      saveOwners(owners);
+
+      // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) dostavkachi(lar)ga avtomatik bildirishnoma
+      if (status === 'tayyor') {
+        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
+        const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${order.total}`;
+
+        const staffList = ctx.owner.staff || [];
+        const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
+        const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
+        for (const targetId of new Set(targetIds)) {
+          if (String(targetId) === userId) continue; // o'zi belgilagan bo'lsa, o'ziga yubormaydi
+          sendMessage(targetId, readyText);
+        }
+      }
+
+      return sendJSON(res, 200, { ok: true, order });
     });
     return;
   }
