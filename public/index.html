@@ -120,6 +120,33 @@
   .badge.paid { background: #e3f7e9; color: #2fa84f; }
   .badge.unpaid { background: #fdeaea; color: #d33; }
 
+  /* ---- Moliya (Cashflow) ---- */
+  .cf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .cf-stat {
+    background: var(--tg-theme-bg-color, #ffffff);
+    border-radius: 12px;
+    padding: 12px 14px;
+    border: 1px solid rgba(0,0,0,0.06);
+  }
+  .cf-stat .cf-label { font-size: 12px; opacity: 0.6; margin-bottom: 4px; }
+  .cf-stat .cf-val { font-size: 18px; font-weight: 700; }
+  .cf-stat.income .cf-val { color: #2fa84f; }
+  .cf-stat.expense .cf-val { color: #d33; }
+  .cf-stat.net.positive .cf-val { color: #2fa84f; }
+  .cf-stat.net.negative .cf-val { color: #d33; }
+  .cf-expense-item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--tg-theme-bg-color, #ffffff);
+    border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px;
+  }
+  .cf-expense-item .cf-e-amount { font-weight: 600; color: #d33; }
+  .cf-expense-item .cf-e-note { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+  .cf-expense-item .cf-e-date { font-size: 11px; opacity: 0.5; margin-top: 2px; }
+  .cf-expense-item button {
+    border: none; background: none; color: #e5484d; font-size: 13px;
+    font-weight: 600; cursor: pointer; padding: 4px 8px;
+  }
+
   textarea {
     width: 100%;
     padding: 12px 14px;
@@ -625,12 +652,20 @@
           <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
           <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">📦 Sklad boshqaruvini ochish</button>
         </div>
-        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (moliya, hisobotlar) tez orada shu yerga qo'shiladi.</div>
+        <div class="kartochka">
+          <h2>Moliya</h2>
+          <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
+          <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">💰 Moliyani ochish</button>
+        </div>
+        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
       renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
+    });
+    document.getElementById('openCashflowBtn').addEventListener('click', () => {
+      renderCashflowScreen(profile, () => renderProfileView(profile));
     });
 
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
@@ -1250,6 +1285,131 @@
         msgEl.className = 'xabar err';
       }
     };
+  }
+
+  // ---- Egasi: Moliya (Cashflow) — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik ----
+  let cashflowState = { period: 'today' };
+
+  function cfFormatSum(n) {
+    return Number(n || 0).toLocaleString('ru-RU') + " so'm";
+  }
+
+  function cashflowStatsHtml(cf) {
+    const bucket = cf[cashflowState.period];
+    const netClass = bucket.net >= 0 ? 'positive' : 'negative';
+    return `
+      <div class="cf-stats">
+        <div class="cf-stat income">
+          <div class="cf-label">Kirim (savdo)</div>
+          <div class="cf-val">${cfFormatSum(bucket.income)}</div>
+        </div>
+        <div class="cf-stat expense">
+          <div class="cf-label">Chiqim (xarajat)</div>
+          <div class="cf-val">${cfFormatSum(bucket.expense)}</div>
+        </div>
+        <div class="cf-stat net ${netClass}" style="grid-column: 1 / -1;">
+          <div class="cf-label">Sof foyda</div>
+          <div class="cf-val">${cfFormatSum(bucket.net)}</div>
+        </div>
+      </div>
+      <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
+    `;
+  }
+
+  function cashflowExpensesHtml(expenses) {
+    if (!expenses.length) return `<div class="bosh">Xarajat kiritilmagan.</div>`;
+    return expenses.map(e => `
+      <div class="cf-expense-item">
+        <div>
+          <div class="cf-e-amount">-${cfFormatSum(e.amount)}</div>
+          ${e.note ? `<div class="cf-e-note">${escapeHtml(e.note)}</div>` : ''}
+          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
+        </div>
+        <button data-remove-expense="${escapeHtml(e.id)}">O'chirish</button>
+      </div>
+    `).join('');
+  }
+
+  function renderCashflowScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Moliya</div>
+        <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
+          <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
+          <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
+        </div>
+        <div id="cfStats"><div class="bosh">Yuklanmoqda...</div></div>
+        <div class="kartochka">
+          <h2>Xarajat qo'shish</h2>
+          <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
+          <input type="text" id="cfNoteInput" placeholder="Izoh (ixtiyoriy, masalan: ijara)">
+          <button class="btn" id="cfAddExpenseBtn">Qo'shish</button>
+          <div class="xabar" id="cfExpenseMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>So'nggi xarajatlar</h2>
+          <div id="cfExpenseList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('cfBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-cf-period');
+      if (!p || p === cashflowState.period) return;
+      cashflowState.period = p;
+      renderCashflowScreen(profile, onBack);
+    });
+
+    document.getElementById('cfAddExpenseBtn').addEventListener('click', async () => {
+      const amount = document.getElementById('cfAmountInput').value.trim();
+      const note = document.getElementById('cfNoteInput').value.trim();
+      const msgEl = document.getElementById('cfExpenseMsg');
+      if (!amount || !/^\d+$/.test(amount) || parseInt(amount, 10) <= 0) {
+        msgEl.textContent = 'To\'g\'ri summa kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/expense-add', { initData, amount, note });
+      if (res.ok) {
+        document.getElementById('cfAmountInput').value = '';
+        document.getElementById('cfNoteInput').value = '';
+        loadCashflowData();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadCashflowData();
+  }
+
+  async function loadCashflowData() {
+    const statsEl = document.getElementById('cfStats');
+    const listEl = document.getElementById('cfExpenseList');
+    const msgEl = document.getElementById('cfExpenseMsg');
+    if (!statsEl || !listEl) return;
+    const res = await apiPost('/api/cashflow', { initData });
+    if (!res.ok) {
+      statsEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (msgEl) { msgEl.textContent = ''; msgEl.className = 'xabar'; }
+    statsEl.innerHTML = cashflowStatsHtml(res.cashflow);
+    listEl.innerHTML = cashflowExpensesHtml(res.expenses);
+
+    listEl.querySelectorAll('[data-remove-expense]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await apiPost('/api/expense-remove', { initData, id: btn.getAttribute('data-remove-expense') });
+        loadCashflowData();
+      });
+    });
   }
 
   function showAuditReport(audit) {
