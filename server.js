@@ -12,7 +12,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN_BU_YERGA';
 const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA'; // masalan: 123456789
 const PORT = process.env.PORT || 3000;
 // BOT_USERNAME — taklif havolasini (t.me/BOT_USERNAME?start=...) yasash uchun kerak, @ belgisiz yozing
-const BOT_USERNAME = process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA';
+const BOT_USERNAME = (process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA').replace(/^@/, '');
 // PUBLIC_URL — serveringizning ochiq (https) manzili, masalan: https://sizning-domeningiz.com
 // Agar shu sozlansa, server ishga tushganda Telegram webhook'ni avtomatik o'rnatadi.
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
