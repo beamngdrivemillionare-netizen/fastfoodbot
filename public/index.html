@@ -1289,9 +1289,14 @@
 
   // ---- Egasi: Moliya (Cashflow) — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik ----
   let cashflowState = { period: 'today' };
+  let cashflowCategories = { ijara: 'Ijara', maosh: 'Maosh', kommunal: 'Kommunal', mahsulot: 'Mahsulot xaridi', boshqa: 'Boshqa' };
 
   function cfFormatSum(n) {
     return Number(n || 0).toLocaleString('ru-RU') + " so'm";
+  }
+
+  function cfCategoryOptionsHtml() {
+    return Object.entries(cashflowCategories).map(([k, label]) => `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
   }
 
   function cashflowStatsHtml(cf) {
@@ -1313,6 +1318,21 @@
         </div>
       </div>
       <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
+      ${cfCategoryBreakdownHtml(bucket.byCategory)}
+    `;
+  }
+
+  function cfCategoryBreakdownHtml(byCategory) {
+    if (!byCategory) return '';
+    const rows = Object.entries(byCategory).filter(([, sum]) => sum > 0);
+    if (!rows.length) return '';
+    return `
+      <div class="kartochka" style="margin-top:10px;">
+        <h2>Xarajat kategoriyalari</h2>
+        ${rows.map(([key, sum]) => `
+          <div class="profile-row"><b>${escapeHtml(cashflowCategories[key] || key)}:</b> ${cfFormatSum(sum)}</div>
+        `).join('')}
+      </div>
     `;
   }
 
@@ -1322,7 +1342,7 @@
       <div class="cf-expense-item">
         <div>
           <div class="cf-e-amount">-${cfFormatSum(e.amount)}</div>
-          ${e.note ? `<div class="cf-e-note">${escapeHtml(e.note)}</div>` : ''}
+          <div class="cf-e-note">${escapeHtml(cashflowCategories[e.category] || 'Boshqa')}${e.note ? ' — ' + escapeHtml(e.note) : ''}</div>
           <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
         </div>
         <button data-remove-expense="${escapeHtml(e.id)}">O'chirish</button>
@@ -1344,7 +1364,8 @@
         <div class="kartochka">
           <h2>Xarajat qo'shish</h2>
           <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
-          <input type="text" id="cfNoteInput" placeholder="Izoh (ixtiyoriy, masalan: ijara)">
+          <select id="cfCategoryInput">${cfCategoryOptionsHtml()}</select>
+          <input type="text" id="cfNoteInput" placeholder="Izoh (ixtiyoriy)">
           <button class="btn" id="cfAddExpenseBtn">Qo'shish</button>
           <div class="xabar" id="cfExpenseMsg"></div>
         </div>
@@ -1366,6 +1387,7 @@
 
     document.getElementById('cfAddExpenseBtn').addEventListener('click', async () => {
       const amount = document.getElementById('cfAmountInput').value.trim();
+      const category = document.getElementById('cfCategoryInput').value;
       const note = document.getElementById('cfNoteInput').value.trim();
       const msgEl = document.getElementById('cfExpenseMsg');
       if (!amount || !/^\d+$/.test(amount) || parseInt(amount, 10) <= 0) {
@@ -1375,7 +1397,7 @@
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/expense-add', { initData, amount, note });
+      const res = await apiPost('/api/expense-add', { initData, amount, category, note });
       if (res.ok) {
         document.getElementById('cfAmountInput').value = '';
         document.getElementById('cfNoteInput').value = '';
@@ -1400,6 +1422,7 @@
       return;
     }
     if (msgEl) { msgEl.textContent = ''; msgEl.className = 'xabar'; }
+    if (res.categories) cashflowCategories = res.categories;
     statsEl.innerHTML = cashflowStatsHtml(res.cashflow);
     listEl.innerHTML = cashflowExpensesHtml(res.expenses);
 
