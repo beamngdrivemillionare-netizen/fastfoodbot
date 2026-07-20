@@ -1486,6 +1486,102 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ====== Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda, to'lov turlari bo'yicha ======
+  function buildZReport(owner, dateKey) {
+    const dayStart = new Date(dateKey + 'T00:00:00');
+    const dayEnd = new Date(dayStart.getTime() + 86400000);
+
+    const orders = (owner.orders || []).filter(o => {
+      const t = new Date(o.createdAt);
+      return t >= dayStart && t < dayEnd;
+    });
+    const expenses = (owner.expenses || []).filter(e => {
+      const t = new Date(e.createdAt);
+      return t >= dayStart && t < dayEnd;
+    });
+
+    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
+    const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
+    const kassaIncome = kassaOrders.reduce((s, o) => s + (o.total || 0), 0);
+    const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + (o.total || 0), 0);
+    const income = kassaIncome + dostavkaIncome;
+
+    const paymentBreakdown = {};
+    for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
+    for (const o of orders) {
+      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + (o.total || 0);
+    }
+
+    const expenseByCategory = {};
+    for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
+    for (const e of expenses) {
+      const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+      expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
+    }
+    const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+
+    return {
+      date: dateKey,
+      income, kassaIncome, dostavkaIncome, orderCount: orders.length,
+      paymentBreakdown, expense, expenseByCategory, net: income - expense
+    };
+  }
+
+  // ---- API: bugungi kunlik Z-hisobotni yaratish/yopish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/z-report-create') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const dateKey = new Date().toISOString().slice(0, 10);
+      const built = buildZReport(owner, dateKey);
+
+      if (!owner.zReports) owner.zReports = [];
+      const existing = owner.zReports.find(z => z.date === dateKey);
+      const report = Object.assign({
+        id: existing ? existing.id : crypto.randomBytes(4).toString('hex'),
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      }, built);
+
+      if (existing) {
+        Object.assign(existing, report); // shu kun uchun qayta yopilsa — yangilanadi
+      } else {
+        owner.zReports.unshift(report);
+      }
+      if (owner.zReports.length > 90) owner.zReports.length = 90;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, report, wasUpdate: !!existing });
+    });
+    return;
+  }
+
+  // ---- API: saqlangan Z-hisobotlar tarixini olish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/z-report-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const reports = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+      return sendJSON(res, 200, { ok: true, reports });
+    });
+    return;
+  }
+
   // ---- API: do'kon egasining o'z profilini olish ----
   if (req.method === 'POST' && req.url === '/api/my-profile') {
     readBody(req, (err, payload) => {
