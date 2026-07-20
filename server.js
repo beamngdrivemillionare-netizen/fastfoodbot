@@ -109,6 +109,34 @@ function pruneExpiredOwners() {
   return fresh;
 }
 
+// ====== Xodimlar (kassir, oshpaz, sklad, dostavka) — har bir egasining o'z ro'yxati ichida saqlanadi ======
+const STAFF_ROLES = {
+  kassir: 'Kassir',
+  oshpaz: 'Oshpaz',
+  sklad: 'Sklad mas\'uli',
+  dostavka: 'Dostavkachi'
+};
+
+function isValidRole(role) {
+  return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
+}
+
+// Berilgan userId qaysi egasining xodimi ekanini (va rolini) topadi
+function findStaffInfo(owners, userId) {
+  for (const owner of owners) {
+    const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
+    if (staff) {
+      return {
+        ownerId: owner.id,
+        ownerName: (owner.profile && owner.profile.name) || null,
+        role: staff.role,
+        staff
+      };
+    }
+  }
+  return null;
+}
+
 // Telegram Bot API'ga so'rov yuborish (masalan @username orqali foydalanuvchini topish uchun)
 function telegramApi(method, params) {
   return new Promise((resolve, reject) => {
@@ -520,14 +548,109 @@ const server = http.createServer((req, res) => {
       const admin = isAdminId(userId);
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
-      const ok = admin || isOwnerAccessValid(owner);
+      const ownerOk = isOwnerAccessValid(owner);
+      const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
+      const ok = admin || ownerOk || !!staffInfo;
 
       return sendJSON(res, 200, {
         ok,
         isAdmin: admin,
-        hasProfile: !admin && !!(owner && owner.profile && owner.profile.completedAt),
-        reason: ok ? null : 'Bu ilova faqat administrator va tasdiqlangan do\'kon egalari uchun.'
+        isOwner: !admin && ownerOk,
+        role: staffInfo ? staffInfo.role : null,
+        roleLabel: staffInfo ? (STAFF_ROLES[staffInfo.role] || staffInfo.role) : null,
+        ownerRestaurantName: staffInfo ? staffInfo.ownerName : null,
+        hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
+        reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
       });
+    });
+    return;
+  }
+
+  // ---- API: egasining o'z xodimlari ro'yxatini olish ----
+  if (req.method === 'POST' && req.url === '/api/staff-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+
+      return sendJSON(res, 200, { ok: true, staff: owner.staff || [] });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodim qo'shadi (kassir/oshpaz/sklad/dostavka) ----
+  if (req.method === 'POST' && req.url === '/api/add-staff') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, input, role } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi xodim qo\'sha oladi' });
+
+      if (!isValidRole(role)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri rol tanlandi.' });
+      }
+
+      const resolved = await resolveUserInput(input);
+      if (resolved.error) return sendJSON(res, 200, { ok: false, reason: resolved.error });
+
+      if (isAdminId(resolved.id)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi administrator, xodim qilib bo\'lmaydi.' });
+      }
+      if (findOwner(owners, resolved.id)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi allaqachon oshxona egasi.' });
+      }
+      const existingStaff = findStaffInfo(owners, resolved.id);
+      if (existingStaff) {
+        return sendJSON(res, 200, { ok: false, reason: existingStaff.ownerId === owner.id
+          ? 'Bu foydalanuvchi allaqachon sizning xodimingiz.'
+          : 'Bu foydalanuvchi boshqa oshxonada xodim sifatida ro\'yxatda.' });
+      }
+
+      if (!owner.staff) owner.staff = [];
+      owner.staff.push({
+        id: resolved.id,
+        username: resolved.username || null,
+        role,
+        addedAt: new Date().toISOString()
+      });
+      saveOwners(owners);
+
+      sendMessage(resolved.id,
+        `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${STAFF_ROLES[role]}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodimni o'chiradi ----
+  if (req.method === 'POST' && req.url === '/api/remove-staff') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.staff = (owner.staff || []).filter(s => String(s.id) !== String(id));
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
     });
     return;
   }
