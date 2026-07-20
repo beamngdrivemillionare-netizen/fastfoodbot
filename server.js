@@ -245,7 +245,10 @@ function approveRequest(reqInfo, days) {
       id: reqInfo.userId,
       username: reqInfo.username || null,
       addedAt: new Date().toISOString(),
-      expiresAt
+      expiresAt,
+      price: 0,
+      paid: false,
+      paidAt: null
     });
   }
   saveOwners(owners);
@@ -501,7 +504,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/add-owner') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, input, days } = payload;
+      const { initData, input, days, price, paid } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -520,6 +523,16 @@ const server = http.createServer((req, res) => {
         expiresAt = new Date(Date.now() + n * 86400000).toISOString();
       }
 
+      // Obuna narxi — ixtiyoriy, kiritilmasa 0 deb saqlanadi
+      let priceVal = 0;
+      if (price !== undefined && price !== null && price !== '') {
+        const p = Number(price);
+        if (!Number.isFinite(p) || p < 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+        }
+        priceVal = p;
+      }
+
       const owners = loadOwners();
       if (isAdminId(resolved.id)) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi allaqachon administrator' });
@@ -532,12 +545,52 @@ const server = http.createServer((req, res) => {
         id: resolved.id,
         username: resolved.username || null,
         addedAt: new Date().toISOString(),
-        expiresAt
+        expiresAt,
+        price: priceVal,
+        paid: !!paid,
+        paidAt: paid ? new Date().toISOString() : null
       };
       owners.push(newOwner);
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, owner: newOwner });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasining obuna narxi / to'lov holatini yangilash (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/update-owner-billing') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, price, paid } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      if (price !== undefined && price !== null && price !== '') {
+        const p = Number(price);
+        if (!Number.isFinite(p) || p < 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+        }
+        owner.price = p;
+      }
+
+      if (paid !== undefined && paid !== null) {
+        const wasPaid = !!owner.paid;
+        owner.paid = !!paid;
+        if (owner.paid && !wasPaid) owner.paidAt = new Date().toISOString();
+        if (!owner.paid) owner.paidAt = null;
+      }
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, owner });
     });
     return;
   }
