@@ -21,6 +21,10 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 // DATA_DIR — Railway'da Volume ulaganda shu yerga mount yo'lini yozing (masalan: /data)
 // Agar sozlanmasa, owners.json shu loyiha papkasida saqlanadi (Volume'siz, deploy'da o'chib ketishi mumkin)
 const DATA_DIR = process.env.DATA_DIR || __dirname;
+// ANTHROPIC_API_KEY — ixtiyoriy. Sozlansa, "AI savol-javob" bo'limi haqiqiy AI (Claude) orqali javob beradi.
+// Sozlanmasa, shu bo'lim tayyor qoidalar asosida (foyda, top taom, pik vaqt, kam qolgan mahsulot) javob beradi.
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
 const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
 const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
@@ -178,6 +182,18 @@ function resolveOwnerContext(owners, userId) {
     if (staffOwner) return { owner: staffOwner, role: staffInfo.role, branchId: staffInfo.staff.branchId || null };
   }
   return null;
+}
+
+// ====== I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ======
+// Har bir muhim amalni (kim, qachon, nima qildi) jurnalga yozadi. errorCount — audit kamomadlari uchun (reyting hisobida ayiriladi)
+function logStaffAction(owner, entry) {
+  if (!owner.staffActionLog) owner.staffActionLog = [];
+  owner.staffActionLog.unshift(Object.assign({
+    id: crypto.randomBytes(4).toString('hex'),
+    errorCount: 0,
+    createdAt: new Date().toISOString()
+  }, entry));
+  if (owner.staffActionLog.length > 2000) owner.staffActionLog.length = 2000;
 }
 
 // Telegram Bot API'ga so'rov yuborish (masalan @username orqali foydalanuvchini topish uchun)
@@ -1047,6 +1063,7 @@ const server = http.createServer((req, res) => {
         createdBy: userId
       };
       ctx.owner.orders.push(order);
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${total} so'm` });
       saveOwners(owners);
 
       // Oshxonaga (egaga + oshpazlarga) xabar yuboriladi
@@ -1126,6 +1143,7 @@ const server = http.createServer((req, res) => {
       if (status === 'tayyorlanmoqda' && !order.startedAt) order.startedAt = order.updatedAt;
       if (status === 'tayyor' && !order.readyAt) order.readyAt = order.updatedAt;
 
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
       saveOwners(owners);
 
       // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) dostavkachi(lar)ga avtomatik bildirishnoma
@@ -1174,6 +1192,7 @@ const server = http.createServer((req, res) => {
 
       order.deliveredBy = userId;
       order.deliveredAt = new Date().toISOString();
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${order.total} so'm — yetkazib berildi` });
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, order });
@@ -1270,6 +1289,7 @@ const server = http.createServer((req, res) => {
         qty: qtyNum, unit, note: 'Qo\'lda kiritildi', userId
       });
       checkLowStockAlert(ctx.owner, item, userId, branchId);
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, item });
@@ -1495,6 +1515,14 @@ const server = http.createServer((req, res) => {
       };
       pool.audits.unshift(audit);
       if (pool.audits.length > 60) pool.audits.length = 60;
+
+      const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
+      const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
+      logStaffAction(ctx.owner, {
+        userId, role: ctx.role, action: 'audit_topshirdi',
+        note: `${auditEntries.length} mahsulot tekshirildi${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
+        errorCount: kamomadCount
+      });
 
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true, audit });
@@ -1879,6 +1907,287 @@ const server = http.createServer((req, res) => {
 
       const reports = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
       return sendJSON(res, 200, { ok: true, reports });
+    });
+    return;
+  }
+
+  // ====== H. AI analitika (32-34-bosqich): top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ======
+  const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+
+  // Eng ko'p sotilgan taomlar — miqdor va tushum bo'yicha (berilgan sanadan buyon)
+  function computeTopItems(owner, fromDate, limit) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+    const byId = new Map();
+    for (const o of orders) {
+      for (const it of (o.items || [])) {
+        const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
+        cur.qty += it.qty;
+        cur.revenue += it.price * it.qty;
+        byId.set(it.id, cur);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => b.qty - a.qty).slice(0, limit || 5);
+  }
+
+  // Soatlik pik vaqtlar (0-23) va haftalik pik kunlar (0=Yakshanba..6=Shanba) — buyurtmalar soni bo'yicha
+  function computePeakTimes(owner, fromDate) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+    const byHour = new Array(24).fill(0);
+    const byDay = new Array(7).fill(0);
+    for (const o of orders) {
+      const d = new Date(o.createdAt);
+      byHour[d.getHours()]++;
+      byDay[d.getDay()]++;
+    }
+    const hours = byHour.map((count, hour) => ({ hour, count })).sort((a, b) => b.count - a.count);
+    const days = byDay.map((count, day) => ({ day, dayLabel: UZ_WEEKDAYS[day], count })).sort((a, b) => b.count - a.count);
+    return { byHour, byDay, topHours: hours.filter(h => h.count > 0).slice(0, 3), topDays: days.filter(d => d.count > 0).slice(0, 3) };
+  }
+
+  // Ertangi kun uchun taxminiy sklad ehtiyoji — oxirgi 7 kunlik "chiqim" (buyurtma orqali sarflangan) harakatlar o'rtachasi asosida
+  function computeStockForecast(owner, branchId) {
+    const pool = resolveStockPool(owner, branchId || null);
+    if (!pool) return [];
+    const since = new Date(Date.now() - 7 * 86400000);
+    const usageById = new Map();
+    for (const m of (pool.stockMovements || [])) {
+      if (m.type !== 'chiqim') continue;
+      if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
+      if (new Date(m.createdAt) < since) continue;
+      usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
+    }
+    const forecast = [];
+    for (const item of (pool.stock || [])) {
+      const used7d = usageById.get(item.id) || 0;
+      if (used7d <= 0) continue; // ishlatilmagan mahsulot uchun prognoz chiqarmaymiz
+      const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
+      const predictedNeed = Math.round(avgDaily * 1000) / 1000;
+      forecast.push({
+        stockId: item.id, name: item.name, unit: item.unit,
+        currentQty: item.qty, avgDailyUsage: avgDaily, predictedNeed,
+        shortage: item.qty < predictedNeed
+      });
+    }
+    forecast.sort((a, b) => (b.shortage - a.shortage) || (b.avgDailyUsage - a.avgDailyUsage));
+    return forecast;
+  }
+
+  // Anthropic (Claude) API orqali erkin savolga javob — faqat ANTHROPIC_API_KEY sozlangan bo'lsa ishlaydi
+  function callAnthropicApi(systemPrompt, userText) {
+    return new Promise((resolve, reject) => {
+      if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY sozlanmagan'));
+      const body = JSON.stringify({
+        model: AI_MODEL,
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userText }]
+      });
+      const reqOptions = {
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      };
+      const apiReq = https.request(reqOptions, apiRes => {
+        let data = '';
+        apiRes.on('data', chunk => { data += chunk; });
+        apiRes.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            const text = (parsed.content || []).map(c => c.text || '').join('\n').trim();
+            if (!text) return reject(new Error('AI javob bo\'sh qaytdi'));
+            resolve(text);
+          } catch (e) { reject(e); }
+        });
+      });
+      apiReq.on('error', reject);
+      apiReq.write(body);
+      apiReq.end();
+    });
+  }
+
+  // AI kaliti sozlanmagan (yoki xato bergan) holatda ishlaydigan, tayyor qoidalar asosidagi javob generatori
+  function ruleBasedAiAnswer(question, ctx) {
+    const q = String(question || '').toLowerCase();
+
+    if (/bugun/.test(q) && /foyda|savdo|kirim/.test(q)) {
+      return `Bugungi kirim: ${ctx.cashflow.today.income} so'm, xarajat: ${ctx.cashflow.today.expense} so'm, sof foyda: ${ctx.cashflow.today.net} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
+    }
+    if (/hafta/.test(q) && /foyda|savdo|kirim/.test(q)) {
+      return `Shu hafta kirim: ${ctx.cashflow.week.income} so'm, xarajat: ${ctx.cashflow.week.expense} so'm, sof foyda: ${ctx.cashflow.week.net} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
+    }
+    if (/oy/.test(q) && /foyda|savdo|kirim/.test(q)) {
+      return `Shu oy kirim: ${ctx.cashflow.month.income} so'm, xarajat: ${ctx.cashflow.month.expense} so'm, sof foyda: ${ctx.cashflow.month.net} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
+    }
+    if (/top|eng ko'p sotilgan|mashhur|qaysi taom/.test(q)) {
+      if (!ctx.topItems.length) return 'Hozircha (so\'nggi 30 kunda) buyurtma tarixi yo\'q.';
+      const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${it.revenue} so'm)`).join('\n');
+      return `Eng ko'p sotilgan taomlar (so'nggi 30 kun):\n${list}`;
+    }
+    if (/pik|band vaqt|qaysi soat|eng gavjum/.test(q)) {
+      if (!ctx.peak.topHours.length) return 'Hozircha buyurtma tarixi yo\'q.';
+      const h = ctx.peak.topHours[0];
+      return `Eng band soat: ${h.hour}:00 atrofida (${h.count} ta buyurtma, so'nggi 30 kun). Eng band kun: ${ctx.peak.topDays[0] ? ctx.peak.topDays[0].dayLabel : 'ma\'lumot yo\'q'}.`;
+    }
+    if (/kam qolgan|tugab qolayotgan|sklad|zaxira/.test(q)) {
+      const low = (ctx.forecast || []).filter(f => f.shortage);
+      if (!low.length) return 'Hozircha ertangi kunga yetarli zaxira bor ko\'rinadi (oxirgi 7 kunlik iste\'mol bo\'yicha).';
+      const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${f.currentQty} ${f.unit}, kunlik o'rtacha sarf ${f.avgDailyUsage} ${f.unit}`).join('\n');
+      return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
+    }
+
+    // Umumiy so'rovlarga qisqa umumiy hisobot bilan javob beramiz
+    const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
+    return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${ctx.cashflow.today.net} so'm, shu hafta ${ctx.cashflow.week.net} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
+  }
+
+  // ---- API: AI analitika — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/ai-analytics') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period, branchId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const fromDate = resolvePeriodStart(period || 'week');
+      const topItems = computeTopItems(owner, fromDate, 8);
+      const peak = computePeakTimes(owner, fromDate);
+      const forecast = computeStockForecast(owner, branchId || null);
+
+      return sendJSON(res, 200, {
+        ok: true,
+        period: period || 'week',
+        topItems,
+        peakHours: peak.byHour,
+        peakDays: peak.byDay,
+        topHours: peak.topHours,
+        topDays: peak.topDays,
+        forecast
+      });
+    });
+    return;
+  }
+
+  // ---- API: AI orqali erkin savolga qisqa javob (faqat egasi). ANTHROPIC_API_KEY bo'lmasa — qoidaviy javob beradi ----
+  if (req.method === 'POST' && req.url === '/api/ai-ask') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, question } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const qTrim = String(question || '').trim();
+      if (!qTrim) return sendJSON(res, 200, { ok: false, reason: 'Savolingizni kiriting.' });
+      if (qTrim.length > 300) return sendJSON(res, 200, { ok: false, reason: 'Savol juda uzun (300 belgigacha).' });
+
+      const monthAgo = new Date(Date.now() - 30 * 86400000);
+      const ctx = {
+        cashflow: computeCashflow(owner),
+        topItems: computeTopItems(owner, monthAgo, 10),
+        peak: computePeakTimes(owner, monthAgo),
+        forecast: computeStockForecast(owner, null)
+      };
+
+      if (!ANTHROPIC_API_KEY) {
+        return sendJSON(res, 200, { ok: true, answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+      }
+
+      const systemPrompt = 'Sen oshxona (restoran) egasiga o\'zbek tilida yordam beruvchi qisqa AI tahlilchisan. ' +
+        'Faqat berilgan JSON ma\'lumotlar asosida javob ber, o\'ylab topma. 2-4 gaplik, aniq raqamlar bilan qisqa javob yoz.\n' +
+        'Ma\'lumotlar (JSON):\n' + JSON.stringify(ctx);
+
+      try {
+        const answer = await callAnthropicApi(systemPrompt, qTrim);
+        return sendJSON(res, 200, { ok: true, answer, source: 'ai' });
+      } catch (e) {
+        return sendJSON(res, 200, { ok: true, answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+      }
+    });
+    return;
+  }
+
+  // ---- API: xodimning amallar jurnali — kim, qachon, nima qildi (faqat egasi, so'nggi yozuvlar) ----
+  if (req.method === 'POST' && req.url === '/api/staff-activity-log') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, staffId, limit } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const staffById = new Map((owner.staff || []).map(s => [String(s.id), s]));
+      let log = owner.staffActionLog || [];
+      if (staffId) log = log.filter(e => String(e.userId) === String(staffId));
+
+      const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+      const entries = log.slice(0, lim).map(e => {
+        const isOwnerEntry = String(e.userId) === String(owner.id);
+        const staff = staffById.get(String(e.userId));
+        return Object.assign({}, e, {
+          displayName: isOwnerEntry ? 'Egasi' : (staff && staff.username ? '@' + staff.username : `ID: ${e.userId}`),
+          roleLabel: isOwnerEntry ? 'Egasi' : (STAFF_ROLES[e.role] || e.role)
+        });
+      });
+
+      return sendJSON(res, 200, { ok: true, entries, staff: owner.staff || [] });
+    });
+    return;
+  }
+
+  // ---- API: 30 kunlik (yoki tanlangan davr) xodimlar faoliyati hisoboti + reyting (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/staff-performance-report') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const fromDate = resolvePeriodStart(period || 'month');
+      const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
+
+      const report = (owner.staff || []).map(staff => {
+        const mine = log.filter(e => String(e.userId) === String(staff.id));
+        const actionCount = mine.length;
+        const errorCount = mine.reduce((sum, e) => sum + (e.errorCount || 0), 0);
+        const lastActiveAt = mine.length ? mine.reduce((max, e) => e.createdAt > max ? e.createdAt : max, mine[0].createdAt) : null;
+        return {
+          id: staff.id,
+          username: staff.username || null,
+          role: staff.role,
+          roleLabel: STAFF_ROLES[staff.role] || staff.role,
+          actionCount, errorCount, lastActiveAt,
+          score: actionCount - errorCount * 2
+        };
+      });
+
+      report.sort((a, b) => b.score - a.score);
+      if (report.length && report[0].actionCount > 0) report[0].isTop = true;
+
+      return sendJSON(res, 200, { ok: true, report, period: period || 'month' });
     });
     return;
   }
