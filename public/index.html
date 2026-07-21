@@ -159,7 +159,7 @@
     cursor: pointer;
   }
   .tab-bar-bottom button .icon { width: 20px; height: 20px; }
-  .tab-bar-bottom button.active { color: var(--brand-primary); }
+  .tab-bar-bottom button.active { color: var(--brand-primary); transition: color var(--transition-fast); }
   .has-bottom-tabs { padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
   .owner-tab-panel { display: none; }
   .owner-tab-panel.active { display: block; }
@@ -520,6 +520,7 @@
     border-radius: var(--radius-pill);
     background: var(--brand-primary-light);
     color: var(--brand-primary-dark);
+    transition: background-color var(--transition-fast), color var(--transition-fast);
   }
 
   .menu-item {
@@ -834,6 +835,7 @@
     width: 28px; height: 28px; border-radius: var(--radius-sm); flex-shrink: 0;
     background: var(--brand-primary-light); color: var(--brand-primary-dark);
     display: flex; align-items: center; justify-content: center;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
   }
   .brand-preview-header .brand-preview-shop-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); flex: 1; }
   /* 26-bosqich: hisoblangan kontrast nisbati foydalanuvchiga ko'rinadigan
@@ -873,7 +875,7 @@
   .icon-danger { color: var(--danger); }
   .icon-success { color: var(--success); }
   .icon-warning { color: var(--warning); }
-  .icon-brand { color: var(--brand-primary); }
+  .icon-brand { color: var(--brand-primary); transition: color var(--transition-fast); }
 
   /* =========================================================================
      APP SHELL — DOIMIY HEADER (10-bosqich)
@@ -917,6 +919,7 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
   }
   .app-header .app-header-name {
     font-size: var(--fs-sm);
@@ -941,6 +944,7 @@
     background: var(--brand-primary-light);
     color: var(--brand-primary-dark);
     white-space: nowrap;
+    transition: background-color var(--transition-fast), color var(--transition-fast);
   }
 </style>
 </head>
@@ -1224,12 +1228,34 @@
   }
   // Berilgan fon rangi ustiga oq yoki qora matn qo'yilsa qaysi biri o'qilishi
   // osonroq bo'lishini WCAG kontrast nisbati bo'yicha tanlaydi.
+  // 30-bosqich QA: taqqoslash #111111 (yumshoq qora) bilan emas, aynan
+  // #000000 bilan qilinadi — chunki ba'zi o'rta-to'qlikdagi asosiy ranglar
+  // (masalan yashil/farrux ko'k preset) #111111'ga nisbatan ham, oq rangga
+  // nisbatan ham WCAG AA (4.5:1) chegarasidan sal past qolar edi.
   function pickOnColor(hex) {
-    return contrastRatio(hex, '#FFFFFF') >= contrastRatio(hex, '#111111') ? '#FFFFFF' : '#111111';
+    return contrastRatio(hex, '#FFFFFF') >= contrastRatio(hex, '#000000') ? '#FFFFFF' : '#000000';
   }
   function mixColor(hex, towardHex, amount) {
     const a = hexToRgb(hex), b = hexToRgb(towardHex);
     return rgbToHex({ r: a.r + (b.r - a.r) * amount, g: a.g + (b.g - a.g) * amount, b: a.b + (b.b - a.b) * amount });
+  }
+  // 30-bosqich QA: 18%/90% qat'iy foizlar ba'zi ranglar uchun (masalan
+  // to'q sariq preset, och sariq/oq maxsus tanlov) yorug' fon + to'q matn
+  // juftligini 4.5:1 chegarasidan pastda qoldirardi. Shu sababli ajratish
+  // darajasi moslashuvchan: kontrast yetarli bo'lguncha asta oshiriladi.
+  function deriveBrandShades(base) {
+    let darkAmt = 0.18, lightAmt = 0.90;
+    let dark = mixColor(base, '#000000', darkAmt);
+    let light = mixColor(base, '#FFFFFF', lightAmt);
+    let guard = 0;
+    while (contrastRatio(light, dark) < 4.5 && guard < 60) {
+      if (darkAmt < 0.85) darkAmt += 0.025;
+      if (lightAmt < 0.97) lightAmt += 0.01;
+      dark = mixColor(base, '#000000', darkAmt);
+      light = mixColor(base, '#FFFFFF', lightAmt);
+      guard++;
+    }
+    return { dark, light };
   }
   // 26-bosqich: hisoblangan kontrastni foydalanuvchiga ko'rsatish (matn/tugma
   // rangi ustidagi rang bilan WCAG AA me'yoriga [>=4.5:1] mosligini tekshiradi).
@@ -1251,10 +1277,11 @@
   // 29-bosqich: saqlashdan oldin ham darhol ko'rinadi).
   function applyBrandColor(hex) {
     const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
+    const { dark, light } = deriveBrandShades(base);
     const root = document.documentElement.style;
     root.setProperty('--brand-primary', base);
-    root.setProperty('--brand-primary-dark', mixColor(base, '#000000', 0.18));
-    root.setProperty('--brand-primary-light', mixColor(base, '#FFFFFF', 0.9));
+    root.setProperty('--brand-primary-dark', dark);
+    root.setProperty('--brand-primary-light', light);
     root.setProperty('--brand-on-primary', pickOnColor(base));
   }
   // 27-bosqich: qo'llanish doirasi qoidasi — admin paneli yoki hali hech
