@@ -216,6 +216,7 @@ function findStaffInfo(owners, userId) {
       return {
         ownerId: owner.id,
         ownerName: (owner.profile && owner.profile.name) || null,
+        ownerLogoUrl: (owner.profile && owner.profile.logoUrl) || null,
         role: roles[0] || staff.role || null,
         roles,
         staff
@@ -1053,6 +1054,7 @@ const server = http.createServer((req, res) => {
         roles: staffInfo ? staffInfo.roles : null,
         roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
         ownerRestaurantName: staffInfo ? staffInfo.ownerName : null,
+        ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : null,
         hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
         reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
       });
