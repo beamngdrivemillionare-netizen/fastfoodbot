@@ -520,6 +520,57 @@
   .icon-success { color: var(--success); }
   .icon-warning { color: var(--warning); }
   .icon-brand { color: var(--brand-primary); }
+
+  /* =========================================================================
+     APP SHELL — DOIMIY HEADER (10-bosqich)
+     #appHeader #app'dan TASHQARIDA turadi, shuning uchun ekran(html) har safar
+     #app'ni qayta chizganda ham header o'zgarmay qoladi — oshxona logotipi +
+     nomi foydalanuvchi qayerda bo'lishidan qat'iy nazar tepada ko'rinadi.
+     Faqat "profil to'ldirilgan" holatda ko'rsatiladi (setup/kirish/admin
+     ekranlarida clearAppHeader() bilan yashiriladi).
+     ========================================================================= */
+  .app-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    width: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    padding: var(--sp-2) var(--sp-4);
+    background: var(--surface-0);
+    border-bottom: 1px solid var(--border-color);
+  }
+  .app-header.hidden { display: none; }
+  .app-header .app-header-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--surface-1);
+  }
+  .app-header .app-header-logo-fallback {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: var(--brand-primary-light);
+    color: var(--brand-primary-dark);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .app-header .app-header-name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -631,6 +682,7 @@
   </symbol>
 </svg>
 
+<div id="appHeader" class="app-header hidden"></div>
 <div id="app"><div class="xato">Tekshirilmoqda...</div></div>
 
 <script>
@@ -656,6 +708,25 @@
   // qism (masalan 'box' → #icon-box). extraClass ixtiyoriy (masalan 'icon-lg icon-danger').
   function icon(name, extraClass) {
     return `<svg class="icon${extraClass ? ' ' + extraClass : ''}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
+  }
+
+  // App shell (10-bosqich): #appHeader #app'dan tashqarida bo'lgani uchun
+  // ekran() uni tozalamaydi — bir marta o'rnatilsa, ichki navigatsiyalar davomida
+  // (tab almashish, ekranlar orasida o'tish) o'zgarmay tepada turadi.
+  const appHeaderEl = document.getElementById('appHeader');
+  function setAppHeader(logoUrl, name) {
+    if (!name) { clearAppHeader(); return; }
+    appHeaderEl.innerHTML = `
+      ${logoUrl
+        ? `<img class="app-header-logo" src="${escapeHtml(logoUrl)}" onerror="this.outerHTML='<div class=&quot;app-header-logo-fallback&quot;>${icon('restaurant', 'icon-xs').replace(/"/g, '&quot;')}</div>'">`
+        : `<div class="app-header-logo-fallback">${icon('restaurant', 'icon-xs')}</div>`}
+      <div class="app-header-name">${escapeHtml(name)}</div>
+    `;
+    appHeaderEl.classList.remove('hidden');
+  }
+  function clearAppHeader() {
+    appHeaderEl.classList.add('hidden');
+    appHeaderEl.innerHTML = '';
   }
 
   function escapeHtml(str) {
@@ -708,6 +779,7 @@
   }
 
   function renderAdminPanel(owners) {
+    clearAppHeader();
     const ownersHtml = owners.length
       ? owners.map(o => `
           <div class="owner-item">
@@ -896,6 +968,8 @@
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
   function renderProfileForm(existing) {
     const p = existing || {};
+    if (existing && existing.name) setAppHeader(existing.logoUrl, existing.name);
+    else clearAppHeader();
     ekran(`
       <div class="panel">
         <div class="salom">${existing ? 'Profilni tahrirlash' : 'Profilni to\'ldiring'}</div>
@@ -1008,6 +1082,7 @@
   }
 
   function renderProfileView(profile) {
+    setAppHeader(profile.logoUrl, profile.name);
     ekran(`
       <div class="panel">
         <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
@@ -1523,7 +1598,8 @@
   }
 
   // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
-  function renderStaffScreen(role, roleLabel, restaurantName) {
+  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl) {
+    setAppHeader(logoUrl, restaurantName);
     if (role === 'kassir') {
       renderCashierScreen(restaurantName);
       return;
@@ -3311,6 +3387,7 @@
   }
 
   async function renderCustomerApp(ownerId) {
+    clearAppHeader();
     ekran('<div class="xato">Tekshirilmoqda...</div>');
     const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
     if (!verifyRes.ok) {
@@ -3322,6 +3399,7 @@
     customerState.favorites = verifyRes.customer.favorites || [];
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
+    setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
@@ -3343,6 +3421,7 @@
   }
 
   async function renderCustomerEntry() {
+    clearAppHeader();
     ekran('<div class="xato">Tekshirilmoqda...</div>');
     const res = await apiPost('/api/customer-restaurants-list', { initData });
     const restaurants = res.ok ? res.restaurants : [];
@@ -3397,7 +3476,7 @@
           } else if (data.isOwner) {
             loadOwnProfileAndRender();
           } else if (data.role) {
-            renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
+            renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl);
           } else {
             renderCustomerEntry();
           }
