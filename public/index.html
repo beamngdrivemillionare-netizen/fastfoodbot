@@ -336,6 +336,26 @@
   }
   .subscription-progress.warn .subscription-progress-fill { background: var(--warning); }
   .subscription-progress.danger .subscription-progress-fill { background: var(--danger); }
+
+  /* ---- Onboarding qadamlar ko'rsatkichi (18-bosqich): yangi oshxona egasi
+     profilini bosqichma-bosqich to'ldirishda, joriy qadamni ko'rsatadi ---- */
+  .onboarding-steps { display: flex; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-4); }
+  .onboarding-steps .step-seg {
+    flex: 1; height: 4px; border-radius: var(--radius-pill);
+    background: var(--border-color-strong); transition: background var(--transition-base);
+  }
+  .onboarding-steps .step-seg.done,
+  .onboarding-steps .step-seg.active { background: var(--brand-primary); }
+  .onboarding-review-row {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: var(--sp-3);
+    padding: var(--sp-2) 0; border-bottom: 1px solid var(--border-color);
+  }
+  .onboarding-review-row:last-of-type { border-bottom: none; }
+  .onboarding-review-row .review-label { font-size: var(--fs-xs); color: var(--text-muted); }
+  .onboarding-review-row .review-value { font-size: var(--fs-body); word-break: break-word; }
+  .onboarding-review-row .review-edit-link {
+    font-size: var(--fs-xs); color: var(--brand-primary); white-space: nowrap; cursor: pointer;
+  }
   .owner-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 
   /* ---- Belgi (badge) ---- */
@@ -1243,13 +1263,13 @@
 
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
   function renderProfileForm(existing) {
-    const p = existing || {};
-    if (existing && existing.name) setAppHeader(existing.logoUrl, existing.name, 'Egasi');
-    else clearAppHeader();
+    if (!existing) { renderProfileOnboarding(); return; }
+    const p = existing;
+    setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     ekran(`
       <div class="panel">
-        <div class="salom">${existing ? 'Profilni tahrirlash' : 'Profilni to\'ldiring'}</div>
-        <div class="bosh">${existing ? 'Ma\'lumotlaringizni yangilang.' : 'Ishni boshlash uchun oshxonangiz haqida ma\'lumot kiriting.'}</div>
+        <div class="salom">Profilni tahrirlash</div>
+        <div class="bosh">Ma'lumotlaringizni yangilang.</div>
         <div class="kartochka">
           <label class="field-label">Oshxona nomi *</label>
           <input type="text" id="pName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(p.name || '')}">
@@ -1285,6 +1305,147 @@
         msgEl.className = 'xabar err';
         return;
       }
+      renderProfileView(res.profile);
+    });
+  }
+
+  // ---- Do'kon egasi: birinchi marta profil to'ldirish — bosqichma-bosqich
+  // "onboarding" ustasi (18-bosqich). Tahrirlashdan farqli, bu yerda
+  // ma'lumot 3 ta qadamga bo'lingan: (1) asosiy ma'lumot, (2) qo'shimcha
+  // ma'lumot, (3) hammasini tekshirib chiqish va saqlash. Har bir qadamda
+  // yuqorida progress-chiziq joriy holatni ko'rsatadi.
+  const ONBOARDING_STEPS = [
+    { title: "Asosiy ma'lumot" },
+    { title: "Qo'shimcha ma'lumot" },
+    { title: 'Tekshirib chiqish' }
+  ];
+  let onboardingState = null;
+
+  function onboardingStepBodyHtml(s) {
+    const d = s.data;
+    if (s.step === 1) {
+      return `
+        <label class="field-label">Oshxona nomi *</label>
+        <input type="text" id="obName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(d.name)}">
+        <label class="field-label">Manzil *</label>
+        <input type="text" id="obAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(d.address)}">
+        <label class="field-label">Telefon *</label>
+        <input type="text" id="obPhone" placeholder="+998901234567" value="${escapeHtml(d.phone)}">
+      `;
+    }
+    if (s.step === 2) {
+      return `
+        <label class="field-label">Ish vaqti</label>
+        <input type="text" id="obWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(d.workHours)}">
+        <label class="field-label">Logotip havolasi (ixtiyoriy, rasm linki)</label>
+        <input type="text" id="obLogo" placeholder="https://..." value="${escapeHtml(d.logoUrl)}">
+      `;
+    }
+    const reviewRow = (label, value, stepNum) => `
+      <div class="onboarding-review-row">
+        <div>
+          <div class="review-label">${escapeHtml(label)}</div>
+          <div class="review-value">${value ? escapeHtml(value) : '— kiritilmagan'}</div>
+        </div>
+        <span class="review-edit-link" data-onboard-edit-step="${stepNum}">O'zgartirish</span>
+      </div>
+    `;
+    return `
+      ${reviewRow('Oshxona nomi', d.name, 1)}
+      ${reviewRow('Manzil', d.address, 1)}
+      ${reviewRow('Telefon', d.phone, 1)}
+      ${reviewRow('Ish vaqti', d.workHours, 2)}
+      ${reviewRow('Logotip havolasi', d.logoUrl, 2)}
+    `;
+  }
+
+  function collectOnboardingStepInputs(s) {
+    if (s.step === 1) {
+      s.data.name = document.getElementById('obName').value.trim();
+      s.data.address = document.getElementById('obAddress').value.trim();
+      s.data.phone = document.getElementById('obPhone').value.trim();
+    } else if (s.step === 2) {
+      s.data.workHours = document.getElementById('obWorkHours').value.trim();
+      s.data.logoUrl = document.getElementById('obLogo').value.trim();
+    }
+  }
+
+  function renderProfileOnboarding() {
+    if (!onboardingState) {
+      onboardingState = { step: 1, data: { name: '', address: '', phone: '', workHours: '', logoUrl: '' } };
+    }
+    clearAppHeader();
+    const s = onboardingState;
+    const total = ONBOARDING_STEPS.length;
+    ekran(`
+      <div class="panel">
+        <div class="salom">Profilni to'ldiring</div>
+        <div class="bosh">${s.step}-qadam / ${total} — ${escapeHtml(ONBOARDING_STEPS[s.step - 1].title)}</div>
+        <div class="onboarding-steps">
+          ${ONBOARDING_STEPS.map((_, i) => `<div class="step-seg ${i + 1 < s.step ? 'done' : ''} ${i + 1 === s.step ? 'active' : ''}"></div>`).join('')}
+        </div>
+        <div class="kartochka">
+          ${onboardingStepBodyHtml(s)}
+          <div class="xabar" id="onboardMsg"></div>
+          <div class="btn-row" style="margin-top:10px;">
+            ${s.step > 1 ? `<button class="btn ikkinchi" id="onboardBackBtn">← Orqaga</button>` : ''}
+            <button class="btn" id="onboardNextBtn">${s.step < total ? 'Keyingi →' : 'Saqlash'}</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    if (s.step > 1) {
+      document.getElementById('onboardBackBtn').addEventListener('click', () => {
+        collectOnboardingStepInputs(s);
+        s.step -= 1;
+        renderProfileOnboarding();
+      });
+    }
+
+    document.querySelectorAll('[data-onboard-edit-step]').forEach(el => {
+      el.addEventListener('click', () => {
+        s.step = parseInt(el.getAttribute('data-onboard-edit-step'), 10);
+        renderProfileOnboarding();
+      });
+    });
+
+    document.getElementById('onboardNextBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('onboardMsg');
+      if (s.step === 1) {
+        const name = document.getElementById('obName').value.trim();
+        const address = document.getElementById('obAddress').value.trim();
+        const phone = document.getElementById('obPhone').value.trim();
+        if (!name || !address || !phone) {
+          msgEl.textContent = "Yulduzcha (*) bilan belgilangan maydonlarni to'ldiring.";
+          msgEl.className = 'xabar err';
+          return;
+        }
+        s.data.name = name; s.data.address = address; s.data.phone = phone;
+        s.step = 2;
+        renderProfileOnboarding();
+        return;
+      }
+      if (s.step === 2) {
+        s.data.workHours = document.getElementById('obWorkHours').value.trim();
+        s.data.logoUrl = document.getElementById('obLogo').value.trim();
+        s.step = 3;
+        renderProfileOnboarding();
+        return;
+      }
+      // 3-qadam — yakuniy saqlash
+      const btn = document.getElementById('onboardNextBtn');
+      btn.disabled = true;
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/save-profile', { initData, ...s.data });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        btn.disabled = false;
+        return;
+      }
+      onboardingState = null;
       renderProfileView(res.profile);
     });
   }
