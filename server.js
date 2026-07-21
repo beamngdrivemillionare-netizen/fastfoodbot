@@ -3475,7 +3475,13 @@ const server = http.createServer((req, res) => {
       return res.end('404');
     }
     const ext = path.extname(filePath);
-    const type = ext === '.html' ? 'text/html' : ext === '.js' ? 'application/javascript' : 'text/plain';
+    const type = ext === '.html' ? 'text/html'
+      : ext === '.js' ? 'application/javascript'
+      : ext === '.css' ? 'text/css'
+      : ext === '.json' ? 'application/json'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.png' ? 'image/png'
+      : 'text/plain';
     res.writeHead(200, { 'Content-Type': type + '; charset=utf-8' });
     res.end(data);
   });
