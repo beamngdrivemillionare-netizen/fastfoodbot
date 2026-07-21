@@ -6,11 +6,91 @@
 <title>Mini App</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
+  /* =========================================================================
+     DIZAYN TOKENLARI (Design Tokens)
+     Butun platforma shu yerdagi o'zgaruvchilar orqali boshqariladi.
+     4-bosqichda --brand-primary va unga bog'liq tokenlar har bir oshxona
+     egasining profilidan (JS orqali :root ustiga inline style bilan) qayta
+     yoziladi — shu sababli quyidagi qiymatlar "standart (default) qizil-oq
+     tema" hisoblanadi va boshqa hech qayerda xom hex-rang yozilmaydi.
+     ========================================================================= */
+  :root {
+    /* ---- Brend ranglari (standart: qizil-oq) ---- */
+    --brand-primary: #E4232A;
+    --brand-primary-dark: #B81E24;
+    --brand-primary-light: #FDEAEA;
+    --brand-on-primary: #FFFFFF;
+
+    /* ---- Neytral / sirt (surface) ranglari ----
+       Bu yerda ataylab Telegramning --tg-theme-* o'zgaruvchilari fallback
+       sifatida saqlanadi — shunda qorong'i rejimda ham foydalanuvchi
+       qulay o'qiy oladi, lekin BREND ranglari (tugmalar, urg'ular)
+       Telegram temasidan endi mustaqil — chunki ular --brand-primary'ga
+       bog'langan, --tg-theme-button-color'ga emas. */
+    --surface-0: var(--tg-theme-bg-color, #FFFFFF);
+    --surface-1: var(--tg-theme-secondary-bg-color, #F5F5F7);
+    --surface-2: #FFFFFF;
+    --border-color: rgba(17, 17, 17, 0.08);
+    --border-color-strong: rgba(17, 17, 17, 0.14);
+
+    --text-primary: var(--tg-theme-text-color, #111111);
+    --text-secondary: rgba(17, 17, 17, 0.62);
+    --text-muted: rgba(17, 17, 17, 0.45);
+    --text-on-dark-surface: rgba(255, 255, 255, 0.9);
+
+    /* ---- Semantik ranglar (holatlar uchun, brendga bog'liq emas) ---- */
+    --success: #1FA34A;
+    --success-bg: #E3F7E9;
+    --warning: #B8860B;
+    --warning-bg: #FFF6DD;
+    --danger: #D8323A;
+    --danger-bg: #FDEAEA;
+    --info: #2E6BE6;
+    --info-bg: #EAF1FD;
+
+    /* ---- Aksiya/promo urg'usi (semantikdan alohida, iliq ton) ---- */
+    --promo-bg-1: #FFF3D6;
+    --promo-bg-2: #FFE9B8;
+    --promo-text: #7A5200;
+    --promo-border: #F0A500;
+
+    /* ---- Tipografiya shkalasi ---- */
+    --fs-h1: 22px;
+    --fs-h2: 17px;
+    --fs-body: 15px;
+    --fs-sm: 13px;
+    --fs-xs: 11px;
+    --lh-body: 1.45;
+
+    /* ---- Bo'shliq shkalasi (4px asosida) ---- */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 20px;
+    --sp-6: 24px;
+    --sp-8: 32px;
+
+    /* ---- Burchak radiusi ---- */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 999px;
+
+    /* ---- Soya (elevation) ---- */
+    --shadow-card: 0 1px 3px rgba(17, 17, 17, 0.06), 0 1px 2px rgba(17, 17, 17, 0.04);
+    --shadow-floating: 0 8px 24px rgba(17, 17, 17, 0.14), 0 2px 6px rgba(17, 17, 17, 0.08);
+
+    /* ---- Harakat (motion) ---- */
+    --transition-fast: 0.15s ease;
+    --transition-base: 0.2s ease;
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     height: 100%;
-    background: var(--tg-theme-bg-color, #ffffff);
-    color: var(--tg-theme-text-color, #111111);
+    background: var(--surface-0);
+    color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   #app {
@@ -20,18 +100,25 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 24px;
+    padding: var(--sp-6);
   }
   .salom {
-    font-size: 28px;
-    font-weight: 600;
-    margin-bottom: 8px;
+    font-size: var(--fs-h1);
+    font-weight: 700;
+    margin-bottom: var(--sp-2);
   }
   .xato {
-    font-size: 16px;
-    color: #d33;
+    font-size: var(--fs-body);
+    color: var(--danger);
     max-width: 320px;
-    line-height: 1.5;
+    line-height: var(--lh-body);
+  }
+
+  /* ---- Fokus holati (klaviatura/screen-reader uchun ochiq, sichqonchada bilinmaydi) ---- */
+  a:focus-visible, button:focus-visible, input:focus-visible,
+  textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--brand-primary);
+    outline-offset: 2px;
   }
 
   /* ---- Admin panel ---- */
@@ -41,312 +128,369 @@
     text-align: left;
   }
   .kartochka {
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
-    border-radius: 14px;
-    padding: 16px;
-    margin-top: 20px;
+    background: var(--surface-1);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-4);
+    margin-top: var(--sp-5);
   }
   .kartochka h2 {
-    font-size: 15px;
+    font-size: var(--fs-h2);
     font-weight: 600;
-    margin-bottom: 12px;
+    margin-bottom: var(--sp-3);
   }
+
+  /* ---- Tugmalar ---- */
   .btn {
     width: 100%;
-    padding: 12px 16px;
+    padding: 12px var(--sp-4);
     border: none;
-    border-radius: 10px;
-    background: var(--tg-theme-button-color, #2ea6ff);
-    color: var(--tg-theme-button-text-color, #ffffff);
-    font-size: 15px;
+    border-radius: var(--radius-md);
+    background: var(--brand-primary);
+    color: var(--brand-on-primary);
+    font-size: var(--fs-body);
     font-weight: 600;
     cursor: pointer;
+    transition: background var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast);
   }
-  .btn:active { opacity: 0.85; }
+  .btn:hover { background: var(--brand-primary-dark); }
+  .btn:active { opacity: 0.85; transform: scale(0.98); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
   .btn.ikkinchi {
     background: transparent;
-    border: 1px solid #ccc;
-    color: var(--tg-theme-text-color, #111111);
+    border: 1px solid var(--border-color-strong);
+    color: var(--text-primary);
   }
-  .btn.xavfli {
-    background: #e5484d;
-  }
-  .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn.ikkinchi:hover { background: var(--surface-1); }
+  .btn.xavfli { background: var(--danger); }
+  .btn.xavfli:hover { background: #B8272D; }
+  .btn-row { display: flex; gap: var(--sp-2); margin-top: 10px; }
   .btn-row .btn { flex: 1; }
 
-  input[type="text"] {
+  /* ---- Kirish maydonlari ---- */
+  input[type="text"], textarea, select {
     width: 100%;
     padding: 12px 14px;
-    border-radius: 10px;
-    border: 1px solid #ccc;
-    font-size: 15px;
-    background: var(--tg-theme-bg-color, #ffffff);
-    color: var(--tg-theme-text-color, #111111);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color-strong);
+    font-size: var(--fs-body);
+    font-family: inherit;
+    background: var(--surface-0);
+    color: var(--text-primary);
     margin-bottom: 10px;
+    transition: border-color var(--transition-fast);
   }
+  input[type="text"]:focus, textarea:focus, select:focus {
+    border-color: var(--brand-primary);
+  }
+  textarea { resize: vertical; min-height: 60px; }
+  label.field-label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); margin: 4px 0 6px; }
 
-  .owner-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .owner-list { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
   .owner-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
     padding: 10px 12px;
-    font-size: 14px;
+    font-size: var(--fs-sm);
   }
   .owner-item .owner-id { font-weight: 600; word-break: break-all; }
-  .owner-item .owner-username { font-size: 12px; opacity: 0.6; }
+  .owner-item .owner-username { font-size: var(--fs-xs); color: var(--text-muted); }
   .owner-item button {
     border: none;
     background: none;
-    color: #e5484d;
-    font-size: 13px;
+    color: var(--danger);
+    font-size: var(--fs-sm);
     font-weight: 600;
     cursor: pointer;
     padding: 4px 8px;
   }
-  .bosh { font-size: 13px; opacity: 0.6; margin-top: 4px; }
-  .owner-item .owner-expiry { font-size: 12px; opacity: 0.6; margin-top: 2px; }
-  .owner-item .owner-price { font-size: 12px; opacity: 0.8; margin-top: 2px; }
+  .bosh { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; }
+  .owner-item .owner-expiry { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+  .owner-item .owner-price { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
   .owner-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+
+  /* ---- Belgi (badge) ---- */
   .badge {
     display: inline-block;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     padding: 3px 8px;
-    border-radius: 20px;
+    border-radius: var(--radius-pill);
   }
-  .badge.paid { background: #e3f7e9; color: #2fa84f; }
-  .badge.unpaid { background: #fdeaea; color: #d33; }
+  .badge.paid { background: var(--success-bg); color: var(--success); }
+  .badge.unpaid { background: var(--danger-bg); color: var(--danger); }
 
   /* ---- Moliya (Cashflow) ---- */
-  .cf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .cf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); margin-top: var(--sp-3); }
   .cf-stat {
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 12px;
+    background: var(--surface-2);
+    border-radius: var(--radius-md);
     padding: 12px 14px;
-    border: 1px solid rgba(0,0,0,0.06);
+    border: 1px solid var(--border-color);
   }
-  .cf-stat .cf-label { font-size: 12px; opacity: 0.6; margin-bottom: 4px; }
+  .cf-stat .cf-label { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 4px; }
   .cf-stat .cf-val { font-size: 18px; font-weight: 700; }
-  .cf-stat.income .cf-val { color: #2fa84f; }
-  .cf-stat.expense .cf-val { color: #d33; }
-  .cf-stat.net.positive .cf-val { color: #2fa84f; }
-  .cf-stat.net.negative .cf-val { color: #d33; }
+  .cf-stat.income .cf-val { color: var(--success); }
+  .cf-stat.expense .cf-val { color: var(--danger); }
+  .cf-stat.net.positive .cf-val { color: var(--success); }
+  .cf-stat.net.negative .cf-val { color: var(--danger); }
   .cf-expense-item {
     display: flex; align-items: center; justify-content: space-between;
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 10px; padding: 10px 12px; font-size: 14px; margin-bottom: 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md); padding: 10px 12px; font-size: var(--fs-body); margin-bottom: var(--sp-2);
   }
-  .cf-expense-item .cf-e-amount { font-weight: 600; color: #d33; }
-  .cf-expense-item .cf-e-note { font-size: 12px; opacity: 0.7; margin-top: 2px; }
-  .cf-expense-item .cf-e-date { font-size: 11px; opacity: 0.5; margin-top: 2px; }
+  .cf-expense-item .cf-e-amount { font-weight: 600; color: var(--danger); }
+  .cf-expense-item .cf-e-note { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
+  .cf-expense-item .cf-e-date { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
   .cf-expense-item button {
-    border: none; background: none; color: #e5484d; font-size: 13px;
+    border: none; background: none; color: var(--danger); font-size: var(--fs-sm);
     font-weight: 600; cursor: pointer; padding: 4px 8px;
   }
 
-  textarea {
-    width: 100%;
-    padding: 12px 14px;
-    border-radius: 10px;
-    border: 1px solid #ccc;
-    font-size: 15px;
-    font-family: inherit;
-    background: var(--tg-theme-bg-color, #ffffff);
-    color: var(--tg-theme-text-color, #111111);
-    margin-bottom: 10px;
-    resize: vertical;
-    min-height: 60px;
-  }
-  label.field-label { display: block; font-size: 13px; opacity: 0.7; margin: 4px 0 6px; }
   .logo-preview {
-    width: 64px; height: 64px; border-radius: 12px; object-fit: cover;
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    width: 64px; height: 64px; border-radius: var(--radius-md); object-fit: cover;
+    background: var(--surface-1);
     margin-bottom: 10px;
   }
-  .profile-view { display: flex; gap: 12px; align-items: center; }
+  .profile-view { display: flex; gap: var(--sp-3); align-items: center; }
   .profile-view .info { flex: 1; }
-  .profile-row { font-size: 14px; margin-top: 4px; }
-  .profile-row b { opacity: 0.7; font-weight: 600; }
+  .profile-row { font-size: var(--fs-body); margin-top: 4px; }
+  .profile-row b { color: var(--text-secondary); font-weight: 600; }
   .role-badge {
     display: inline-block;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     font-weight: 600;
     padding: 3px 8px;
-    border-radius: 20px;
-    background: var(--tg-theme-secondary-bg-color, #eef2ff);
-    color: var(--tg-theme-button-color, #2ea6ff);
+    border-radius: var(--radius-pill);
+    background: var(--brand-primary-light);
+    color: var(--brand-primary-dark);
   }
-  select {
-    width: 100%;
-    padding: 12px 14px;
-    border-radius: 10px;
-    border: 1px solid #ccc;
-    font-size: 15px;
-    background: var(--tg-theme-bg-color, #ffffff);
-    color: var(--tg-theme-text-color, #111111);
-    margin-bottom: 10px;
-  }
+
   .menu-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
     padding: 10px 12px;
-    font-size: 14px;
-    margin-bottom: 8px;
+    font-size: var(--fs-body);
+    margin-bottom: var(--sp-2);
   }
   .menu-item .m-name { font-weight: 600; }
-  .menu-item .m-cat { font-size: 12px; opacity: 0.6; }
-  .menu-item .m-price { font-size: 13px; opacity: 0.8; margin-top: 2px; }
-  .qty-controls { display: flex; align-items: center; gap: 8px; }
+  .menu-item .m-cat { font-size: var(--fs-xs); color: var(--text-muted); }
+  .menu-item .m-price { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 2px; }
+  .menu-item.low-stock { border: 1px solid var(--danger); }
+
+  /* ---- Miqdor tanlash (+/-) ---- */
+  .qty-controls { display: flex; align-items: center; gap: var(--sp-2); }
   .qty-controls button {
-    width: 30px; height: 30px; border-radius: 8px; border: none;
-    background: var(--tg-theme-button-color, #2ea6ff); color: #fff;
+    width: 30px; height: 30px; border-radius: var(--radius-sm); border: none;
+    background: var(--brand-primary); color: var(--brand-on-primary);
     font-size: 16px; font-weight: 700; cursor: pointer;
+    transition: background var(--transition-fast);
   }
+  .qty-controls button:hover { background: var(--brand-primary-dark); }
   .qty-controls .qty-val { min-width: 18px; text-align: center; font-weight: 600; }
+
+  /* ---- Savat paneli (pastda "yopishgan") ---- */
   .cart-bar {
     position: sticky; bottom: 0;
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
-    border-radius: 14px;
-    padding: 14px 16px;
-    margin-top: 14px;
+    background: var(--surface-1);
+    box-shadow: var(--shadow-floating);
+    border-radius: var(--radius-lg);
+    padding: 14px var(--sp-4);
+    margin-top: var(--sp-4);
   }
-  .cart-total { display: flex; justify-content: space-between; font-size: 15px; font-weight: 700; margin-bottom: 10px; }
-  .type-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .cart-total { display: flex; justify-content: space-between; font-size: var(--fs-body); font-weight: 700; margin-bottom: 10px; }
+
+  /* ---- Turlarni tanlash qatori (buyurtma turi, to'lov turi) ---- */
+  .type-row { display: flex; gap: var(--sp-2); margin-bottom: 10px; flex-wrap: wrap; }
   .type-opt {
     flex: 1; min-width: 90px; text-align: center;
-    padding: 10px 6px; border-radius: 10px; font-size: 13px; font-weight: 600;
-    border: 1px solid #ccc; cursor: pointer; background: var(--tg-theme-bg-color, #ffffff);
+    padding: 10px 6px; border-radius: var(--radius-md); font-size: var(--fs-sm); font-weight: 600;
+    border: 1px solid var(--border-color-strong); cursor: pointer; background: var(--surface-0);
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
   }
   .type-opt.selected {
-    background: var(--tg-theme-button-color, #2ea6ff);
-    color: var(--tg-theme-button-text-color, #ffffff);
+    background: var(--brand-primary);
+    color: var(--brand-on-primary);
     border-color: transparent;
   }
+
   /* ---- Oshxona / buyurtmalar taxtasi ---- */
-  .tab-row { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab-row { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
   .tab-opt {
-    flex: 1; text-align: center; padding: 10px 6px; border-radius: 10px;
-    font-size: 14px; font-weight: 600; cursor: pointer;
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    flex: 1; text-align: center; padding: 10px 6px; border-radius: var(--radius-md);
+    font-size: var(--fs-body); font-weight: 600; cursor: pointer;
+    background: var(--surface-1); color: var(--text-secondary);
+    transition: background var(--transition-fast), color var(--transition-fast);
   }
   .tab-opt.selected {
-    background: var(--tg-theme-button-color, #2ea6ff);
-    color: var(--tg-theme-button-text-color, #ffffff);
+    background: var(--brand-primary);
+    color: var(--brand-on-primary);
   }
   .order-card {
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 14px;
-    padding: 14px 16px;
+    background: var(--surface-2);
+    border-radius: var(--radius-lg);
+    padding: 14px var(--sp-4);
     margin-bottom: 10px;
-    border: 1px solid rgba(0,0,0,0.06);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-card);
   }
   .order-card .order-top {
-    display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-2);
   }
-  .order-card .order-type { font-size: 14px; font-weight: 700; }
-  .order-card .order-time { font-size: 12px; opacity: 0.55; margin-top: 2px; }
-  .order-card .order-items { font-size: 14px; line-height: 1.5; margin-bottom: 8px; }
+  .order-card .order-type { font-size: var(--fs-body); font-weight: 700; }
+  .order-card .order-time { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+  .order-card .order-items { font-size: var(--fs-body); line-height: var(--lh-body); margin-bottom: var(--sp-2); }
   .order-card .order-bottom { display: flex; align-items: center; justify-content: space-between; }
-  .order-card .order-total { font-size: 14px; font-weight: 700; }
+  .order-card .order-total { font-size: var(--fs-body); font-weight: 700; }
+
+  /* ---- Holat belgilari (status-badge) — semantik ranglar, brenddan mustaqil ---- */
   .status-badge {
-    display: inline-block; font-size: 11px; font-weight: 700;
-    padding: 4px 10px; border-radius: 20px; white-space: nowrap;
+    display: inline-block; font-size: var(--fs-xs); font-weight: 700;
+    padding: 4px 10px; border-radius: var(--radius-pill); white-space: nowrap;
   }
-  .status-badge.yangi { background: #fdeaea; color: #d33; }
-  .status-badge.tayyorlanmoqda { background: #fff6dd; color: #b8860b; }
-  .status-badge.tayyor { background: #e3f7e9; color: #2fa84f; }
+  .status-badge.yangi { background: var(--danger-bg); color: var(--danger); }
+  .status-badge.tayyorlanmoqda { background: var(--warning-bg); color: var(--warning); }
+  .status-badge.tayyor { background: var(--success-bg); color: var(--success); }
+
   .order-card .order-action-btn {
-    border: none; border-radius: 10px; padding: 9px 14px; font-size: 13px; font-weight: 600;
-    color: var(--tg-theme-button-text-color, #ffffff); cursor: pointer;
+    border: none; border-radius: var(--radius-md); padding: 9px 14px; font-size: var(--fs-sm); font-weight: 600;
+    color: var(--brand-on-primary); cursor: pointer;
+    transition: opacity var(--transition-fast);
   }
-  .order-action-btn.start { background: #f0a500; }
-  .order-action-btn.ready { background: #2fa84f; }
-  .menu-item.low-stock { border: 1px solid #e5484d; }
+  .order-action-btn:hover { opacity: 0.88; }
+  .order-action-btn.start { background: var(--warning); }
+  .order-action-btn.ready { background: var(--success); }
+
   .link-box {
     display: flex;
     gap: 6px;
     align-items: center;
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
     padding: 10px 12px;
     margin-top: 10px;
-    font-size: 13px;
+    font-size: var(--fs-sm);
     word-break: break-all;
   }
   .link-box span { flex: 1; }
   .link-box button {
     border: none;
-    border-radius: 8px;
-    background: var(--tg-theme-button-color, #2ea6ff);
-    color: var(--tg-theme-button-text-color, #ffffff);
-    font-size: 12px;
+    border-radius: var(--radius-sm);
+    background: var(--brand-primary);
+    color: var(--brand-on-primary);
+    font-size: var(--fs-xs);
     font-weight: 600;
     padding: 6px 10px;
     cursor: pointer;
     white-space: nowrap;
+    transition: background var(--transition-fast);
   }
-  .xabar { font-size: 13px; margin-top: 8px; min-height: 16px; }
-  .xabar.ok { color: #2fa84f; }
-  .xabar.err { color: #d33; }
+  .link-box button:hover { background: var(--brand-primary-dark); }
+
+  .xabar { font-size: var(--fs-sm); margin-top: var(--sp-2); min-height: 16px; }
+  .xabar.ok { color: var(--success); }
+  .xabar.err { color: var(--danger); }
 
   /* ---- Tasdiqlash oynasi (modal) ---- */
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.45);
+    background: rgba(17, 17, 17, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 24px;
+    padding: var(--sp-6);
     z-index: 10;
+    animation: overlay-fade var(--transition-base);
   }
   .modal {
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 14px;
-    padding: 20px;
+    background: var(--surface-2);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-floating);
+    padding: var(--sp-5);
     width: 100%;
     max-width: 340px;
     text-align: left;
+    animation: modal-rise var(--transition-base);
   }
-  .modal h3 { font-size: 16px; margin-bottom: 8px; }
-  .modal p { font-size: 14px; opacity: 0.8; line-height: 1.4; margin-bottom: 16px; word-break: break-all; }
+  .modal h3 { font-size: 16px; margin-bottom: var(--sp-2); }
+  .modal p { font-size: var(--fs-body); color: var(--text-secondary); line-height: 1.4; margin-bottom: var(--sp-4); word-break: break-all; }
   .hidden { display: none !important; }
 
-  /* ---- J. Mijozlar uchun menyu (katalog, sevimlilar, aksiya, bonus) ---- */
-  .cat-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-top: 10px; }
+  @keyframes overlay-fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes modal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ---- Mijozlar uchun menyu (katalog, sevimlilar, aksiya, bonus) ---- */
+  .cat-row { display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: 4px; margin-top: 10px; }
   .cat-opt {
-    flex: 0 0 auto; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
-    background: var(--tg-theme-secondary-bg-color, #f2f2f7); cursor: pointer; white-space: nowrap;
+    flex: 0 0 auto; padding: 8px 14px; border-radius: var(--radius-pill); font-size: var(--fs-sm); font-weight: 600;
+    background: var(--surface-1); color: var(--text-secondary); cursor: pointer; white-space: nowrap;
+    transition: background var(--transition-fast), color var(--transition-fast);
   }
   .cat-opt.selected {
-    background: var(--tg-theme-button-color, #2ea6ff);
-    color: var(--tg-theme-button-text-color, #ffffff);
+    background: var(--brand-primary);
+    color: var(--brand-on-primary);
   }
   .catalog-item {
-    background: var(--tg-theme-bg-color, #ffffff);
-    border-radius: 14px;
+    background: var(--surface-2);
+    border-radius: var(--radius-lg);
     overflow: hidden;
-    margin-bottom: 12px;
-    border: 1px solid rgba(0,0,0,0.06);
+    margin-bottom: var(--sp-3);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-card);
     text-align: left;
   }
-  .catalog-img { width: 100%; height: 140px; object-fit: cover; display: block; background: var(--tg-theme-secondary-bg-color, #f2f2f7); }
+  .catalog-img { width: 100%; height: 140px; object-fit: cover; display: block; background: var(--surface-1); }
   .catalog-body { padding: 12px 14px; }
-  .catalog-desc { font-size: 13px; opacity: 0.7; margin-top: 4px; line-height: 1.4; }
-  .fav-btn { border: none; background: none; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 0 0 8px; }
+  .catalog-desc { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; line-height: var(--lh-body); }
+  .fav-btn { border: none; background: none; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 0 0 8px; transition: transform var(--transition-fast); }
+  .fav-btn:active { transform: scale(1.2); }
   .promo-banner {
-    background: linear-gradient(135deg, #fff3d6, #ffe9b8);
-    border-radius: 12px; padding: 12px 14px; margin-top: 10px; font-size: 13px;
-    border: 2px solid transparent; cursor: pointer; color: #7a5200;
+    background: linear-gradient(135deg, var(--promo-bg-1), var(--promo-bg-2));
+    border-radius: var(--radius-md); padding: 12px 14px; margin-top: 10px; font-size: var(--fs-sm);
+    border: 2px solid transparent; cursor: pointer; color: var(--promo-text);
   }
-  .promo-banner.selected { border-color: #f0a500; }
-  .customer-link-hint { font-size: 12px; opacity: 0.65; margin-top: 8px; line-height: 1.4; }
+  .promo-banner.selected { border-color: var(--promo-border); }
+  .customer-link-hint { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: var(--sp-2); line-height: var(--lh-body); }
+
+  /* =========================================================================
+     YANGI BAZAVIY KOMPONENTLAR (1-bosqichda qo'shildi, hozircha JS ularni
+     ishlatmaydi — 3-bosqichda ekranlarga joriy qilinadi)
+     ========================================================================= */
+
+  /* ---- Skeleton-loader: ma'lumot yuklanayotganda ko'rsatiladi ---- */
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-1) 25%, var(--border-color) 37%, var(--surface-1) 63%);
+    background-size: 400% 100%;
+    animation: skeleton-shine 1.4s ease infinite;
+    border-radius: var(--radius-md);
+  }
+  .skeleton-line { height: 12px; margin-bottom: var(--sp-2); }
+  .skeleton-line.w-60 { width: 60%; }
+  .skeleton-line.w-40 { width: 40%; }
+  .skeleton-card { height: 72px; border-radius: var(--radius-lg); margin-bottom: var(--sp-2); }
+  @keyframes skeleton-shine {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0 50%; }
+  }
+
+  /* ---- Bo'sh holat (empty state): ro'yxat bo'sh bo'lganda ---- */
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: var(--sp-8) var(--sp-4); color: var(--text-muted);
+  }
+  .empty-state .empty-state-icon { font-size: 34px; margin-bottom: var(--sp-3); opacity: 0.7; }
+  .empty-state .empty-state-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+  .empty-state .empty-state-desc { font-size: var(--fs-sm); color: var(--text-muted); max-width: 260px; line-height: var(--lh-body); }
 </style>
 </head>
 <body>
