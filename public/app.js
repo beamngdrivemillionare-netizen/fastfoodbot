@@ -3083,6 +3083,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
   }
 
+  function customerCartQty() {
+    return Object.values(customerState.cart).reduce((sum, q) => sum + (q || 0), 0);
+  }
+
   function customerTabRowHtml() {
     return `
       <div class="tab-row">
@@ -3117,25 +3121,35 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  function customerCategoryHeadingHtml() {
+    if (!customerState.menu.length) return '';
+    const label = customerState.category === 'hammasi' ? 'Hammasi' : customerState.category;
+    return `<div class="cat-heading">${escapeHtml(label)}</div>`;
+  }
+
   function customerItemCardHtml(m) {
     const qty = customerState.cart[m.id] || 0;
     const isFav = customerState.favorites.includes(m.id);
     return `
       <div class="catalog-item">
-        ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : ''}
+        <div class="catalog-img-wrap">
+          ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+          <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
+        </div>
         <div class="catalog-body">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-            <div class="m-name">${escapeHtml(m.name)}</div>
-            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
-          </div>
+          <div class="m-name">${escapeHtml(m.name)}</div>
           ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+          <div class="catalog-bottom-row">
             <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
-            <div class="qty-controls">
-              <button data-cqty-minus="${escapeHtml(m.id)}">-</button>
-              <span class="qty-val">${qty}</span>
-              <button data-cqty-plus="${escapeHtml(m.id)}">+</button>
-            </div>
+            ${qty > 0 ? `
+              <div class="qty-controls">
+                <button data-cqty-minus="${escapeHtml(m.id)}">-</button>
+                <span class="qty-val">${qty}</span>
+                <button data-cqty-plus="${escapeHtml(m.id)}">+</button>
+              </div>
+            ` : `
+              <button type="button" class="qty-add-btn" data-cqty-plus="${escapeHtml(m.id)}">+</button>
+            `}
           </div>
         </div>
       </div>
@@ -3171,7 +3185,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
         : customerMenuListHtml();
       attachCustomerCatalogHandlers();
-      updateCustomerCartTotal();
+      updateCustomerCartFab();
     });
     listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
       const id = btn.getAttribute('data-cqty-minus');
@@ -3180,7 +3194,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
         : customerMenuListHtml();
       attachCustomerCatalogHandlers();
-      updateCustomerCartTotal();
+      updateCustomerCartFab();
     });
     listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
       const id = btn.getAttribute('data-fav-id');
@@ -3195,55 +3209,60 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  function updateCustomerCartTotal() {
-    const el = document.getElementById('cCartTotalVal');
-    if (el) el.textContent = customerCartTotal() + " so'm";
+  // ---- Savat cho'ntak paneli (pastda mahkam turadigan kichik panel) ----
+  // 15-bosqich: checkout formasi endi shu yerda emas — faqat "N ta
+  // mahsulot / summa" va bitta tugma. Tugma bosilganda checkout ALOHIDA
+  // oynada (overlay/modal) ochiladi, ya'ni menyu ustiga xunuk chiqib
+  // qolmaydi.
+  function cartFabBarHtml() {
+    const qty = customerCartQty();
+    return `
+      <div class="cart-fab-bar ${qty ? '' : 'hidden'}" id="cCartFab">
+        <div class="cart-fab-info">
+          <span class="cart-fab-count" id="cCartFabCount">${qty} ta mahsulot</span>
+          <span class="cart-fab-total" id="cCartFabTotal">${customerCartTotal()} so'm</span>
+        </div>
+        <button type="button" class="btn" id="cOpenCheckoutBtn">Buyurtma berish</button>
+      </div>
+    `;
+  }
+
+  function attachCartFabHandler() {
+    const btn = document.getElementById('cOpenCheckoutBtn');
+    if (btn) btn.onclick = openCustomerCheckoutModal;
+  }
+
+  function updateCustomerCartFab() {
+    const qty = customerCartQty();
+    const bar = document.getElementById('cCartFab');
+    if (bar) bar.classList.toggle('hidden', !qty);
+    const panelEl = document.querySelector('.panel');
+    if (panelEl) panelEl.classList.toggle('has-cart-fab', !!qty);
+    const countEl = document.getElementById('cCartFabCount');
+    if (countEl) countEl.textContent = qty + ' ta mahsulot';
+    const totalEl = document.getElementById('cCartFabTotal');
+    if (totalEl) totalEl.textContent = customerCartTotal() + " so'm";
+    // Agar checkout oynasi hozir ochiq bo'lsa, undagi summani ham yangilaymiz.
+    const modalTotalEl = document.getElementById('cCartTotalVal');
+    if (modalTotalEl) modalTotalEl.textContent = customerCartTotal() + " so'm";
   }
 
   function renderCustomerMenuTab() {
     ekran(`
-      <div class="panel">
+      <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
         ${customerHeaderHtml()}
         ${customerTabRowHtml()}
         ${customerPromoBannerHtml()}
         ${customerCategoriesHtml()}
-        <div id="customerMenuList" style="margin-top:10px;">${customerMenuListHtml()}</div>
-        <div class="cart-bar">
-          <div class="type-row" id="cOrderTypeRow">
-            ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
-              <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
-            `).join('')}
-          </div>
-          <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
-            <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
-          </div>
-          <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
-            <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
-              ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
-            </button>
-            <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
-            <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - dostavkachi oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
-          </div>
-          <div class="type-row" id="cPaymentTypeRow">
-            ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
-              <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
-            `).join('')}
-          </div>
-          ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
-            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:8px;">
-              <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
-              Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
-            </label>
-          ` : ''}
-          <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${customerCartTotal()} so'm</span></div>
-          <button class="btn" id="cSendOrderBtn">Buyurtma berish</button>
-          <div class="xabar" id="cOrderMsg"></div>
-        </div>
+        ${customerCategoryHeadingHtml()}
+        <div id="customerMenuList" class="catalog-grid" style="margin-top:8px;">${customerMenuListHtml()}</div>
       </div>
+      ${cartFabBarHtml()}
     `);
 
     attachCustomerCatalogHandlers();
     attachCustomerTabHandlers();
+    attachCartFabHandler();
 
     const catRow = document.querySelector('.cat-row');
     if (catRow) catRow.addEventListener('click', (e) => {
@@ -3260,26 +3279,91 @@ const tg = window.Telegram && window.Telegram.WebApp;
         renderCustomerMenuTab();
       });
     });
+  }
 
-    document.getElementById('cOrderTypeRow').addEventListener('click', (e) => {
+  // ---- Checkout — ALOHIDA oynada (overlay/modal) ----
+  // Buyurtma turi, stol/dostavka, to'lov turi, bonus va "Buyurtma
+  // berish" shu yerda. Har bir tanlov o'zgarganda faqat shu modal ichi
+  // qayta chiziladi (butun sahifa emas), shuning uchun modal ochiq
+  // qolaveradi.
+  function customerCheckoutModalBodyHtml() {
+    return `
+      <h3>Buyurtmani rasmiylashtirish</h3>
+      <div class="type-row" id="cOrderTypeRow">
+        ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+          <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
+        <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
+      </div>
+      <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
+        <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
+          ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
+        </button>
+        <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
+        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - dostavkachi oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+      </div>
+      <div class="type-row" id="cPaymentTypeRow">
+        ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
+          <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
+        <label style="display:flex; align-items:center; gap:8px; font-size:var(--fs-body); margin-bottom:10px;">
+          <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
+          Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
+        </label>
+      ` : ''}
+      <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${customerCartTotal()} so'm</span></div>
+      <div class="xabar" id="cOrderMsg"></div>
+      <div class="btn-row">
+        <button type="button" class="btn ikkinchi" id="cCloseCheckoutBtn">Bekor qilish</button>
+        <button type="button" class="btn" id="cSendOrderBtn">Buyurtma berish</button>
+      </div>
+    `;
+  }
+
+  function openCustomerCheckoutModal() {
+    if (!customerCartQty()) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    renderCheckoutModalBody(overlay);
+  }
+
+  function renderCheckoutModalBody(overlay) {
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.innerHTML = customerCheckoutModalBodyHtml();
+    wireCheckoutModal(overlay);
+  }
+
+  function wireCheckoutModal(overlay) {
+    const modalEl = overlay.querySelector('.modal');
+
+    modalEl.querySelector('#cCloseCheckoutBtn').addEventListener('click', () => overlay.remove());
+
+    modalEl.querySelector('#cOrderTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-corder-type');
       if (!t) return;
       customerState.orderType = t;
-      renderCustomerMenuTab();
+      renderCheckoutModalBody(overlay);
     });
-    document.getElementById('cPaymentTypeRow').addEventListener('click', (e) => {
+    modalEl.querySelector('#cPaymentTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-cpayment-type');
       if (!t) return;
       customerState.paymentType = t;
-      renderCustomerMenuTab();
+      renderCheckoutModalBody(overlay);
     });
-    const tableInput = document.getElementById('cTableInput');
+    const tableInput = modalEl.querySelector('#cTableInput');
     if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
 
-    // YANGI: dostavka - joylashuvni aniqlash (brauzer/Telegram webview
+    // Dostavka - joylashuvni aniqlash (brauzer/Telegram webview
     // Geolocation API orqali) va manzil izohi.
-    const locationBtn = document.getElementById('cLocationBtn');
-    const locationStatusEl = document.getElementById('cLocationStatus');
+    const locationBtn = modalEl.querySelector('#cLocationBtn');
+    const locationStatusEl = modalEl.querySelector('#cLocationStatus');
     if (locationBtn) locationBtn.addEventListener('click', () => {
       if (!navigator.geolocation) {
         locationStatusEl.textContent = 'Kechirasiz, bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni yozib qoldiring.';
@@ -3296,20 +3380,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
           locationBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
         },
         () => {
-          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo\'lmadi (ruxsat berilmagan bo\'lishi mumkin). Iltimos, manzilni yozib qoldiring.`;
+          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo'lmadi (ruxsat berilmagan bo'lishi mumkin). Iltimos, manzilni yozib qoldiring.`;
           locationStatusEl.className = 'xabar err';
         },
         { enableHighAccuracy: true, timeout: 10000 }
       );
     });
-    const addressNoteInput = document.getElementById('cAddressNoteInput');
+    const addressNoteInput = modalEl.querySelector('#cAddressNoteInput');
     if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
 
-    const pointsCheckbox = document.getElementById('cUsePoints');
+    const pointsCheckbox = modalEl.querySelector('#cUsePoints');
     if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
 
-    document.getElementById('cSendOrderBtn').addEventListener('click', sendCustomerOrder);
+    modalEl.querySelector('#cSendOrderBtn').addEventListener('click', () => sendCustomerOrder(overlay));
   }
+
 
   function attachCustomerTabHandlers() {
     const tabRow = document.querySelector('.tab-row');
@@ -3327,16 +3412,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function renderCustomerFavoritesTab() {
     const favItems = customerState.menu.filter(m => customerState.favorites.includes(m.id));
     ekran(`
-      <div class="panel">
+      <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
         ${customerHeaderHtml()}
         ${customerTabRowHtml()}
-        <div id="customerMenuList" style="margin-top:10px;">
+        <div id="customerMenuList" class="catalog-grid" style="margin-top:10px;">
           ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda ${icon('heart', 'icon-xs icon-muted')} tugmasini bosing.</div>`}
         </div>
       </div>
+      ${cartFabBarHtml()}
     `);
     attachCustomerCatalogHandlers();
     attachCustomerTabHandlers();
+    attachCartFabHandler();
   }
 
   function customerOrderHistoryCardHtml(o) {
@@ -3375,7 +3462,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
   }
 
-  async function sendCustomerOrder() {
+  async function sendCustomerOrder(overlay) {
     const msgEl = document.getElementById('cOrderMsg');
     const items = Object.entries(customerState.cart)
       .filter(([, qty]) => qty > 0)
@@ -3418,7 +3505,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.bonusPoints = res.bonusBalance;
       customerState.location = null;
       customerState.addressNote = '';
-      renderCustomerMenuTab();
+      if (overlay) overlay.remove();
+      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+      else renderCustomerMenuTab();
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
       if (res.paymentPending) {
