@@ -2837,8 +2837,13 @@
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
       if (res.paymentPending) {
-        topMsg.innerHTML = `💳 Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
-          `Iltimos, to'lov chekining rasmini (skrinshotini) shu botning shaxsiy chatiga yuboring.`;
+        if (res.paymentConfirmMethod === 'naqd_kassa') {
+          topMsg.innerHTML = `🍽 Buyurtma qabul qilindi (${res.total} so'm).<br>` +
+            `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
+        } else {
+          topMsg.innerHTML = `💳 Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
+            `Iltimos, to'lov chekining rasmini (skrinshotini) shu botning shaxsiy chatiga yuboring.`;
+        }
       } else {
         topMsg.textContent = `✅ Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
       }
