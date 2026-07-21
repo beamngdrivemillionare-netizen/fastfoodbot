@@ -666,6 +666,7 @@ async function handleTelegramUpdate(update) {
     for (const owner of owners) {
       for (const order of (owner.orders || [])) {
         if (String(order.customerId) !== userId) continue;
+        if (order.paymentConfirmMethod !== 'skrinshot') continue;
         if (order.paymentProofStatus !== 'kutilmoqda' && order.paymentProofStatus !== 'rad_etildi') continue;
         if (!targetOrder || new Date(order.createdAt) > new Date(targetOrder.createdAt)) {
           targetOwner = owner;
@@ -788,11 +789,21 @@ async function handleTelegramUpdate(update) {
         return;
       }
 
+      // "naqd_kassa" (stolga+naqd) tasdiqlash oddiy MATN xabar bilan yuboriladi,
+      // "skrinshot" (karta) tasdiqlash esa RASM (caption) bilan - shu sababli
+      // tahrirlash uchun to'g'ri Telegram metodini tanlash kerak (aks holda
+      // "message is not modified"/"there is no caption in the message" xatosi).
+      const editConfirmMessage = (extraLine) => {
+        if (!chatId || !messageId) return Promise.resolve();
+        if (cq.message && cq.message.photo) {
+          return editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n${extraLine}`, null);
+        }
+        return editMessageText(chatId, messageId, `${cq.message.text || ''}\n\n${extraLine}`, null);
+      };
+
       if (order.paymentProofStatus !== 'kutilmoqda') {
         await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-        if (chatId && messageId) {
-          await editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n(allaqachon ko'rib chiqilgan)`, null);
-        }
+        await editConfirmMessage('(allaqachon ko\'rib chiqilgan)');
         return;
       }
 
@@ -802,7 +813,7 @@ async function handleTelegramUpdate(update) {
         order.paymentProofApprovedAt = new Date().toISOString();
         saveOwners(owners);
 
-        // ENDI (va FAQAT ENDI) - skrinshot tasdiqlangach - oshxona/kassir/
+        // ENDI (va FAQAT ENDI) - to'lov tasdiqlangach - oshxona/kassir/
         // dostavka guruhiga xabar ketadi (customer-order'dagi bilan bir xil).
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
@@ -816,11 +827,12 @@ async function handleTelegramUpdate(update) {
         }
 
         if (order.customerId) {
-          await sendMessage(order.customerId, '✅ To\'lovingiz tasdiqlandi! Buyurtmangiz oshxonaga yuborildi.');
+          const okText = order.paymentConfirmMethod === 'naqd_kassa'
+            ? '✅ To\'lovingiz qabul qilindi! Taomingiz tayyorlanishni boshladi. Yoqimli ishtaha! 😊'
+            : '✅ To\'lovingiz tasdiqlandi! Buyurtmangiz oshxonaga yuborildi.';
+          await sendMessage(order.customerId, okText);
         }
-        if (chatId && messageId) {
-          await editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n✅ Tasdiqlandi — ${displayName(from)}`, null);
-        }
+        await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
         await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
         return;
       }
@@ -832,13 +844,13 @@ async function handleTelegramUpdate(update) {
         saveOwners(owners);
 
         if (order.customerId) {
-          await sendMessage(order.customerId,
-            '❌ To\'lov skrinshoti tasdiqlanmadi. Iltimos, to\'g\'ri skrinshotni qayta (rasm qilib) yuboring ' +
-            'yoki oshxona bilan bog\'laning.');
+          const rejText = order.paymentConfirmMethod === 'naqd_kassa'
+            ? '❌ Buyurtmangiz bekor qilindi. Savol bo\'lsa, kassaga murojaat qiling.'
+            : '❌ To\'lov skrinshoti tasdiqlanmadi. Iltimos, to\'g\'ri skrinshotni qayta (rasm qilib) yuboring ' +
+              'yoki oshxona bilan bog\'laning.';
+          await sendMessage(order.customerId, rejText);
         }
-        if (chatId && messageId) {
-          await editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n❌ Rad etildi — ${displayName(from)}`, null);
-        }
+        await editConfirmMessage(`❌ Rad etildi — ${displayName(from)}`);
         await answerCallbackQuery(cq.id, 'Rad etildi ❌');
         return;
       }
@@ -1773,7 +1785,16 @@ const server = http.createServer((req, res) => {
         // pastdagi if (paymentType === 'karta') bloki va 'payok'/'payrej'
         // callback'lari). Naqd/"dostavka orqali" to'lovda bu tekshiruv
         // kerak emas - shuning uchun null.
-        paymentProofStatus: paymentType === 'karta' ? 'kutilmoqda' : null,
+        //
+        // YANA: STOLGA + NAQD buyurtmada ham xuddi shunday - mijoz oldin
+        // kassaga borib to'lashi, kassir "✅ To'lov qabul qilindi" tugmasini
+        // bosishi kerak, SHUNDAN KEYIN oshpazga buyurtma ketadi (ish
+        // boshlanadi). Farqi: skrinshot TALAB QILINMAYDI - kassir mijozni
+        // ko'zi bilan ko'rib, naqd pulni qo'lida ushlab tasdiqlaydi.
+        // paymentConfirmMethod shu ikki holatni bir-biridan ajratadi
+        // (xabar matnlari va UI shunga qarab farqlanadi).
+        paymentProofStatus: (paymentType === 'karta' || (orderType === 'stol' && paymentType === 'naqd')) ? 'kutilmoqda' : null,
+        paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : (orderType === 'stol' && paymentType === 'naqd') ? 'naqd_kassa' : null,
         paymentProofFileId: null,
         branchId: null,
         customerId: userId,
@@ -1796,6 +1817,30 @@ const server = http.createServer((req, res) => {
           '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.\n\n' +
           'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
           'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
+      } else if (order.paymentConfirmMethod === 'naqd_kassa') {
+        // YANGI: STOLGA + NAQD - mijozga YUMSHOQ, tushunarli tarzda
+        // tushuntiriladi: avval kassaga to'lov, keyin tayyorlash boshlanadi.
+        // Skrinshot kerak emas - kassir "✅ To'lov qabul qilindi" tugmasini
+        // bosgach (naqd pulni qo'lida ko'rib) - oshpazga yuboriladi.
+        await sendMessage(userId,
+          `🍽 Buyurtmangiz qabul qilindi!\n\n` +
+          `Iltimos, xohishingiz bo'lsa avval kassaga borib to'lovni amalga oshiring - ` +
+          `to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi. Rahmat! 🙏`);
+
+        const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const confirmCaption = `💵 <b>Naqd to'lov tasdiqlash kerak</b>\n` +
+          `Stol: ${escapeHtmlServer(order.tableNumber || '-')}\nMijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\n` +
+          `Jami: ${total} so'm\n\nMijoz kassaga to'lov qilgach, shu yerda tasdiqlang - shundan keyin oshpazga ketadi.`;
+        const confirmKb = {
+          inline_keyboard: [[
+            { text: '✅ To\'lov qabul qilindi', callback_data: `payok:${owner.id}:${order.id}` },
+            { text: '❌ Bekor qilish', callback_data: `payrej:${owner.id}:${order.id}` }
+          ]]
+        };
+        const cashApprovers = [owner.id, ...((owner.staff || []).filter(s => s.role === 'kassir').map(s => s.id))];
+        for (const approverId of new Set(cashApprovers.map(String))) {
+          sendMessage(approverId, confirmCaption, confirmKb);
+        }
       } else {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
@@ -1811,7 +1856,8 @@ const server = http.createServer((req, res) => {
 
       return sendJSON(res, 200, {
         ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
-        bonusBalance: customer.bonusPoints, paymentPending: paymentType === 'karta'
+        bonusBalance: customer.bonusPoints, paymentPending: !!order.paymentProofStatus,
+        paymentConfirmMethod: order.paymentConfirmMethod
       });
     });
     return;
