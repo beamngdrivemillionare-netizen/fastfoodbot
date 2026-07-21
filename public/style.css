@@ -86,6 +86,39 @@
     /* ---- Harakat (motion) ---- */
     --transition-fast: 0.15s ease;
     --transition-base: 0.2s ease;
+
+    /* ---- 1-bosqich: KitchenOS bosh sahifa tokenlari ----
+       Yangi "Bosh sahifa" (header, KPI-kartochkalar, holat-banner,
+       menyu-grid, pastki navigatsiya) shu tokenlar orqali quriladi.
+       Hammasi yuqoridagi brend/semantik tokenlardan hosil qilingan —
+       bu yerda ham xom hex-rang yozilmagan. */
+    --header-bg: var(--brand-primary);
+    --header-on: var(--brand-on-primary);
+    --header-on-muted: color-mix(in srgb, var(--brand-on-primary) 78%, transparent);
+
+    --badge-bg: var(--brand-on-primary);
+    --badge-text: var(--brand-primary);
+
+    --kpi-icon-bg: var(--brand-primary-light);
+    --kpi-value-color: var(--text-primary);
+    --kpi-delta-up: var(--brand-primary-dark);
+    --kpi-delta-down: var(--danger);
+
+    --status-banner-bg: var(--brand-primary);
+    --status-banner-on: var(--brand-on-primary);
+    --status-banner-on-muted: color-mix(in srgb, var(--brand-on-primary) 82%, transparent);
+
+    --grid-tile-bg: var(--surface-1);
+    --grid-tile-icon: var(--brand-primary);
+    --grid-tile-label: var(--text-primary);
+
+    --fab-bg: var(--brand-primary);
+    --fab-on: var(--brand-on-primary);
+    --fab-shadow: var(--shadow-floating);
+
+    --bottom-nav-bg: var(--surface-0);
+    --bottom-nav-active: var(--brand-primary);
+    --bottom-nav-inactive: var(--text-muted);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
