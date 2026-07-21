@@ -322,6 +322,20 @@
   }
   .bosh { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; }
   .owner-item .owner-expiry { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+
+  /* ---- Obuna progress-bar (17-bosqich): admin panelidagi har bir do'kon
+     egasi qatorida, muddatning necha foizi qolganini vizual ko'rsatadi ---- */
+  .subscription-progress { margin-top: var(--sp-2); max-width: 160px; }
+  .subscription-progress-track {
+    height: 5px; border-radius: var(--radius-pill);
+    background: var(--border-color-strong); overflow: hidden;
+  }
+  .subscription-progress-fill {
+    height: 100%; border-radius: var(--radius-pill);
+    background: var(--success); transition: width var(--transition-base);
+  }
+  .subscription-progress.warn .subscription-progress-fill { background: var(--warning); }
+  .subscription-progress.danger .subscription-progress-fill { background: var(--danger); }
   .owner-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 
   /* ---- Belgi (badge) ---- */
@@ -1011,6 +1025,34 @@
     return `${days} kun qoldi`;
   }
 
+  // 17-bosqich: muddatli obunalar uchun vizual progress-bar — necha foiz
+  // muddat o'tganini (addedAt'dan expiresAt'gacha bo'lgan davr ichida)
+  // ko'rsatadi. Doimiy ruxsat (expiresAt=null) uchun hech narsa chizmaydi.
+  function subscriptionProgressHtml(o) {
+    if (!o.expiresAt) return '';
+    const expiresMs = new Date(o.expiresAt).getTime();
+    const startedMs = o.addedAt ? new Date(o.addedAt).getTime() : NaN;
+    const nowMs = Date.now();
+    const totalMs = Number.isFinite(startedMs) ? expiresMs - startedMs : NaN;
+    // addedAt bo'lmasa yoki noto'g'ri bo'lsa (masalan eski yozuv), faqat
+    // "qolgan vaqt"ni umumiy 30 kunlik oyga nisbatan taxminiy ko'rsatamiz.
+    const remainingMs = expiresMs - nowMs;
+    const remainingPercent = Number.isFinite(totalMs) && totalMs > 0
+      ? Math.max(0, Math.min(100, Math.round((remainingMs / totalMs) * 100)))
+      : Math.max(0, Math.min(100, Math.round((remainingMs / (30 * 86400000)) * 100)));
+    let statusClass = 'ok';
+    if (remainingMs <= 0) statusClass = 'danger';
+    else if (remainingPercent <= 20) statusClass = 'danger';
+    else if (remainingPercent <= 50) statusClass = 'warn';
+    return `
+      <div class="subscription-progress ${statusClass}" role="progressbar" aria-valuenow="${remainingPercent}" aria-valuemin="0" aria-valuemax="100" aria-label="Obuna muddati">
+        <div class="subscription-progress-track">
+          <div class="subscription-progress-fill" style="width:${remainingPercent}%;"></div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderAdminPanel(owners) {
     clearAppHeader();
     const ownersHtml = owners.length
@@ -1021,6 +1063,7 @@
               ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
               ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username">Profil to'ldirilmagan</div>`}
               <div class="owner-expiry">${escapeHtml(expiryText(o))}</div>
+              ${subscriptionProgressHtml(o)}
               <div class="owner-price" data-edit-price="${escapeHtml(o.id)}" style="cursor:pointer; text-decoration:underline dotted;">
                 Obuna narxi: ${o.price ? escapeHtml(String(o.price)) + ' so\'m/oy' : 'kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
               </div>
