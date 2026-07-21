@@ -613,6 +613,24 @@
   .empty-state .empty-state-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
   .empty-state .empty-state-desc { font-size: var(--fs-sm); color: var(--text-muted); max-width: 260px; line-height: var(--lh-body); }
 
+  /* ---- Tarmoq xatosi holati (16-bosqich): internet/server bilan aloqa
+     uzilganda — bo'sh holatdan farqli, "Qayta urinish" tugmasi bilan.
+     Ham to'liq ekran (renderNetworkErrorScreen), ham bitta konteyner ichida
+     (renderNetworkErrorInline, masalan ro'yxat/board o'rnida) ishlatiladi. ---- */
+  .network-error-state {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: var(--sp-8) var(--sp-4); color: var(--text-muted);
+  }
+  .network-error-state .network-error-icon { width: 36px; height: 36px; margin-bottom: var(--sp-3); color: var(--danger); opacity: 0.85; }
+  .network-error-state .network-error-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
+  .network-error-state .network-error-desc { font-size: var(--fs-sm); color: var(--text-muted); max-width: 280px; line-height: var(--lh-body); margin-bottom: var(--sp-4); }
+  .network-error-state .network-error-retry-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    width: auto; min-width: 160px; min-height: 44px; padding: 0 var(--sp-5);
+  }
+  .network-error-state .network-error-retry-btn .icon { width: 16px; height: 16px; }
+  .network-error-state .network-error-retry-btn:disabled { opacity: 0.6; }
+
   /* =========================================================================
      IKONOGRAFIYA (9-bosqich): yagona chiziqli (outline) ikon tizimi.
      Barcha ikonlar #icon-sprite ichidagi <symbol>lardan <use> orqali
@@ -818,6 +836,21 @@
     <path d="M3 10h18"/>
     <path d="M7 15h4"/>
   </symbol>
+  <symbol id="icon-wifi-off" viewBox="0 0 24 24">
+    <path d="M2 2l20 20"/>
+    <path d="M8.5 16.5a5 5 0 0 1 7 0"/>
+    <path d="M5 12.5a10 10 0 0 1 3.5-2.3"/>
+    <path d="M12.5 8.05A10 10 0 0 1 19 12.5"/>
+    <path d="M1.5 8.5a15 15 0 0 1 4.4-3"/>
+    <path d="M18.1 5.5A15 15 0 0 1 22.5 8.5"/>
+    <path d="M12 20.5h.01"/>
+  </symbol>
+  <symbol id="icon-refresh" viewBox="0 0 24 24">
+    <path d="M3 11a9 9 0 0 1 15.3-5.3L21 8"/>
+    <path d="M21 3v5h-5"/>
+    <path d="M21 13a9 9 0 0 1-15.3 5.3L3 16"/>
+    <path d="M3 21v-5h5"/>
+  </symbol>
 </svg>
 
 <div id="appHeader" class="app-header hidden"></div>
@@ -832,13 +865,70 @@
     appEl.innerHTML = html;
   }
 
+  // 16-bosqich: tarmoq xatosi holati. apiPost endi ikki turdagi muvaffaqiyatsizlikni
+  // ajratadi — (1) server javob berdi, lekin so'rov mantiqan rad etildi (masalan
+  // "ruxsat yo'q") — bu {ok:false, reason} bo'lib qoladi, chaqiruvchi joy o'zi
+  // matn ko'rsatadi; (2) so'rov umuman serverga yetib bormadi yoki javob
+  // o'qib bo'lmadi (internet yo'q / server ishlamayapti) — bu holda
+  // {ok:false, networkError:true, reason} qaytadi, shunda chaqiruvchi joy
+  // "Qayta urinish" tugmali maxsus holatni ko'rsatishi mumkin.
   async function apiPost(url, body) {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    return r.json();
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        networkError: true,
+        reason: (typeof navigator !== 'undefined' && navigator.onLine === false)
+          ? "Internet aloqasi yo'q. Tarmoqni tekshirib, qayta urinib ko'ring."
+          : "Serverga ulanib bo'lmadi. Birozdan so'ng qayta urinib ko'ring."
+      };
+    }
+    try {
+      return await r.json();
+    } catch (e) {
+      return {
+        ok: false,
+        networkError: true,
+        reason: "Server javob bermadi. Qayta urinib ko'ring."
+      };
+    }
+  }
+
+  // Tarmoq xatosi holatining umumiy HTML qolipi — to'liq ekran va bitta
+  // konteyner ichida ishlatilishi uchun bir xil ko'rinishda.
+  function networkErrorMarkup(message) {
+    return `
+      <div class="network-error-state">
+        ${icon('wifi-off', 'network-error-icon')}
+        <div class="network-error-title">Aloqa yo'q</div>
+        <div class="network-error-desc">${escapeHtml(message || "Serverga ulanib bo'lmadi.")}</div>
+        <button type="button" class="btn network-error-retry-btn">${icon('refresh')}<span>Qayta urinish</span></button>
+      </div>
+    `;
+  }
+
+  // To'liq ekranni tarmoq xatosi holati bilan almashtiradi (masalan ilova
+  // ochilishida asosiy tekshiruv muvaffaqiyatsiz bo'lsa). retryFn — tugma
+  // bosilganda qayta chaqiriladigan funksiya (odatda o'sha yuklovchi funksiyaning o'zi).
+  function renderNetworkErrorScreen(message, retryFn) {
+    ekran(networkErrorMarkup(message));
+    const btn = appEl.querySelector('.network-error-retry-btn');
+    if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
+  }
+
+  // Faqat bitta konteyner (masalan ro'yxat yoki taxta) ichida tarmoq xatosi
+  // holatini ko'rsatadi — qolgan ekran (sarlavha, boshqa tab'lar) tegilmaydi.
+  function renderNetworkErrorInline(container, message, retryFn) {
+    if (!container) return;
+    container.innerHTML = networkErrorMarkup(message);
+    const btn = container.querySelector('.network-error-retry-btn');
+    if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
   }
 
   // Ikonografiya (9-bosqich): #icon-sprite ichidagi <symbol>ga ishora qiluvchi
@@ -1218,6 +1308,7 @@
   async function loadBranchAndRender() {
     const listEl = document.getElementById('branchList');
     const res = await apiPost('/api/branch-list', { initData });
+    if (res.networkError) { if (listEl) renderNetworkErrorInline(listEl, res.reason, loadBranchAndRender); return; }
     branchState.branches = res.ok ? res.branches : [];
     if (listEl) listEl.innerHTML = branchListHtml(branchState.branches);
     const staffBranchSelect = document.getElementById('staffBranchInput');
@@ -1713,6 +1804,7 @@
     const listEl = document.getElementById('promoList');
     if (!listEl) return;
     const res = await apiPost('/api/promo-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadPromoAndRender); return; }
     listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
   }
 
@@ -1729,6 +1821,7 @@
     const listEl = document.getElementById('staffList');
     if (!listEl) return;
     const res = await apiPost('/api/staff-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadStaffAndRender); return; }
     listEl.innerHTML = staffListHtml(res.ok ? res.staff : []);
   }
 
@@ -1755,6 +1848,7 @@
     const listEl = document.getElementById('menuList');
     if (!listEl) return;
     const res = await apiPost('/api/menu-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadMenuAndRender); return; }
     const menu = res.ok ? res.menu : [];
     listEl.innerHTML = ownerMenuListHtml(menu);
     listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
@@ -1947,6 +2041,7 @@
   async function loadCashierMenu(restaurantName) {
     const el = document.getElementById('cashierMenu');
     const res = await apiPost('/api/menu-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, () => loadCashierMenu(restaurantName)); return; }
     cashierState.menu = res.ok ? res.menu : [];
     el.innerHTML = cashierMenuHtml();
     attachQtyHandlers(restaurantName);
@@ -2096,7 +2191,15 @@
     const board = document.getElementById('ordersBoard');
     if (!board) { stopOrdersPolling(); return; }
     const res = await apiPost('/api/orders-list', { initData });
-    if (!res.ok) return;
+    if (!res.ok) {
+      // Faqat hali hech qanday ma'lumot yuklanmagan bo'lsa (birinchi urinish)
+      // to'liq "aloqa yo'q" holatini ko'rsatamiz — aks holda oshpaz ekranidagi
+      // mavjud buyurtmalar ro'yxatini vaqtinchalik uzilish tufayli tozalamaymiz.
+      if (res.networkError && lastOrdersSnapshot === null) {
+        renderNetworkErrorInline(board, res.reason, () => refreshOrdersBoard(role));
+      }
+      return;
+    }
     const snapshot = JSON.stringify(res.orders);
     if (snapshot === lastOrdersSnapshot) return; // o'zgarish yo'q — qayta chizmaymiz
     lastOrdersSnapshot = snapshot;
@@ -2170,7 +2273,12 @@
     const board = document.getElementById('ordersBoard');
     if (!board) { stopOrdersPolling(); return; }
     const res = await apiPost('/api/orders-list', { initData });
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (res.networkError && lastOrdersSnapshot === null) {
+        renderNetworkErrorInline(board, res.reason, () => refreshDeliveryBoard());
+      }
+      return;
+    }
     const snapshot = JSON.stringify(res.orders);
     if (snapshot === lastOrdersSnapshot) return;
     lastOrdersSnapshot = snapshot;
@@ -2325,6 +2433,7 @@
     const el = document.getElementById('stockList');
     if (!el) return;
     const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadStockAndRender); return; }
     stockState.stock = res.ok ? res.stock : [];
     const canTransfer = currentStockRole === 'egasi' && !currentStockBranchId && branchState.branches.length > 0;
     el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi', canTransfer);
@@ -2396,6 +2505,7 @@
     const el = document.getElementById('stockMovements');
     if (!el) return;
     const res = await apiPost('/api/stock-movements', { initData, branchId: currentStockBranchId });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadMovementsAndRender); return; }
     el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
   }
 
@@ -2618,6 +2728,7 @@
     const el = document.getElementById('cfBranchReport');
     if (!el) return;
     const res = await apiPost('/api/branch-report', { initData, period: cashflowState.period });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadBranchReportAndRender); return; }
     el.innerHTML = branchReportHtml(res.ok ? res.report : []);
   }
 
@@ -2627,6 +2738,11 @@
     const msgEl = document.getElementById('cfExpenseMsg');
     if (!statsEl || !listEl) return;
     const res = await apiPost('/api/cashflow', { initData });
+    if (res.networkError) {
+      renderNetworkErrorInline(statsEl, res.reason, loadCashflowData);
+      listEl.innerHTML = '';
+      return;
+    }
     if (!res.ok) {
       statsEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -2762,6 +2878,12 @@
     const forecastEl = document.getElementById('aiForecast');
     if (!topEl) return;
     const res = await apiPost('/api/ai-analytics', { initData, period: aiState.period });
+    if (res.networkError) {
+      renderNetworkErrorInline(topEl, res.reason, loadAiData);
+      peakEl.innerHTML = '';
+      forecastEl.innerHTML = '';
+      return;
+    }
     if (!res.ok) {
       topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       peakEl.innerHTML = '';
@@ -2849,11 +2971,19 @@
     if (!ratingEl) return;
 
     const perfRes = await apiPost('/api/staff-performance-report', { initData, period: staffControlState.period });
+    if (perfRes.networkError) {
+      renderNetworkErrorInline(ratingEl, perfRes.reason, loadStaffControlData);
+      return;
+    }
     ratingEl.innerHTML = perfRes.ok
       ? staffPerformanceHtml(perfRes.report)
       : `<div class="xabar err">${escapeHtml(perfRes.reason || 'Xatolik yuz berdi.')}</div>`;
 
     const logRes = await apiPost('/api/staff-activity-log', { initData, limit: 50 });
+    if (logRes.networkError) {
+      renderNetworkErrorInline(logEl, logRes.reason, loadStaffControlData);
+      return;
+    }
     logEl.innerHTML = logRes.ok
       ? staffActivityLogHtml(logRes.entries)
       : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
@@ -2939,6 +3069,7 @@
     const commissionInput = document.getElementById('crCommissionInput');
     if (!listEl) return;
     const res = await apiPost('/api/courier-report', { initData, period: courierReportState.period });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadCourierReport); return; }
     if (!res.ok) {
       listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -3022,6 +3153,7 @@
     const listEl = document.getElementById('zrList');
     if (!listEl) return;
     const res = await apiPost('/api/z-report-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadZReportList); return; }
     if (!res.ok) {
       listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -3192,12 +3324,14 @@
 
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
+    if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
     if (res.ok && res.profile) renderProfileView(res.profile);
     else renderProfileForm(res.ok ? res.profile : null);
   }
 
   async function loadOwnersAndRender() {
     const res = await apiPost('/api/owners', { initData });
+    if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnersAndRender); return; }
     renderAdminPanel(res.ok ? res.owners : []);
   }
 
@@ -3587,6 +3721,10 @@
     clearAppHeader();
     ekran('<div class="xato">Tekshirilmoqda...</div>');
     const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
+    if (verifyRes.networkError) {
+      renderNetworkErrorScreen(verifyRes.reason, () => renderCustomerApp(ownerId));
+      return;
+    }
     if (!verifyRes.ok) {
       ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(verifyRes.reason || 'Bu menyu hozircha mavjud emas.')}</div>`);
       return;
@@ -3621,6 +3759,10 @@
     clearAppHeader();
     ekran('<div class="xato">Tekshirilmoqda...</div>');
     const res = await apiPost('/api/customer-restaurants-list', { initData });
+    if (res.networkError) {
+      renderNetworkErrorScreen(res.reason, renderCustomerEntry);
+      return;
+    }
     const restaurants = res.ok ? res.restaurants : [];
 
     if (!restaurants.length) {
@@ -3656,31 +3798,30 @@
     if (customerOwnerId) {
       renderCustomerApp(customerOwnerId);
     } else {
-      fetch('/api/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData })
-      })
-        .then(r => r.json())
-        .then(data => {
-          if (!data.ok) {
-            // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
-            renderCustomerEntry();
-            return;
-          }
-          if (data.isAdmin) {
-            loadOwnersAndRender();
-          } else if (data.isOwner) {
-            loadOwnProfileAndRender();
-          } else if (data.role) {
-            renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl);
-          } else {
-            renderCustomerEntry();
-          }
-        })
-        .catch(() => {
-          ekran('<div class="xato">Xatolik yuz berdi.<br>Qaytadan urinib ko\'ring.</div>');
-        });
+      bootstrapApp();
+    }
+  }
+
+  async function bootstrapApp() {
+    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    const data = await apiPost('/api/verify', { initData });
+    if (data.networkError) {
+      renderNetworkErrorScreen(data.reason, bootstrapApp);
+      return;
+    }
+    if (!data.ok) {
+      // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
+      renderCustomerEntry();
+      return;
+    }
+    if (data.isAdmin) {
+      loadOwnersAndRender();
+    } else if (data.isOwner) {
+      loadOwnProfileAndRender();
+    } else if (data.role) {
+      renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl);
+    } else {
+      renderCustomerEntry();
     }
   }
 </script>
