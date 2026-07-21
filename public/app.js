@@ -1033,6 +1033,78 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (bellBtn) bellBtn.addEventListener('click', () => console.log('KitchenOS: bell tugmasi (15-bosqichda ulanadi)'));
   }
 
+  // =========================================================================
+  // 7-bosqich: KitchenOS bosh sahifa KPI-kartochkasi (icon + katta raqam +
+  // foiz-delta). Bu yerda faqat komponentning o'zi va uning skeleton holati
+  // bor — 4 tasini 2x2 grid'ga joylashtirib /api/dashboard-summary'ga ulash
+  // 8-bosqichda qilinadi.
+  // =========================================================================
+
+  // Katta summalarni mockupdagi kabi qisqa ko'rinishga o'tkazadi: 12 450 000
+  // -> "12.45M", 35 000 -> "35K". Million/ming chegarasidan pastdagi
+  // qiymatlar (masalan buyurtmalar soni "356") xom son sifatida qaytadi.
+  function koFormatCompact(n) {
+    const num = Number(n || 0);
+    const abs = Math.abs(num);
+    if (abs >= 1000000) return (num / 1000000).toFixed(2).replace(/\.?0+$/, '') + 'M';
+    if (abs >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(Math.round(num));
+  }
+
+  // Bugungi va kechagi qiymatdan foiz-delta hisoblaydi. Kecha 0 bo'lsa (va
+  // bugun ham 0 bo'lsa) taqqoslash mantiqiy emas — shu holatda null qaytadi
+  // va chaqiruvchi joy delta'ni umuman ko'rsatmaydi.
+  function koFormatDelta(todayVal, yesterdayVal) {
+    const y = Number(yesterdayVal || 0);
+    const t = Number(todayVal || 0);
+    if (y === 0) {
+      if (t === 0) return null;
+      return { tone: 'up', text: '+100%' };
+    }
+    const pct = ((t - y) / Math.abs(y)) * 100;
+    const tone = pct >= 0 ? 'up' : 'down';
+    const rounded = Math.abs(pct) >= 10 ? Math.round(pct) : Math.round(pct * 10) / 10;
+    return { tone, text: (pct >= 0 ? '+' : '') + rounded + '%' };
+  }
+
+  // iconName — icon-sprite'dagi nom, label — kichik sarlavha (masalan
+  // "BUGUNGI SAVDO"), value — allaqachon formatlangan matn (masalan "12.45M"),
+  // delta — koFormatDelta() natijasi (yoki null, agar ko'rsatilmasa).
+  function koKpiCardHtml(iconName, label, value, delta) {
+    return `
+      <div class="ko-kpi-card">
+        <div class="ko-kpi-label">${escapeHtml(label)}</div>
+        <div class="ko-kpi-icon">${icon(iconName)}</div>
+        <div class="ko-kpi-value">${escapeHtml(value)}</div>
+        ${delta ? `
+          <div class="ko-kpi-delta ${delta.tone}">
+            ${delta.tone === 'up' ? icon('trending-up', 'icon-xs') : ''}
+            <span>${escapeHtml(delta.text)}</span>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  function koKpiSkeletonCardHtml(label) {
+    return `
+      <div class="ko-kpi-card skeleton-tile">
+        <div class="ko-kpi-label">${escapeHtml(label)}</div>
+        <div class="ko-kpi-icon">${icon('wallet')}</div>
+        <div class="ko-kpi-value skeleton"></div>
+        <div class="ko-kpi-delta skeleton"></div>
+      </div>
+    `;
+  }
+
+  // 4 ta skeleton-kartochkani 2x2 grid ichida qaytaradi — 8-bosqichda
+  // haqiqiy grid-konteyner shu bilan boshlanadi, keyin natija bilan
+  // almashtiriladi.
+  function koKpiGridSkeletonHtml() {
+    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', "O'rtacha chek"];
+    return `<div class="ko-kpi-grid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
