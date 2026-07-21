@@ -1218,6 +1218,28 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: mijoz — asosiy "Ochish" tugmasi orqali kirganda (havolasiz) faol oshxonalar ro'yxati ----
+  if (req.method === 'POST' && req.url === '/api/customer-restaurants-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const owners = pruneExpiredOwners();
+      const restaurants = owners
+        .filter(o => isOwnerAccessValid(o) && o.profile && o.profile.completedAt)
+        .map(o => ({
+          id: o.id,
+          name: o.profile.name,
+          address: o.profile.address,
+          logoUrl: o.profile.logoUrl || null
+        }));
+
+      return sendJSON(res, 200, { ok: true, restaurants });
+    });
+    return;
+  }
+
   // ---- API: mijoz — initData tekshirib, oshxona kontekstiga kiradi (avtomatik ro'yxatga oladi) ----
   if (req.method === 'POST' && req.url === '/api/customer-verify') {
     readBody(req, (err, payload) => {
@@ -2921,7 +2943,8 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- Statik fayllarni berish (faqat public papkasidan) ----
-  let filePath = req.url === '/' ? '/index.html' : req.url;
+  const urlPathOnly = req.url.split('?')[0];
+  let filePath = (urlPathOnly === '/' || urlPathOnly === '') ? '/index.html' : urlPathOnly;
   filePath = path.join(__dirname, 'public', path.normalize(filePath).replace(/^(\.\.[\/\\])+/, ''));
 
   fs.readFile(filePath, (err, data) => {
