@@ -2775,6 +2775,42 @@
     renderCustomerMenuTab();
   }
 
+  function customerRestaurantPickerHtml(restaurants) {
+    return restaurants.map(r => `
+      <div class="owner-item" data-pick-restaurant-id="${escapeHtml(r.id)}" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${escapeHtml(r.name)}</div>
+          ${r.address ? `<div class="owner-username">${escapeHtml(r.address)}</div>` : ''}
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `).join('');
+  }
+
+  async function renderCustomerEntry() {
+    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    const res = await apiPost('/api/customer-restaurants-list', { initData });
+    const restaurants = res.ok ? res.restaurants : [];
+
+    if (!restaurants.length) {
+      ekran('<div class="xato">Hozircha faol oshxona topilmadi.<br>Iltimos, keyinroq urinib ko\'ring.</div>');
+      return;
+    }
+    if (restaurants.length === 1) {
+      renderCustomerApp(restaurants[0].id);
+      return;
+    }
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Oshxonani tanlang</div>
+        <div class="owner-list" style="margin-top:14px;">${customerRestaurantPickerHtml(restaurants)}</div>
+      </div>
+    `);
+    document.querySelectorAll('[data-pick-restaurant-id]').forEach(el => {
+      el.addEventListener('click', () => renderCustomerApp(el.getAttribute('data-pick-restaurant-id')));
+    });
+  }
+
   // ==================== Bosh oynani ochish ====================
   const urlParams = new URLSearchParams(location.search);
   const customerOwnerId = urlParams.get('customer');
@@ -2797,7 +2833,8 @@
         .then(r => r.json())
         .then(data => {
           if (!data.ok) {
-            ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(data.reason || 'Bu ilovaga ruxsatingiz yo\'q.')}</div>`);
+            // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
+            renderCustomerEntry();
             return;
           }
           if (data.isAdmin) {
@@ -2807,7 +2844,7 @@
           } else if (data.role) {
             renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
           } else {
-            ekran('<div class="xato">Kirish rad etildi.<br>Sizga ruxsat berilmagan.</div>');
+            renderCustomerEntry();
           }
         })
         .catch(() => {
