@@ -2486,6 +2486,8 @@
     orderType: 'stol',
     paymentType: 'naqd',
     tableNumber: '',
+    location: null,
+    addressNote: '',
     tab: 'menyu',
     category: 'hammasi',
     promoId: '',
@@ -2630,6 +2632,13 @@
           <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
             <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
           </div>
+          <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
+            <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
+              ${customerState.location ? '✅ Joylashuv aniqlandi (qayta aniqlash)' : '📍 Joylashuvni aniqlash'}
+            </button>
+            <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
+            <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - dostavkachi oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+          </div>
           <div class="type-row" id="cPaymentTypeRow">
             ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
               <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
@@ -2681,6 +2690,36 @@
     });
     const tableInput = document.getElementById('cTableInput');
     if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
+
+    // YANGI: dostavka - joylashuvni aniqlash (brauzer/Telegram webview
+    // Geolocation API orqali) va manzil izohi.
+    const locationBtn = document.getElementById('cLocationBtn');
+    const locationStatusEl = document.getElementById('cLocationStatus');
+    if (locationBtn) locationBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        locationStatusEl.textContent = 'Kechirasiz, bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni yozib qoldiring.';
+        locationStatusEl.className = 'xabar err';
+        return;
+      }
+      locationStatusEl.textContent = 'Aniqlanmoqda...';
+      locationStatusEl.className = 'xabar';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          customerState.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          locationStatusEl.textContent = '✅ Joylashuv aniqlandi.';
+          locationStatusEl.className = 'xabar ok';
+          locationBtn.textContent = '✅ Joylashuv aniqlandi (qayta aniqlash)';
+        },
+        () => {
+          locationStatusEl.textContent = '❌ Joylashuvni aniqlab bo\'lmadi (ruxsat berilmagan bo\'lishi mumkin). Iltimos, manzilni yozib qoldiring.';
+          locationStatusEl.className = 'xabar err';
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    const addressNoteInput = document.getElementById('cAddressNoteInput');
+    if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
+
     const pointsCheckbox = document.getElementById('cUsePoints');
     if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
 
@@ -2767,6 +2806,11 @@
       msgEl.className = 'xabar err';
       return;
     }
+    if (customerState.orderType === 'dostavka' && !customerState.location && !customerState.addressNote.trim()) {
+      msgEl.textContent = 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.';
+      msgEl.className = 'xabar err';
+      return;
+    }
 
     msgEl.textContent = 'Yuborilmoqda...';
     msgEl.className = 'xabar';
@@ -2778,17 +2822,26 @@
       tableNumber: customerState.tableNumber,
       paymentType: customerState.paymentType,
       promoId: customerState.promoId || null,
-      usePoints: customerState.usePoints ? customerState.bonusPoints : 0
+      usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
+      location: customerState.orderType === 'dostavka' ? customerState.location : null,
+      addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : ''
     });
 
     if (res.ok) {
       customerState.cart = {};
       customerState.usePoints = false;
       customerState.bonusPoints = res.bonusBalance;
+      customerState.location = null;
+      customerState.addressNote = '';
       renderCustomerMenuTab();
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
-      topMsg.textContent = `✅ Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+      if (res.paymentPending) {
+        topMsg.innerHTML = `💳 Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
+          `Iltimos, to'lov chekining rasmini (skrinshotini) shu botning shaxsiy chatiga yuboring.`;
+      } else {
+        topMsg.textContent = `✅ Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+      }
       document.querySelector('.panel').prepend(topMsg);
     } else {
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
