@@ -531,11 +531,74 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
+  // Galereyadan logotip tanlash uchun umumiy blok — rasm oldindan ko'rinadi,
+  // fayl tanlanganda avtomatik kichraytirilib (400px) base64 data URL'ga
+  // aylantiriladi. idPrefix — shu ekrandagi elementlarning id old qo'shimchasi,
+  // currentValue — hozirgi logotip (URL yoki data URL) bo'lishi mumkin.
+  function logoPickerHtml(idPrefix, currentValue) {
+    return `
+      <label class="field-label">Logotip</label>
+      <div class="logo-picker">
+        <div class="logo-picker-preview-wrap">
+          ${currentValue
+            ? `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${escapeHtml(currentValue)}" onerror="this.style.display='none'">`
+            : `<div id="${idPrefix}Preview" class="logo-picker-preview logo-picker-preview-empty">${icon('restaurant', 'icon-md')}</div>`}
+        </div>
+        <div class="logo-picker-actions">
+          <label class="logo-picker-btn" for="${idPrefix}FileInput">${icon('link', 'icon-xs')} Galereyadan tanlash</label>
+          <input type="file" id="${idPrefix}FileInput" accept="image/*" class="logo-picker-file-input">
+          ${currentValue ? `<button type="button" class="logo-picker-remove" id="${idPrefix}RemoveBtn">O'chirish</button>` : ''}
+        </div>
+      </div>
+      <div class="xabar" id="${idPrefix}Err"></div>
+    `;
+  }
+
+  // logoPickerHtml bilan chizilgan blokka hodisalarni ulaydi. setValue orqali
+  // chaqiruvchi joy o'zining state'ini (masalan onboarding qadam ma'lumoti
+  // yoki oddiy o'zgaruvchi) yangilab turadi.
+  function attachLogoPickerHandlers(idPrefix, setValue) {
+    const fileInput = document.getElementById(`${idPrefix}FileInput`);
+    const errEl = document.getElementById(`${idPrefix}Err`);
+    if (fileInput) {
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        errEl.textContent = '';
+        errEl.className = 'xabar';
+        try {
+          const dataUrl = await readImageFileAsCompressedDataUrl(file, 400, 0.75);
+          setValue(dataUrl || '');
+          const preview = document.getElementById(`${idPrefix}Preview`);
+          if (preview && preview.tagName === 'IMG') {
+            preview.src = dataUrl;
+          } else if (preview) {
+            preview.outerHTML = `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${dataUrl}">`;
+          }
+        } catch (e) {
+          errEl.textContent = e.message || "Rasmni yuklab bo'lmadi.";
+          errEl.className = 'xabar err';
+        }
+        fileInput.value = '';
+      });
+    }
+    const removeBtn = document.getElementById(`${idPrefix}RemoveBtn`);
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => {
+        setValue('');
+        const preview = document.getElementById(`${idPrefix}Preview`);
+        if (preview) preview.outerHTML = `<div id="${idPrefix}Preview" class="logo-picker-preview logo-picker-preview-empty">${icon('restaurant', 'icon-md')}</div>`;
+        removeBtn.remove();
+      });
+    }
+  }
+
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
   function renderProfileForm(existing) {
     if (!existing) { renderProfileOnboarding(); return; }
     const p = existing;
     let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
+    let pendingLogo = p.logoUrl || '';
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     ekran(`
       <div class="panel">
@@ -550,8 +613,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <input type="text" id="pPhone" placeholder="+998901234567" value="${escapeHtml(p.phone || '')}">
           <label class="field-label">Ish vaqti</label>
           <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
-          <label class="field-label">Logotip havolasi (ixtiyoriy, rasm linki)</label>
-          <input type="text" id="pLogo" placeholder="https://..." value="${escapeHtml(p.logoUrl || '')}">
+          ${logoPickerHtml('pLogo', pendingLogo)}
           <label class="field-label">Brend rangi (mijozlar menyusi va ilova shu rangda ko'rinadi)</label>
           ${brandSwatchesHtml(pendingBrandColor, p.name)}
           <div class="btn-row" style="margin-top:14px;">
@@ -567,6 +629,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       pendingBrandColor = hex;
       applyBrandColor(hex);
     });
+    attachLogoPickerHandlers('pLogo', (val) => { pendingLogo = val; });
 
     // Jonli ko'rish saqlashdan oldingi taxminiy holat — shu sababli bekor
     // qilinganda haqiqiy saqlangan rangga qaytarib, o'zgarishlarni tashlab
@@ -584,7 +647,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         address: document.getElementById('pAddress').value.trim(),
         phone: document.getElementById('pPhone').value.trim(),
         workHours: document.getElementById('pWorkHours').value.trim(),
-        logoUrl: document.getElementById('pLogo').value.trim(),
+        logoUrl: pendingLogo,
         brandColor: pendingBrandColor
       };
       msgEl.textContent = 'Saqlanmoqda...';
@@ -628,8 +691,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return `
         <label class="field-label">Ish vaqti</label>
         <input type="text" id="obWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(d.workHours)}">
-        <label class="field-label">Logotip havolasi (ixtiyoriy, rasm linki)</label>
-        <input type="text" id="obLogo" placeholder="https://..." value="${escapeHtml(d.logoUrl)}">
+        ${logoPickerHtml('obLogo', d.logoUrl)}
       `;
     }
     const reviewRow = (label, value, stepNum) => `
@@ -646,7 +708,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ${reviewRow('Manzil', d.address, 1)}
       ${reviewRow('Telefon', d.phone, 1)}
       ${reviewRow('Ish vaqti', d.workHours, 2)}
-      ${reviewRow('Logotip havolasi', d.logoUrl, 2)}
+      <div class="onboarding-review-row">
+        <div>
+          <div class="review-label">Logotip</div>
+          ${d.logoUrl
+            ? `<img class="logo-picker-preview logo-picker-preview-sm" src="${escapeHtml(d.logoUrl)}" onerror="this.style.display='none'">`
+            : `<div class="review-value">— tanlanmagan</div>`}
+        </div>
+        <span class="review-edit-link" data-onboard-edit-step="2">O'zgartirish</span>
+      </div>
     `;
   }
 
@@ -657,7 +727,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       s.data.phone = document.getElementById('obPhone').value.trim();
     } else if (s.step === 2) {
       s.data.workHours = document.getElementById('obWorkHours').value.trim();
-      s.data.logoUrl = document.getElementById('obLogo').value.trim();
     }
   }
 
@@ -694,6 +763,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       });
     }
 
+    if (s.step === 2) {
+      attachLogoPickerHandlers('obLogo', (val) => { s.data.logoUrl = val; });
+    }
+
     document.querySelectorAll('[data-onboard-edit-step]').forEach(el => {
       el.addEventListener('click', () => {
         s.step = parseInt(el.getAttribute('data-onboard-edit-step'), 10);
@@ -719,7 +792,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       if (s.step === 2) {
         s.data.workHours = document.getElementById('obWorkHours').value.trim();
-        s.data.logoUrl = document.getElementById('obLogo').value.trim();
         s.step = 3;
         renderProfileOnboarding();
         return;
@@ -844,6 +916,76 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
+  // Owner bosh sahifasidagi savdo/tushum dashboard-kartasi — yuklanish paytida
+  // skeleton, keyin /api/cashflow natijasi bilan almashtiriladi.
+  function dashboardStatTileHtml(iconName, label, value, tone) {
+    return `
+      <div class="dash-stat-tile ${tone || ''}">
+        <div class="dash-stat-icon">${icon(iconName, 'icon-sm')}</div>
+        <div class="dash-stat-body">
+          <div class="dash-stat-label">${escapeHtml(label)}</div>
+          <div class="dash-stat-val">${value}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function dashboardStatsSkeletonHtml() {
+    return `
+      <div class="dashboard-hero-card kartochka">
+        <div class="dash-hero-top">
+          <div class="dash-hero-title">${icon('trending-up', 'icon-xs')} Savdo va tushum</div>
+        </div>
+        <div class="dash-stats-grid">
+          ${['Bugun', 'Shu hafta', 'Shu oy', 'Sof foyda'].map(l => `
+            <div class="dash-stat-tile skeleton-tile">
+              <div class="dash-stat-icon skeleton-block"></div>
+              <div class="dash-stat-body">
+                <div class="dash-stat-label">${l}</div>
+                <div class="dash-stat-val skeleton-block skeleton-text"></div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function dashboardStatsHtml(cashflow) {
+    const t = cashflow.today, w = cashflow.week, m = cashflow.month;
+    const netTone = t.net >= 0 ? 'positive' : 'negative';
+    return `
+      <div class="dashboard-hero-card kartochka">
+        <div class="dash-hero-top">
+          <div class="dash-hero-title">${icon('trending-up', 'icon-xs')} Savdo va tushum</div>
+          <div class="dash-hero-sub">${t.orderCount} ta buyurtma bugun</div>
+        </div>
+        <div class="dash-stats-grid">
+          ${dashboardStatTileHtml('wallet', 'Bugungi savdo', cfFormatSum(t.income), 'income')}
+          ${dashboardStatTileHtml('clipboard', 'Shu hafta', cfFormatSum(w.income), 'income')}
+          ${dashboardStatTileHtml('building', 'Shu oy', cfFormatSum(m.income), 'income')}
+          ${dashboardStatTileHtml('trending-up', 'Bugungi sof foyda', cfFormatSum(t.net), netTone)}
+        </div>
+        <button class="btn ikkinchi dash-hero-btn" id="dashOpenMoliyaBtn">${icon('wallet', 'icon-xs')} To'liq moliya hisobotini ko'rish</button>
+      </div>
+    `;
+  }
+
+  async function loadOwnerDashboardStats(profile) {
+    const el = document.getElementById('ownerDashboardStats');
+    if (!el) return;
+    const res = await apiPost('/api/cashflow', { initData });
+    const el2 = document.getElementById('ownerDashboardStats');
+    if (!el2) return; // foydalanuvchi allaqachon boshqa tabga o'tgan bo'lishi mumkin
+    if (!res.ok) {
+      el2.outerHTML = `<div class="kartochka" id="ownerDashboardStats"><div class="bosh">Statistika yuklanmadi.</div></div>`;
+      return;
+    }
+    el2.outerHTML = dashboardStatsHtml(res.cashflow).replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">');
+    const btn = document.getElementById('dashOpenMoliyaBtn');
+    if (btn) btn.addEventListener('click', () => renderCashflowScreen(profile, () => renderProfileView(profile)));
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -851,6 +993,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
 
         <div class="owner-tab-panel ${ownerActiveTab === 'bosh' ? 'active' : ''}" data-tab="bosh">
+          ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
+          <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
           <div class="kartochka">
             <div class="profile-view">
               ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
@@ -862,6 +1006,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             </div>
             <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
           </div>
+          <div class="section-label">${icon('users', 'icon-xs')} Filiallar</div>
           <div class="kartochka">
             <h2>Filial qo'shish</h2>
             <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
@@ -874,6 +1019,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <h2>Filiallar</h2>
             <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
           </div>
+          <div class="section-label">${icon('link', 'icon-xs')} Mijozlar bilan ishlash</div>
           <div class="kartochka">
             <h2>Mijozlar uchun menyu</h2>
             <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
@@ -956,6 +1102,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
 
         <div class="owner-tab-panel ${ownerActiveTab === 'moliya' ? 'active' : ''}" data-tab="moliya">
+          <div class="section-label">${icon('wallet', 'icon-xs')} Hisob-kitob va tahlil</div>
           <div class="kartochka">
             <h2>Sklad</h2>
             <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
@@ -971,6 +1118,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
             <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">${icon('ai', 'icon-xs')} AI tahlilni ochish</button>
           </div>
+          <div class="section-label">${icon('star', 'icon-xs')} Mijozlarni rag'batlantirish</div>
           <div class="kartochka">
             <h2>Bonus tizimi</h2>
             <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
@@ -989,6 +1137,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.querySelectorAll('#ownerTabBar button').forEach(btn => {
       btn.addEventListener('click', () => setOwnerActiveTab(btn.getAttribute('data-owner-tab')));
     });
+    loadOwnerDashboardStats(profile);
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
       renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
