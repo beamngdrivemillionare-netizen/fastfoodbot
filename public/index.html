@@ -121,6 +121,48 @@
     outline-offset: 2px;
   }
 
+  /* =========================================================================
+     PASTKI TAB-BAR (12-bosqich): ko'p bo'limli rollar (masalan oshxona egasi)
+     uchun — bo'limlar orasida tugma bosib "sakrash" o'rniga doimiy pastki
+     navigatsiya. Faqat shu rol uchun chiqadi (bir bo'limli rollarda kerak
+     emas). Sahifa DOM'i qayta chizilmaydi — bo'limlar shunchaki
+     ko'rsatiladi/yashiriladi, shu bilan barcha mavjud ID/listener'lar saqlanadi.
+     ========================================================================= */
+  .tab-bar-bottom {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    display: flex;
+    width: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    background: var(--surface-0);
+    border-top: 1px solid var(--border-color);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .tab-bar-bottom button {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 8px 2px 7px;
+    background: none;
+    border: none;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .tab-bar-bottom button .icon { width: 20px; height: 20px; }
+  .tab-bar-bottom button.active { color: var(--brand-primary); }
+  .has-bottom-tabs { padding-bottom: 68px; }
+  .owner-tab-panel { display: none; }
+  .owner-tab-panel.active { display: block; }
+
   /* ---- Admin panel ---- */
   .panel {
     width: 100%;
@@ -570,6 +612,22 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  /* 11-bosqich: rol belgisi — header'da doimiy, kimning (egasi/kassir/oshpaz/
+     sklad/dostavka) ekaniga qat'iy nazar, foydalanuvchi qaysi ekranda bo'lishidan
+     qat'iy nazar tepada, ism yonida ko'rinadi. */
+  .app-header .app-header-role-badge {
+    flex-shrink: 0;
+    margin-left: auto;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: var(--radius-pill);
+    background: var(--brand-primary-light);
+    color: var(--brand-primary-dark);
+    white-space: nowrap;
   }
 </style>
 </head>
@@ -714,13 +772,18 @@
   // ekran() uni tozalamaydi — bir marta o'rnatilsa, ichki navigatsiyalar davomida
   // (tab almashish, ekranlar orasida o'tish) o'zgarmay tepada turadi.
   const appHeaderEl = document.getElementById('appHeader');
-  function setAppHeader(logoUrl, name) {
+  // 11-bosqich: roleLabel — ixtiyoriy uchinchi parametr. Berilsa, header'ning
+  // o'ng chetida doimiy rol-belgisi (masalan "Kassir", "Egasi") ko'rsatiladi,
+  // shu bilan foydalanuvchi ilova ichida qayerda bo'lishidan qat'iy nazar
+  // o'zining rolini har doim ko'rib turadi.
+  function setAppHeader(logoUrl, name, roleLabel) {
     if (!name) { clearAppHeader(); return; }
     appHeaderEl.innerHTML = `
       ${logoUrl
         ? `<img class="app-header-logo" src="${escapeHtml(logoUrl)}" onerror="this.outerHTML='<div class=&quot;app-header-logo-fallback&quot;>${icon('restaurant', 'icon-xs').replace(/"/g, '&quot;')}</div>'">`
         : `<div class="app-header-logo-fallback">${icon('restaurant', 'icon-xs')}</div>`}
       <div class="app-header-name">${escapeHtml(name)}</div>
+      ${roleLabel ? `<span class="app-header-role-badge">${escapeHtml(roleLabel)}</span>` : ''}
     `;
     appHeaderEl.classList.remove('hidden');
   }
@@ -968,7 +1031,7 @@
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
   function renderProfileForm(existing) {
     const p = existing || {};
-    if (existing && existing.name) setAppHeader(existing.logoUrl, existing.name);
+    if (existing && existing.name) setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     else clearAppHeader();
     ekran(`
       <div class="panel">
@@ -1081,136 +1144,185 @@
     if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
   }
 
-  function renderProfileView(profile) {
-    setAppHeader(profile.logoUrl, profile.name);
-    ekran(`
-      <div class="panel">
-        <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
-        <div class="kartochka">
-          <div class="profile-view">
-            ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
-            <div class="info">
-              <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
-              <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
-              ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
-            </div>
-          </div>
-          <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
-        </div>
-        <div class="kartochka">
-          <h2>Filial qo'shish</h2>
-          <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
-          <input type="text" id="branchAddressInput" placeholder="Manzil">
-          <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
-          <button class="btn" id="addBranchBtn">Filial qo'shish</button>
-          <div class="xabar" id="branchMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Filiallar</h2>
-          <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Xodim qo'shish</h2>
-          <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-          <div style="margin:8px 0;">
-            <div style="font-size:13px; color:var(--tg-theme-hint-color,#888); margin-bottom:4px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
-            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
-            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
-            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
-            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
-          </div>
-          <select id="staffBranchInput">
-            <option value="">— Markaziy (filialsiz) —</option>
-          </select>
-          <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
-          <div class="xabar" id="staffMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Xodimlar ro'yxati</h2>
-          <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Menyuga taom qo'shish</h2>
-          <input type="text" id="menuNameInput" placeholder="Taom nomi">
-          <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
-          <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
-          <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
-          <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
-          <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
-          <img id="menuImagePreview" style="display:none; max-width:120px; max-height:120px; border-radius:8px; margin-top:8px;">
-          <input type="hidden" id="menuImageInput">
-          <button class="btn" id="addMenuBtn">Qo'shish</button>
-          <div class="xabar" id="menuMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Menyu</h2>
-          <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Sklad</h2>
-          <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
-          <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">${icon('box', 'icon-xs')} Sklad boshqaruvini ochish</button>
-        </div>
-        <div class="kartochka">
-          <h2>Moliya</h2>
-          <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
-          <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">${icon('wallet', 'icon-xs')} Moliyani ochish</button>
-        </div>
-        <div class="kartochka">
-          <h2>AI tahlil</h2>
-          <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
-          <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">${icon('ai', 'icon-xs')} AI tahlilni ochish</button>
-        </div>
-        <div class="kartochka">
-          <h2>Xodimlar nazorati</h2>
-          <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
-          <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">${icon('users', 'icon-xs')} Xodimlar nazoratini ochish</button>
-        </div>
-        <div class="kartochka">
-          <h2>Mijozlar uchun menyu</h2>
-          <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
-          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
-          <div id="customerLinkWrap"></div>
-          <div class="xabar" id="customerLinkMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Dostavka admin guruhi</h2>
-          <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
-          <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
-          <div class="customer-link-hint">
-            Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
-            Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
-          </div>
-          <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
-          <div class="xabar" id="deliveryGroupMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Aksiya/chegirma qo'shish</h2>
-          <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
-          <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
-          <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
-          <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
-          <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
-          <div class="xabar" id="promoMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Aksiyalar ro'yxati</h2>
-          <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Bonus tizimi</h2>
-          <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
-          <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-top:10px;">
-            <input type="checkbox" id="bonusEnabledInput">
-            Bonus tizimini yoqish
-          </label>
-          <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
-          <button class="btn" id="saveBonusBtn">Saqlash</button>
-          <div class="xabar" id="bonusMsg"></div>
-        </div>
-        <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (hisobotlar) tez orada shu yerga qo'shiladi.</div>
+  // 12-bosqich: oshxona egasi — ko'p bo'limli rol. Qaysi tab ochiqligini
+  // eslab qolamiz, shunda "Sklad"/"Moliya" kabi tashqi ekranlardan
+  // renderProfileView(profile)ga qaytganda foydalanuvchi oldingi tabda qoladi.
+  let ownerActiveTab = 'bosh';
+  const OWNER_TABS = [
+    { key: 'bosh', label: 'Bosh', icon: 'building' },
+    { key: 'menyu', label: 'Menyu', icon: 'restaurant' },
+    { key: 'xodimlar', label: 'Xodimlar', icon: 'users' },
+    { key: 'moliya', label: 'Moliya', icon: 'wallet' }
+  ];
+
+  function ownerTabBarHtml() {
+    return `
+      <div class="tab-bar-bottom" id="ownerTabBar">
+        ${OWNER_TABS.map(t => `
+          <button type="button" data-owner-tab="${t.key}" class="${ownerActiveTab === t.key ? 'active' : ''}">
+            ${icon(t.icon)}
+            <span>${escapeHtml(t.label)}</span>
+          </button>
+        `).join('')}
       </div>
+    `;
+  }
+
+  function setOwnerActiveTab(key) {
+    ownerActiveTab = key;
+    document.querySelectorAll('#ownerTabBar button').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-owner-tab') === key);
+    });
+    document.querySelectorAll('.owner-tab-panel').forEach(panel => {
+      panel.classList.toggle('active', panel.getAttribute('data-tab') === key);
+    });
+  }
+
+  function renderProfileView(profile) {
+    setAppHeader(profile.logoUrl, profile.name, 'Egasi');
+    ekran(`
+      <div class="panel has-bottom-tabs">
+        <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
+
+        <div class="owner-tab-panel ${ownerActiveTab === 'bosh' ? 'active' : ''}" data-tab="bosh">
+          <div class="kartochka">
+            <div class="profile-view">
+              ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
+              <div class="info">
+                <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
+                <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
+                ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
+              </div>
+            </div>
+            <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
+          </div>
+          <div class="kartochka">
+            <h2>Filial qo'shish</h2>
+            <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
+            <input type="text" id="branchAddressInput" placeholder="Manzil">
+            <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
+            <button class="btn" id="addBranchBtn">Filial qo'shish</button>
+            <div class="xabar" id="branchMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Filiallar</h2>
+            <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+          <div class="kartochka">
+            <h2>Mijozlar uchun menyu</h2>
+            <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
+            <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
+            <div id="customerLinkWrap"></div>
+            <div class="xabar" id="customerLinkMsg"></div>
+          </div>
+        </div>
+
+        <div class="owner-tab-panel ${ownerActiveTab === 'menyu' ? 'active' : ''}" data-tab="menyu">
+          <div class="kartochka">
+            <h2>Menyuga taom qo'shish</h2>
+            <input type="text" id="menuNameInput" placeholder="Taom nomi">
+            <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
+            <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
+            <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
+            <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
+            <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
+            <img id="menuImagePreview" style="display:none; max-width:120px; max-height:120px; border-radius:8px; margin-top:8px;">
+            <input type="hidden" id="menuImageInput">
+            <button class="btn" id="addMenuBtn">Qo'shish</button>
+            <div class="xabar" id="menuMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Menyu</h2>
+            <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+          <div class="kartochka">
+            <h2>Aksiya/chegirma qo'shish</h2>
+            <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
+            <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
+            <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
+            <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
+            <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
+            <div class="xabar" id="promoMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Aksiyalar ro'yxati</h2>
+            <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        </div>
+
+        <div class="owner-tab-panel ${ownerActiveTab === 'xodimlar' ? 'active' : ''}" data-tab="xodimlar">
+          <div class="kartochka">
+            <h2>Xodim qo'shish</h2>
+            <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
+            <div style="margin:8px 0;">
+              <div style="font-size:13px; color:var(--tg-theme-hint-color,#888); margin-bottom:4px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
+              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
+              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
+              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
+            </div>
+            <select id="staffBranchInput">
+              <option value="">— Markaziy (filialsiz) —</option>
+            </select>
+            <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
+            <div class="xabar" id="staffMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Xodimlar ro'yxati</h2>
+            <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+          <div class="kartochka">
+            <h2>Xodimlar nazorati</h2>
+            <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
+            <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">${icon('users', 'icon-xs')} Xodimlar nazoratini ochish</button>
+          </div>
+          <div class="kartochka">
+            <h2>Dostavka admin guruhi</h2>
+            <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+            <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+            <div class="customer-link-hint">
+              Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
+              Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+            </div>
+            <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+            <div class="xabar" id="deliveryGroupMsg"></div>
+          </div>
+        </div>
+
+        <div class="owner-tab-panel ${ownerActiveTab === 'moliya' ? 'active' : ''}" data-tab="moliya">
+          <div class="kartochka">
+            <h2>Sklad</h2>
+            <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
+            <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">${icon('box', 'icon-xs')} Sklad boshqaruvini ochish</button>
+          </div>
+          <div class="kartochka">
+            <h2>Moliya</h2>
+            <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
+            <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">${icon('wallet', 'icon-xs')} Moliyani ochish</button>
+          </div>
+          <div class="kartochka">
+            <h2>AI tahlil</h2>
+            <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
+            <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">${icon('ai', 'icon-xs')} AI tahlilni ochish</button>
+          </div>
+          <div class="kartochka">
+            <h2>Bonus tizimi</h2>
+            <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-top:10px;">
+              <input type="checkbox" id="bonusEnabledInput">
+              Bonus tizimini yoqish
+            </label>
+            <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
+            <button class="btn" id="saveBonusBtn">Saqlash</button>
+            <div class="xabar" id="bonusMsg"></div>
+          </div>
+        </div>
+      </div>
+      ${ownerTabBarHtml()}
     `);
+    document.querySelectorAll('#ownerTabBar button').forEach(btn => {
+      btn.addEventListener('click', () => setOwnerActiveTab(btn.getAttribute('data-owner-tab')));
+    });
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
       renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
@@ -1599,7 +1711,7 @@
 
   // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
   function renderStaffScreen(role, roleLabel, restaurantName, logoUrl) {
-    setAppHeader(logoUrl, restaurantName);
+    setAppHeader(logoUrl, restaurantName, roleLabel);
     if (role === 'kassir') {
       renderCashierScreen(restaurantName);
       return;
