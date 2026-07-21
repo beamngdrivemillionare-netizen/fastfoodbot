@@ -368,6 +368,36 @@
   }
   .badge.paid { background: var(--success-bg); color: var(--success); }
   .badge.unpaid { background: var(--danger-bg); color: var(--danger); }
+  .badge.warning { background: var(--warning-bg); color: var(--warning); }
+  .badge.danger { background: var(--danger-bg); color: var(--danger); }
+
+  /* ---- Mini-grafik (21-bosqich): Moliya/Z-hisobot trend va Sklad qoldig'i uchun umumiy ---- */
+  .chart-card h2 { display: flex; align-items: center; gap: 6px; }
+  .chart-legend { display: flex; gap: var(--sp-4); margin-top: 2px; }
+  .chart-legend-item { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--text-secondary); }
+  .chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .chart-legend-dot.income { background: var(--success); }
+  .chart-legend-dot.expense { background: var(--danger); }
+  .trend-svg { width: 100%; height: auto; display: block; margin-top: var(--sp-3); }
+  .trend-svg .trend-bar-pos { fill: var(--success); }
+  .trend-svg .trend-bar-neg { fill: var(--danger); }
+  .trend-svg .trend-bar-income { fill: var(--success); }
+  .trend-svg .trend-bar-expense { fill: var(--danger); }
+  .trend-svg .trend-axis { stroke: var(--border-color-strong); stroke-width: 1; }
+  .trend-svg .trend-label { font-size: 7.5px; fill: var(--text-muted); font-family: inherit; }
+  .trend-svg .trend-value { font-size: 7.5px; fill: var(--text-secondary); font-weight: 600; font-family: inherit; }
+
+  .cat-bar-row { margin-top: var(--sp-3); }
+  .cat-bar-row:first-child { margin-top: var(--sp-2); }
+  .cat-bar-top { display: flex; justify-content: space-between; align-items: baseline; font-size: var(--fs-sm); margin-bottom: 4px; gap: var(--sp-2); }
+  .cat-bar-top .cat-bar-name { color: var(--text-secondary); font-weight: 600; }
+  .cat-bar-top .cat-bar-sum { color: var(--text-primary); white-space: nowrap; }
+  .cat-bar-track { background: var(--surface-1); border-radius: var(--radius-pill); height: 8px; overflow: hidden; }
+  .cat-bar-fill { background: var(--brand-primary); height: 100%; border-radius: var(--radius-pill); }
+
+  .stock-level-track { background: var(--surface-1); border-radius: var(--radius-pill); height: 6px; overflow: hidden; margin-top: 8px; width: 100%; }
+  .stock-level-fill { height: 100%; border-radius: var(--radius-pill); background: var(--success); transition: width var(--transition-base); }
+  .stock-level-fill.low { background: var(--danger); }
 
   /* ---- Moliya (Cashflow) ---- */
   .cf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); margin-top: var(--sp-3); }
@@ -901,6 +931,10 @@
     <path d="M21 3v5h-5"/>
     <path d="M21 13a9 9 0 0 1-15.3 5.3L3 16"/>
     <path d="M3 21v-5h5"/>
+  </symbol>
+  <symbol id="icon-trending-up" viewBox="0 0 24 24">
+    <path d="M3 17l6-6 4 4 8-8"/>
+    <path d="M15 7h6v6"/>
   </symbol>
 </svg>
 
@@ -2570,13 +2604,26 @@
 
   function stockListHtml(stock, canRemove, canTransfer) {
     if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
-    return stock.map(s => {
+    // Kam qolgan mahsulotlar ro'yxat boshida ko'rinsin — birinchi navbatda e'tibor talab qiladi.
+    const sorted = stock.slice().sort((a, b) => {
+      const lowA = a.minQty != null && a.qty <= a.minQty;
+      const lowB = b.minQty != null && b.qty <= b.minQty;
+      if (lowA !== lowB) return lowA ? -1 : 1;
+      return 0;
+    });
+    return sorted.map(s => {
       const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
+      // Darajani vizual ko'rsatish uchun chegaraning ikki barobarini "to'liq" deb olamiz;
+      // chegara qo'yilmagan bo'lsa — chiziq ko'rsatilmaydi (nisbiy solishtirish uchun asos yo'q).
+      const levelPct = s.minQty != null && s.minQty > 0
+        ? Math.max(4, Math.min(100, Math.round(s.qty / (s.minQty * 2) * 100)))
+        : null;
       return `
         <div class="menu-item ${low ? 'low-stock' : ''}">
-          <div>
-            <div class="m-name">${escapeHtml(s.name)}${low ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
+          <div style="flex:1;">
+            <div class="m-name">${escapeHtml(s.name)}${low ? ' <span class="badge warning">Kam qoldi</span>' : ''}</div>
             <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
+            ${levelPct !== null ? `<div class="stock-level-track"><div class="stock-level-fill ${low ? 'low' : ''}" style="width:${levelPct}%;"></div></div>` : ''}
           </div>
           <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
             ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">Filialga o'tkazish</button>` : ''}
@@ -2629,12 +2676,12 @@
           <div class="xabar" id="stockAddMsg"></div>
         </div>
         <div class="kartochka">
-          <h2>Sklad qoldig'i</h2>
+          <h2>${icon('box', 'icon-xs')} Sklad qoldig'i</h2>
           <div id="stockList"><div class="bosh">Yuklanmoqda...</div></div>
           <button class="btn ikkinchi" id="openAuditBtn" style="margin-top:10px;">${icon('clipboard', 'icon-xs')} Kunlik audit qilish</button>
         </div>
         <div class="kartochka">
-          <h2>Harakatlar tarixi</h2>
+          <h2>${icon('trending-up', 'icon-xs')} Harakatlar tarixi</h2>
           <div id="stockMovements"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
       </div>
@@ -2822,6 +2869,90 @@
     };
   }
 
+  // ---- Umumiy mini-grafik yordamchilari (21-bosqich): Z-hisobot va Moliya trendlari uchun ----
+  // Sanani qisqa "kun.oy" ko'rinishida chiqaradi (masalan "2026-07-21" → "21.07")
+  function shortDateLabel(dateKey) {
+    const parts = String(dateKey || '').split('-');
+    if (parts.length !== 3) return dateKey || '';
+    return `${parts[2]}.${parts[1]}`;
+  }
+
+  // Bitta qatorli ustunli grafik: har bir kun uchun bitta ustun (musbat — success, manfiy — danger).
+  // points: [{ label, value }] — eng ko'pi bilan oxirgi ~14 nuqta chiroyli sig'adi.
+  function trendBarChartSvg(points) {
+    if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
+    const W = 300, H = 120, padTop = 10, padBottom = 20, padSide = 6;
+    const chartH = H - padTop - padBottom;
+    const maxAbs = Math.max(1, ...points.map(p => Math.abs(p.value)));
+    const n = points.length;
+    const slot = (W - padSide * 2) / n;
+    const barW = Math.max(4, Math.min(22, slot * 0.55));
+    const zeroY = padTop + chartH / 2;
+    const bars = points.map((p, i) => {
+      const cx = padSide + slot * i + slot / 2;
+      const h = Math.abs(p.value) / maxAbs * (chartH / 2 - 4);
+      const y = p.value >= 0 ? zeroY - h : zeroY;
+      const cls = p.value >= 0 ? 'trend-bar-pos' : 'trend-bar-neg';
+      return `<rect class="${cls}" x="${(cx - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" rx="2"></rect>
+        <text class="trend-label" x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHtml(p.label)}</text>`;
+    }).join('');
+    return `
+      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sof foyda dinamikasi">
+        <line class="trend-axis" x1="0" y1="${zeroY.toFixed(1)}" x2="${W}" y2="${zeroY.toFixed(1)}"></line>
+        ${bars}
+      </svg>
+    `;
+  }
+
+  // Ikki qatorli (kirim/chiqim) taqqoslash grafigi — har bir kun uchun ikkita yonma-yon ustun.
+  // points: [{ label, income, expense }]
+  function incomeExpenseChartSvg(points) {
+    if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
+    const W = 300, H = 130, padTop = 10, padBottom = 20, padSide = 6;
+    const chartH = H - padTop - padBottom;
+    const maxVal = Math.max(1, ...points.map(p => Math.max(p.income, p.expense)));
+    const n = points.length;
+    const slot = (W - padSide * 2) / n;
+    const barW = Math.max(3, Math.min(11, slot * 0.32));
+    const gap = 2;
+    const baseY = padTop + chartH;
+    const bars = points.map((p, i) => {
+      const cx = padSide + slot * i + slot / 2;
+      const hIncome = p.income / maxVal * chartH;
+      const hExpense = p.expense / maxVal * chartH;
+      const xIncome = cx - barW - gap / 2;
+      const xExpense = cx + gap / 2;
+      return `
+        <rect class="trend-bar-income" x="${xIncome.toFixed(1)}" y="${(baseY - hIncome).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, hIncome).toFixed(1)}" rx="2"></rect>
+        <rect class="trend-bar-expense" x="${xExpense.toFixed(1)}" y="${(baseY - hExpense).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, hExpense).toFixed(1)}" rx="2"></rect>
+        <text class="trend-label" x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHtml(p.label)}</text>
+      `;
+    }).join('');
+    return `
+      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Savdo va xarajat dinamikasi">
+        <line class="trend-axis" x1="0" y1="${baseY.toFixed(1)}" x2="${W}" y2="${baseY.toFixed(1)}"></line>
+        ${bars}
+      </svg>
+      <div class="chart-legend">
+        <div class="chart-legend-item"><span class="chart-legend-dot income"></span>Kirim</div>
+        <div class="chart-legend-item"><span class="chart-legend-dot expense"></span>Chiqim</div>
+      </div>
+    `;
+  }
+
+  // Kategoriya taqsimotini gorizontal ustunlar (bar) ko'rinishida chiqaradi — eng kattasi 100%.
+  // rows: [{ name, sum }]
+  function categoryBarChartHtml(rows) {
+    if (!rows || !rows.length) return '';
+    const maxSum = Math.max(1, ...rows.map(r => r.sum));
+    return rows.map(r => `
+      <div class="cat-bar-row">
+        <div class="cat-bar-top"><span class="cat-bar-name">${escapeHtml(r.name)}</span><span class="cat-bar-sum">${cfFormatSum(r.sum)}</span></div>
+        <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${Math.max(3, Math.round(r.sum / maxSum * 100))}%;"></div></div>
+      </div>
+    `).join('');
+  }
+
   // ---- Egasi: Moliya (Cashflow) — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik ----
   let cashflowState = { period: 'today' };
   let cashflowCategories = { ijara: 'Ijara', maosh: 'Maosh', kommunal: 'Kommunal', mahsulot: 'Mahsulot xaridi', boshqa: 'Boshqa' };
@@ -2864,14 +2995,15 @@
 
   function cfCategoryBreakdownHtml(byCategory) {
     if (!byCategory) return '';
-    const rows = Object.entries(byCategory).filter(([, sum]) => sum > 0);
+    const rows = Object.entries(byCategory)
+      .filter(([, sum]) => sum > 0)
+      .map(([key, sum]) => ({ name: cashflowCategories[key] || key, sum }))
+      .sort((a, b) => b.sum - a.sum);
     if (!rows.length) return '';
     return `
       <div class="kartochka" style="margin-top:10px;">
         <h2>Xarajat kategoriyalari</h2>
-        ${rows.map(([key, sum]) => `
-          <div class="profile-row"><b>${escapeHtml(cashflowCategories[key] || key)}:</b> ${cfFormatSum(sum)}</div>
-        `).join('')}
+        ${categoryBarChartHtml(rows)}
       </div>
     `;
   }
@@ -2903,6 +3035,11 @@
           <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
         </div>
         <div id="cfStats"><div class="bosh">Yuklanmoqda...</div></div>
+        <div class="kartochka chart-card">
+          <h2>${icon('trending-up', 'icon-xs')} Savdo va xarajat dinamikasi</h2>
+          <div class="bosh">Oxirgi yopilgan kunlar bo'yicha (Z-hisobot asosida).</div>
+          <div id="cfTrendChart"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
         ${branchState.branches.length ? `
         <div class="kartochka">
           <h2>Filiallar solishtiruvi</h2>
@@ -2962,7 +3099,24 @@
     });
 
     loadCashflowData();
+    loadCfTrendChart();
     if (branchState.branches.length) loadBranchReportAndRender();
+  }
+
+  // Moliya ekranidagi "Savdo va xarajat dinamikasi" grafigi — saqlangan Z-hisobotlar (oxirgi kunlar)ga asoslanadi.
+  async function loadCfTrendChart() {
+    const el = document.getElementById('cfTrendChart');
+    if (!el) return;
+    const res = await apiPost('/api/z-report-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadCfTrendChart); return; }
+    if (!res.ok || !res.reports || !res.reports.length) {
+      el.innerHTML = `<div class="bosh">Grafik uchun hali yopilgan kun yo'q. "Kunlik Z-hisobot" bo'limidan kunni yoping.</div>`;
+      return;
+    }
+    const points = res.reports.slice(0, 7).slice().reverse().map(z => ({
+      label: shortDateLabel(z.date), income: z.income, expense: z.expense
+    }));
+    el.innerHTML = incomeExpenseChartSvg(points);
   }
 
   function branchReportHtml(report) {
@@ -3382,6 +3536,10 @@
           <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
           <div class="xabar" id="zrMsg"></div>
         </div>
+        <div class="kartochka chart-card">
+          <h2>${icon('trending-up', 'icon-xs')} Sof foyda dinamikasi</h2>
+          <div id="zrChart"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
         <div id="zrList"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
@@ -3408,14 +3566,23 @@
 
   async function loadZReportList() {
     const listEl = document.getElementById('zrList');
+    const chartEl = document.getElementById('zrChart');
     if (!listEl) return;
     const res = await apiPost('/api/z-report-list', { initData });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadZReportList); return; }
+    if (res.networkError) {
+      renderNetworkErrorInline(listEl, res.reason, loadZReportList);
+      if (chartEl) chartEl.innerHTML = '';
+      return;
+    }
     if (!res.ok) {
       listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
     }
     listEl.innerHTML = zReportListHtml(res.reports);
+    if (chartEl) {
+      const points = res.reports.slice(0, 14).slice().reverse().map(z => ({ label: shortDateLabel(z.date), value: z.net }));
+      chartEl.innerHTML = trendBarChartSvg(points);
+    }
   }
 
   function showAuditReport(audit) {
