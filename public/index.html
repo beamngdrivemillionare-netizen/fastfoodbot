@@ -323,6 +323,24 @@
   .bosh { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; }
   .owner-item .owner-expiry { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
 
+  /* ---- Reyting/komissiya belgisi (owner-item o'ng tomonidagi urg'uli raqam) ---- */
+  .rating-badge { text-align: right; font-weight: 700; color: var(--brand-primary); white-space: nowrap; }
+  .rating-badge .rating-unit { font-size: var(--fs-xs); opacity: 0.65; font-weight: 400; }
+
+  /* ---- Xodim qo'shish/tahrirlash: lavozimlar ikki ustunli tur ---- */
+  .staff-role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 6px 0; }
+  .staff-hint { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 4px; }
+
+  /* ---- Retsept tahrirlash oynasidagi ingredient qatorlari ---- */
+  .recipe-row {
+    display: flex; align-items: center; gap: var(--sp-2);
+    background: var(--surface-1); border-radius: var(--radius-sm);
+    padding: 8px 10px; margin-bottom: var(--sp-2);
+  }
+  .recipe-row .recipe-name { flex: 1; font-size: var(--fs-body); }
+  .recipe-row .recipe-unit { color: var(--text-muted); font-size: var(--fs-xs); }
+  .recipe-row input { width: 76px; margin: 0; text-align: center; }
+
   /* ---- Obuna progress-bar (17-bosqich): admin panelidagi har bir do'kon
      egasi qatorida, muddatning necha foizi qolganini vizual ko'rsatadi ---- */
   .subscription-progress { margin-top: var(--sp-2); max-width: 160px; }
@@ -1589,8 +1607,8 @@
           <div class="owner-id">${escapeHtml(s.id)}</div>
           ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
           <div class="owner-expiry">${roleBadges} · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
-          <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:6px; font-size:12px;">${branchOptionsHtml(s.branchId)}</select>
-          <div style="margin-top:6px;">${roleCheckboxes}</div>
+          <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:8px;">${branchOptionsHtml(s.branchId)}</select>
+          <div class="staff-role-grid">${roleCheckboxes}</div>
         </div>
         <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
       </div>
@@ -1713,8 +1731,8 @@
             <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
             <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
             <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
-            <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
-            <img id="menuImagePreview" style="display:none; max-width:120px; max-height:120px; border-radius:8px; margin-top:8px;">
+            <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
+            <img id="menuImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
             <input type="hidden" id="menuImageInput">
             <button class="btn" id="addMenuBtn">Qo'shish</button>
             <div class="xabar" id="menuMsg"></div>
@@ -1742,8 +1760,8 @@
           <div class="kartochka">
             <h2>Xodim qo'shish</h2>
             <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-            <div style="margin:8px 0;">
-              <div style="font-size:13px; color:var(--tg-theme-hint-color,#888); margin-bottom:4px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+            <div class="staff-hint" style="margin-top:8px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+            <div class="staff-role-grid">
               <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
               <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
               <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
@@ -3444,7 +3462,7 @@
           <div class="owner-username">${escapeHtml(s.roleLabel)}</div>
           <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
         </div>
-        <div style="text-align:right; font-weight:700; color:#2ea6ff;">${s.score}<div style="font-size:11px; opacity:.6; font-weight:400;">ball</div></div>
+        <div class="rating-badge">${s.score}<div class="rating-unit">ball</div></div>
       </div>
     `).join('');
   }
@@ -3531,7 +3549,7 @@
           <div class="owner-expiry">Buyurtmalar: ${c.orderCount} ta</div>
           <div class="owner-price">Jami pul: ${cfFormatSum(c.totalAmount)}</div>
         </div>
-        <div style="text-align:right; font-weight:700; color:#2ea6ff;">${cfFormatSum(c.commission)}<div style="font-size:11px; opacity:.6; font-weight:400;">komissiya</div></div>
+        <div class="rating-badge">${cfFormatSum(c.commission)}<div class="rating-unit">komissiya</div></div>
       </div>
     `).join('');
   }
@@ -3748,9 +3766,9 @@
     (menuItem.recipe || []).forEach(r => { existingMap[r.stockId] = r.qty; });
     const rowsHtml = recipeEditorStock.length
       ? recipeEditorStock.map(s => `
-          <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-            <div style="flex:1; font-size:14px;">${escapeHtml(s.name)} <span style="opacity:.6;">(${escapeHtml(s.unit)})</span></div>
-            <input type="text" inputmode="decimal" data-recipe-qty="${escapeHtml(s.id)}" placeholder="0" value="${existingMap[s.id] != null ? existingMap[s.id] : ''}" style="width:80px; margin:0;">
+          <div class="recipe-row">
+            <div class="recipe-name">${escapeHtml(s.name)} <span class="recipe-unit">(${escapeHtml(s.unit)})</span></div>
+            <input type="text" inputmode="decimal" data-recipe-qty="${escapeHtml(s.id)}" placeholder="0" value="${existingMap[s.id] != null ? existingMap[s.id] : ''}">
           </div>
         `).join('')
       : `<div class="bosh">Avval skladga mahsulot qo'shing.</div>`;
@@ -3807,8 +3825,8 @@
         <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
         <input type="text" id="editMenuCategoryInput" placeholder="Kategoriya (ixtiyoriy)" value="${escapeHtml(menuItem.category || '')}">
         <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
-        <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
-        <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" style="${pendingImage ? '' : 'display:none;'} max-width:120px; max-height:120px; border-radius:8px; margin:6px 0; display:block;">
+        <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
+        <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
         <input type="file" id="editMenuImageFileInput" accept="image/*">
         <div class="xabar" id="editMenuMsg"></div>
         <div class="btn-row">
