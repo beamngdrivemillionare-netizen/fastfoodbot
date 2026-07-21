@@ -376,6 +376,40 @@
     }[c]));
   }
 
+  // Galereyadan tanlangan rasm faylini o'qib, hajmini kichraytirib (max 800px),
+  // JPEG base64 data URL shaklida qaytaradi — server hajmi cheklangan bo'lgani uchun kerak.
+  function readImageFileAsCompressedDataUrl(file, maxSize = 800, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      if (!file) return resolve(null);
+      if (!file.type || !file.type.startsWith('image/')) {
+        return reject(new Error('Fayl rasm emas.'));
+      }
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Faylni o\'qib bo\'lmadi.'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('Rasmni ochib bo\'lmadi.'));
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > height && width > maxSize) {
+            height = Math.round(height * (maxSize / width));
+            width = maxSize;
+          } else if (height > maxSize) {
+            width = Math.round(width * (maxSize / height));
+            height = maxSize;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   // ---- Admin panelini chizish ----
   function expiryText(o) {
     if (!o.expiresAt) return 'Doimiy ruxsat';
@@ -620,17 +654,31 @@
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
   const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Dostavkachi' };
 
+  function staffRoles(s) {
+    if (Array.isArray(s.roles) && s.roles.length) return s.roles;
+    return s.role ? [s.role] : [];
+  }
+
   function staffListHtml(staff) {
     if (!staff || !staff.length) return `<div class="bosh">Hozircha xodimlar yo'q.</div>`;
     return staff.map(s => {
       const branch = branchState.branches.find(b => b.id === s.branchId);
+      const roles = staffRoles(s);
+      const roleBadges = roles.map(r => `<span class="role-badge">${escapeHtml(ROLE_LABELS[r] || r)}</span>`).join(' ');
+      const roleCheckboxes = Object.entries(ROLE_LABELS).map(([key, label]) => `
+        <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 8px 2px 0; font-size:12px;">
+          <input type="checkbox" data-staff-role-checkbox="${escapeHtml(s.id)}" value="${key}" ${roles.includes(key) ? 'checked' : ''}>
+          ${escapeHtml(label)}
+        </label>
+      `).join('');
       return `
       <div class="owner-item">
         <div>
           <div class="owner-id">${escapeHtml(s.id)}</div>
           ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
-          <div class="owner-expiry"><span class="role-badge">${escapeHtml(ROLE_LABELS[s.role] || s.role)}</span> · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
+          <div class="owner-expiry">${roleBadges} · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
           <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:6px; font-size:12px;">${branchOptionsHtml(s.branchId)}</select>
+          <div style="margin-top:6px;">${roleCheckboxes}</div>
         </div>
         <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
       </div>
@@ -701,12 +749,13 @@
         <div class="kartochka">
           <h2>Xodim qo'shish</h2>
           <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-          <select id="staffRoleInput">
-            <option value="kassir">Kassir</option>
-            <option value="oshpaz">Oshpaz</option>
-            <option value="sklad">Sklad mas'uli</option>
-            <option value="dostavka">Dostavkachi</option>
-          </select>
+          <div style="margin:8px 0;">
+            <div style="font-size:13px; color:var(--tg-theme-hint-color,#888); margin-bottom:4px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
+          </div>
           <select id="staffBranchInput">
             <option value="">— Markaziy (filialsiz) —</option>
           </select>
@@ -723,7 +772,10 @@
           <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
           <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
           <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
-          <input type="text" id="menuImageInput" placeholder="Rasm havolasi (ixtiyoriy, https://...)">
+          <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
+          <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
+          <img id="menuImagePreview" style="display:none; max-width:120px; max-height:120px; border-radius:8px; margin-top:8px;">
+          <input type="hidden" id="menuImageInput">
           <button class="btn" id="addMenuBtn">Qo'shish</button>
           <div class="xabar" id="menuMsg"></div>
         </div>
@@ -810,6 +862,23 @@
       renderStaffControlScreen(profile, () => renderProfileView(profile));
     });
 
+    document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('menuMsg');
+      const preview = document.getElementById('menuImagePreview');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('menuImageInput').value = dataUrl || '';
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
       const name = document.getElementById('menuNameInput').value.trim();
       const price = document.getElementById('menuPriceInput').value.trim();
@@ -833,6 +902,8 @@
         document.getElementById('menuCategoryInput').value = '';
         document.getElementById('menuDescriptionInput').value = '';
         document.getElementById('menuImageInput').value = '';
+        document.getElementById('menuImageFileInput').value = '';
+        document.getElementById('menuImagePreview').style.display = 'none';
         loadMenuAndRender();
       } else {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -842,7 +913,7 @@
 
     document.getElementById('addStaffBtn').addEventListener('click', async () => {
       const val = document.getElementById('staffInput').value.trim();
-      const role = document.getElementById('staffRoleInput').value;
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
       const branchId = document.getElementById('staffBranchInput').value;
       const msgEl = document.getElementById('staffMsg');
       if (!val) {
@@ -850,13 +921,19 @@
         msgEl.className = 'xabar err';
         return;
       }
+      if (!roles.length) {
+        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/add-staff', { initData, input: val, role, branchId });
+      const res = await apiPost('/api/add-staff', { initData, input: val, roles, branchId });
       if (res.ok) {
         msgEl.textContent = 'Xodim qo\'shildi.';
         msgEl.className = 'xabar ok';
         document.getElementById('staffInput').value = '';
+        document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
         loadStaffAndRender();
       } else {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -873,11 +950,26 @@
     });
 
     document.getElementById('staffList').addEventListener('change', async (e) => {
-      const id = e.target.getAttribute('data-staff-branch-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/set-staff-branch', { initData, id, branchId: e.target.value });
-      loadStaffAndRender();
+      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
+      if (branchStaffId) {
+        e.target.disabled = true;
+        await apiPost('/api/set-staff-branch', { initData, id: branchStaffId, branchId: e.target.value });
+        loadStaffAndRender();
+        return;
+      }
+      const roleStaffId = e.target.getAttribute('data-staff-role-checkbox');
+      if (roleStaffId) {
+        const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
+        const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
+        if (!roles.length) {
+          e.target.checked = true; // kamida bitta lavozim qolishi shart
+          alert('Xodimda kamida bitta lavozim qolishi kerak.');
+          return;
+        }
+        checkboxes.forEach(cb => cb.disabled = true);
+        await apiPost('/api/set-staff-roles', { initData, id: roleStaffId, roles });
+        loadStaffAndRender();
+      }
     });
 
     document.getElementById('addBranchBtn').addEventListener('click', async () => {
@@ -1095,6 +1187,7 @@
           <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ' · retsept ✓' : ''}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+          <button data-edit-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Tahrirlash</button>
           <button data-recipe-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Retsept</button>
           <button data-toggle-avail-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
           <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
@@ -1114,6 +1207,13 @@
         btn.disabled = true;
         await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id') });
         loadMenuAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-edit-menu-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-menu-id');
+        const menuItem = menu.find(m => m.id === id);
+        if (menuItem) renderMenuItemEditOverlay(menuItem);
       });
     });
     listEl.querySelectorAll('[data-recipe-menu-id]').forEach(btn => {
@@ -2451,6 +2551,74 @@
       msgEl.textContent = 'Saqlanmoqda...';
       msgEl.className = 'xabar';
       const res = await apiPost('/api/menu-set-recipe', { initData, menuId: recipeEditorMenuId, recipe });
+      if (res.ok) {
+        overlay.remove();
+        loadMenuAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
+  }
+
+  function renderMenuItemEditOverlay(menuItem) {
+    let pendingImage = menuItem.imageUrl || '';
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;">
+        <h3>Taomni tahrirlash</h3>
+        <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
+        <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
+        <input type="text" id="editMenuCategoryInput" placeholder="Kategoriya (ixtiyoriy)" value="${escapeHtml(menuItem.category || '')}">
+        <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
+        <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
+        <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" style="${pendingImage ? '' : 'display:none;'} max-width:120px; max-height:120px; border-radius:8px; margin:6px 0; display:block;">
+        <input type="file" id="editMenuImageFileInput" accept="image/*">
+        <div class="xabar" id="editMenuMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="editMenuCancelBtn">Bekor qilish</button>
+          <button class="btn" id="editMenuSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
+
+    document.getElementById('editMenuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('editMenuMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        pendingImage = dataUrl || '';
+        const preview = document.getElementById('editMenuImagePreview');
+        preview.src = pendingImage;
+        preview.style.display = pendingImage ? 'block' : 'none';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('editMenuSaveBtn').onclick = async () => {
+      const name = document.getElementById('editMenuNameInput').value.trim();
+      const price = document.getElementById('editMenuPriceInput').value.trim();
+      const category = document.getElementById('editMenuCategoryInput').value.trim();
+      const description = document.getElementById('editMenuDescriptionInput').value.trim();
+      const msgEl = document.getElementById('editMenuMsg');
+      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
+        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/menu-update', {
+        initData, id: menuItem.id, name, price, category, description, imageUrl: pendingImage
+      });
       if (res.ok) {
         overlay.remove();
         loadMenuAndRender();
