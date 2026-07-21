@@ -2,7 +2,7 @@
 <html lang="uz">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Mini App</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -101,6 +101,7 @@
     justify-content: center;
     text-align: center;
     padding: var(--sp-6);
+    padding-bottom: calc(var(--sp-6) + env(safe-area-inset-bottom, 0px));
   }
   .salom {
     font-size: var(--fs-h1);
@@ -159,7 +160,7 @@
   }
   .tab-bar-bottom button .icon { width: 20px; height: 20px; }
   .tab-bar-bottom button.active { color: var(--brand-primary); }
-  .has-bottom-tabs { padding-bottom: 68px; }
+  .has-bottom-tabs { padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
   .owner-tab-panel { display: none; }
   .owner-tab-panel.active { display: block; }
 
@@ -184,7 +185,11 @@
   /* ---- Tugmalar ---- */
   .btn {
     width: 100%;
+    min-height: 44px;
     padding: 12px var(--sp-4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border: none;
     border-radius: var(--radius-md);
     background: var(--brand-primary);
@@ -192,6 +197,7 @@
     font-size: var(--fs-body);
     font-weight: 600;
     cursor: pointer;
+    box-sizing: border-box;
     transition: background var(--transition-fast), opacity var(--transition-fast), transform var(--transition-fast);
   }
   .btn:hover { background: var(--brand-primary-dark); }
@@ -211,6 +217,7 @@
   /* ---- Kirish maydonlari ---- */
   input[type="text"], textarea, select {
     width: 100%;
+    min-height: 44px;
     padding: 12px 14px;
     border-radius: var(--radius-md);
     border: 1px solid var(--border-color-strong);
@@ -219,6 +226,7 @@
     background: var(--surface-0);
     color: var(--text-primary);
     margin-bottom: 10px;
+    box-sizing: border-box;
     transition: border-color var(--transition-fast);
   }
   input[type="text"]:focus, textarea:focus, select:focus {
@@ -227,6 +235,18 @@
   textarea { resize: vertical; min-height: 60px; }
   label.field-label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); margin: 4px 0 6px; }
 
+  /* 14-bosqich: checkbox'ning o'zi kichik, lekin uni o'rab turgan <label>
+     matn bilan birga to'liq 44px balandlikda bosiladigan bo'lishi kerak. */
+  .check-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 4px 10px 4px 4px;
+    margin: 0 4px 0 0;
+    box-sizing: border-box;
+  }
+  .check-label input[type="checkbox"] { width: 18px; height: 18px; flex-shrink: 0; }
   .owner-list { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
   .owner-item {
     display: flex;
@@ -247,11 +267,61 @@
     font-size: var(--fs-sm);
     font-weight: 600;
     cursor: pointer;
-    padding: 4px 8px;
+    padding: 12px 10px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
+  }
+  /* 14-bosqich: narxni tahrirlash uchun bosiladigan matn — ko'rinishi
+     o'zgarmaydi (kichik, chizilgan matn), lekin haqiqiy bosish maydoni
+     44px'gacha kengaytirilgan (padding + kompensatsion manfiy margin). */
+  .owner-item .owner-price {
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+  .owner-item .owner-price[data-edit-price] {
+    display: inline-block;
+    padding: 14px 4px;
+    margin: -14px -4px -12px;
+  }
+  /* 14-bosqich: ro'yxatlardagi kichik matn-tugmalar (Tahrirlash/Retsept/
+     O'chirish/Filialga o'tkazish va h.k.) — vizual ko'rinishi ixcham
+     qoladi, lekin haqiqiy bosiladigan maydon (padding orqali) 44px'ga
+     yetkaziladi. Rang faqat modifikator klass (.brand/.danger) bilan
+     belgilanadi — ranglar tokendan olinadi, xom hex emas. */
+  .row-action-btn {
+    border: none;
+    background: none;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 12px 8px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
+  }
+  .row-action-btn.brand { color: var(--brand-primary); }
+  .row-action-btn.danger { color: var(--danger); }
+  .row-action-btn-solid {
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--brand-primary);
+    color: var(--brand-on-primary);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 10px 14px;
+    min-height: 44px;
+    margin-left: 6px;
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
   }
   .bosh { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; }
   .owner-item .owner-expiry { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
-  .owner-item .owner-price { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
   .owner-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 
   /* ---- Belgi (badge) ---- */
@@ -367,7 +437,9 @@
   /* ---- Oshxona / buyurtmalar taxtasi ---- */
   .tab-row { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
   .tab-opt {
-    flex: 1; text-align: center; padding: 10px 6px; border-radius: var(--radius-md);
+    flex: 1; text-align: center; padding: 10px 6px; min-height: 44px;
+    display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+    border-radius: var(--radius-md);
     font-size: var(--fs-body); font-weight: 600; cursor: pointer;
     background: var(--surface-1); color: var(--text-secondary);
     transition: background var(--transition-fast), color var(--transition-fast);
@@ -403,7 +475,9 @@
   .status-badge.tayyor { background: var(--success-bg); color: var(--success); }
 
   .order-card .order-action-btn {
-    border: none; border-radius: var(--radius-md); padding: 9px 14px; font-size: var(--fs-sm); font-weight: 600;
+    border: none; border-radius: var(--radius-md); padding: 9px 16px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+    font-size: var(--fs-sm); font-weight: 600;
     color: var(--brand-on-primary); cursor: pointer;
     transition: opacity var(--transition-fast);
   }
@@ -494,7 +568,12 @@
   .catalog-img { width: 100%; height: 140px; object-fit: cover; display: block; background: var(--surface-1); }
   .catalog-body { padding: 12px 14px; }
   .catalog-desc { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; line-height: var(--lh-body); }
-  .fav-btn { border: none; background: none; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 0 0 8px; transition: transform var(--transition-fast); }
+  .fav-btn {
+    border: none; background: none; font-size: 20px; cursor: pointer; line-height: 1;
+    min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+    box-sizing: border-box;
+    transition: transform var(--transition-fast);
+  }
   .fav-btn:active { transform: scale(1.2); }
   .promo-banner {
     background: linear-gradient(135deg, var(--promo-bg-1), var(--promo-bg-2));
@@ -582,6 +661,7 @@
     max-width: 480px;
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-4);
+    padding-top: calc(var(--sp-2) + env(safe-area-inset-top, 0px));
     background: var(--surface-0);
     border-bottom: 1px solid var(--border-color);
   }
@@ -1009,7 +1089,7 @@
       if (editId && !e.target.querySelector('input')) {
         e.target.innerHTML = `
           <input type="text" inputmode="numeric" placeholder="Yangi narx" style="margin:0; padding:6px 8px; font-size:13px;" data-price-field="${escapeHtml(editId)}">
-          <button data-save-price="${escapeHtml(editId)}" style="border:none; border-radius:8px; background:var(--tg-theme-button-color,#2ea6ff); color:var(--tg-theme-button-text-color,#fff); font-size:12px; padding:6px 10px; margin-left:6px;">Saqlash</button>
+          <button data-save-price="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
         `;
       }
     });
@@ -1091,7 +1171,7 @@
       const roles = staffRoles(s);
       const roleBadges = roles.map(r => `<span class="role-badge">${escapeHtml(ROLE_LABELS[r] || r)}</span>`).join(' ');
       const roleCheckboxes = Object.entries(ROLE_LABELS).map(([key, label]) => `
-        <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 8px 2px 0; font-size:12px;">
+        <label class="check-label" style="font-size:var(--fs-xs);">
           <input type="checkbox" data-staff-role-checkbox="${escapeHtml(s.id)}" value="${key}" ${roles.includes(key) ? 'checked' : ''}>
           ${escapeHtml(label)}
         </label>
@@ -1256,10 +1336,10 @@
             <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
             <div style="margin:8px 0;">
               <div style="font-size:13px; color:var(--tg-theme-hint-color,#888); margin-bottom:4px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
-              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
-              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
-              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
-              <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
+              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
+              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
+              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
+              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
             </div>
             <select id="staffBranchInput">
               <option value="">— Markaziy (filialsiz) —</option>
@@ -1308,7 +1388,7 @@
           <div class="kartochka">
             <h2>Bonus tizimi</h2>
             <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
-            <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-top:10px;">
+            <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
               <input type="checkbox" id="bonusEnabledInput">
               Bonus tizimini yoqish
             </label>
@@ -1662,10 +1742,10 @@
           <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : ''}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
-          <button data-edit-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Tahrirlash</button>
-          <button data-recipe-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Retsept</button>
-          <button data-toggle-avail-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
-          <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
+          <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
+          <button data-recipe-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Retsept</button>
+          <button data-toggle-avail-id="${escapeHtml(m.id)}" class="row-action-btn brand">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
+          <button data-remove-menu-id="${escapeHtml(m.id)}" class="row-action-btn danger">O'chirish</button>
         </div>
       </div>
     `).join('');
@@ -2134,8 +2214,8 @@
             <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
           </div>
           <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
-            ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:var(--tg-theme-button-color,#2ea6ff);font-size:13px;font-weight:600;cursor:pointer;">Filialga o'tkazish</button>` : ''}
-            ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:#e5484d;font-size:13px;font-weight:600;cursor:pointer;">O'chirish</button>` : ''}
+            ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">Filialga o'tkazish</button>` : ''}
+            ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" class="row-action-btn danger">O'chirish</button>` : ''}
           </div>
         </div>
       `;
