@@ -2210,6 +2210,7 @@
       <div class="panel">
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
         ${cashierTabRowHtml()}
+        ${cashierStatusChipsHtml()}
         <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
@@ -2218,6 +2219,16 @@
       if (!t || t === cashierState.tab) return;
       cashierState.tab = t;
       renderCashierScreen(restaurantName);
+    });
+    document.getElementById('cashierStatusChips').addEventListener('click', (e) => {
+      const key = e.target.getAttribute('data-status-chip');
+      if (!key || key === cashierStatusFilter) return;
+      cashierStatusFilter = key;
+      document.querySelectorAll('#cashierStatusChips [data-status-chip]').forEach(el => {
+        el.classList.toggle('selected', el.getAttribute('data-status-chip') === key);
+      });
+      lastOrdersSnapshot = null; // filtr o'zgardi — taxtani majburiy qayta chizamiz
+      refreshOrdersBoard('kassir');
     });
     startOrdersPolling('kassir');
   }
@@ -2321,6 +2332,25 @@
   let ordersPollTimer = null;
   let lastOrdersSnapshot = null;
 
+  // 19-bosqich: kassir uchun "Buyurtmalar holati" ekranida chip-filtr —
+  // faqat kassir roli uchun (oshpaz/dostavkachi ekranlariga tegmaydi),
+  // mavjud .cat-row/.cat-opt chip komponentidan (24-bosqichdagi mijoz
+  // menyu filtri bilan bir xil) qayta foydalanadi.
+  let cashierStatusFilter = 'hammasi';
+  const CASHIER_STATUS_CHIPS = [
+    { key: 'hammasi', label: 'Hammasi' },
+    { key: 'yangi', label: 'Yangi' },
+    { key: 'tayyorlanmoqda', label: 'Tayyorlanmoqda' },
+    { key: 'tayyor', label: 'Tayyor' }
+  ];
+  function cashierStatusChipsHtml() {
+    return `
+      <div class="cat-row" id="cashierStatusChips">
+        ${CASHIER_STATUS_CHIPS.map(c => `<div class="cat-opt ${cashierStatusFilter === c.key ? 'selected' : ''}" data-status-chip="${c.key}">${escapeHtml(c.label)}</div>`).join('')}
+      </div>
+    `;
+  }
+
   function stopOrdersPolling() {
     if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
     lastOrdersSnapshot = null;
@@ -2369,8 +2399,14 @@
   }
 
   function ordersBoardHtml(orders, role) {
-    if (!orders || !orders.length) return `<div class="bosh">Hozircha buyurtmalar yo'q.</div>`;
-    return orders.map(o => orderCardHtml(o, role)).join('');
+    let list = orders || [];
+    if (role === 'kassir' && cashierStatusFilter !== 'hammasi') {
+      list = list.filter(o => o.status === cashierStatusFilter);
+    }
+    if (!list.length) {
+      return `<div class="bosh">${role === 'kassir' && cashierStatusFilter !== 'hammasi' ? "Bu holatda buyurtma yo'q." : "Hozircha buyurtmalar yo'q."}</div>`;
+    }
+    return list.map(o => orderCardHtml(o, role)).join('');
   }
 
   function attachOrdersBoardHandlers(role) {
