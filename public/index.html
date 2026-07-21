@@ -538,16 +538,19 @@
   .menu-item .m-price { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 2px; }
   .menu-item.low-stock { border: 1px solid var(--danger); }
 
-  /* ---- Miqdor tanlash (+/-) ---- */
+  /* ---- Miqdor tanlash (+/-) ----
+     14-bosqich: tugmalar 44x44px'gacha kengaytirildi (mobil bosish
+     maydoni talabi) — vizual radius/font o'lchami mutanosib oshirildi. */
   .qty-controls { display: flex; align-items: center; gap: var(--sp-2); }
   .qty-controls button {
-    width: 30px; height: 30px; border-radius: var(--radius-sm); border: none;
+    width: 44px; height: 44px; border-radius: var(--radius-md); border: none;
     background: var(--brand-primary); color: var(--brand-on-primary);
-    font-size: 16px; font-weight: 700; cursor: pointer;
+    font-size: 18px; font-weight: 700; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
     transition: background var(--transition-fast);
   }
   .qty-controls button:hover { background: var(--brand-primary-dark); }
-  .qty-controls .qty-val { min-width: 18px; text-align: center; font-weight: 600; }
+  .qty-controls .qty-val { min-width: 22px; text-align: center; font-weight: 600; }
 
   /* ---- Savat paneli (pastda "yopishgan") ---- */
   .cart-bar {
@@ -563,8 +566,9 @@
   /* ---- Turlarni tanlash qatori (buyurtma turi, to'lov turi) ---- */
   .type-row { display: flex; gap: var(--sp-2); margin-bottom: 10px; flex-wrap: wrap; }
   .type-opt {
-    flex: 1; min-width: 90px; text-align: center;
-    padding: 10px 6px; border-radius: var(--radius-md); font-size: var(--fs-sm); font-weight: 600;
+    flex: 1; min-width: 90px; min-height: 44px; text-align: center;
+    padding: 6px; border-radius: var(--radius-md); font-size: var(--fs-sm); font-weight: 600;
+    display: flex; align-items: center; justify-content: center; box-sizing: border-box;
     border: 1px solid var(--border-color-strong); cursor: pointer; background: var(--surface-0);
     transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
   }
@@ -705,8 +709,9 @@
   /* ---- Mijozlar uchun menyu (katalog, sevimlilar, aksiya, bonus) ---- */
   .cat-row { display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: 4px; margin-top: 10px; }
   .cat-opt {
-    flex: 0 0 auto; padding: 8px 14px; border-radius: var(--radius-pill); font-size: var(--fs-sm); font-weight: 600;
+    flex: 0 0 auto; padding: 0 16px; min-height: 44px; border-radius: var(--radius-pill); font-size: var(--fs-sm); font-weight: 600;
     background: var(--surface-1); color: var(--text-secondary); cursor: pointer; white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
     transition: background var(--transition-fast), color var(--transition-fast);
   }
   .cat-opt.selected {
