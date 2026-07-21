@@ -3269,8 +3269,8 @@ const server = http.createServer((req, res) => {
       if (!phoneTrim || !/^[\d+\-\s()]{6,20}$/.test(phoneTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini to\'g\'ri kiriting.' });
       }
-      if (logoTrim && !/^https?:\/\//i.test(logoTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Logotip uchun to\'g\'ri havola (https://...) kiriting.' });
+      if (logoTrim && !isValidImageValue(logoTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.' });
       }
       if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #E4232A).' });
