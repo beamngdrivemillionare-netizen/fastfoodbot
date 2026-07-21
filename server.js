@@ -294,6 +294,30 @@ function escapeHtmlServer(str) {
   }[c]));
 }
 
+// Dostavka buyurtmasi haqida oshxonaning biriktirilgan dostavka guruhiga xabar yuboradi
+// ("Qabul qilish" / "Tayyor" tugmalari bilan — bosilganda mijozga avtomatik xabar boradi)
+function notifyDeliveryGroup(owner, order, creatorLabel) {
+  if (!owner.deliveryGroupId) return;
+  const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+  const text = `🚚 <b>Yangi dostavka buyurtmasi</b>${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}`;
+  sendMessage(owner.deliveryGroupId, text, {
+    inline_keyboard: [[
+      { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
+      { text: '🏁 Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
+    ]]
+  }).then(result => {
+    if (result && result.ok && result.result && result.result.message_id) {
+      const owners2 = loadOwners();
+      const o2 = findOwner(owners2, owner.id);
+      const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+      if (ord2) {
+        ord2.deliveryGroupMsgId = result.result.message_id;
+        saveOwners(owners2);
+      }
+    }
+  });
+}
+
 // ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
 const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000; // har soatda tekshiradi
 const REMINDER_BEFORE_MS = 24 * 60 * 60 * 1000; // muddat tugashiga 1 kun qolganda eslatma yuboradi
@@ -454,6 +478,36 @@ async function handleTelegramUpdate(update) {
     const from = msg.from;
     const chatId = msg.chat.id;
 
+    // ---- Guruhda /biriktir: oshxona egasi shu guruhni dostavka admin guruhi sifatida bog'laydi ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, from.id);
+      if (!isOwnerAccessValid(owner)) {
+        await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
+        return;
+      }
+      owner.deliveryGroupId = String(chatId);
+      owner.deliveryGroupTitle = msg.chat.title || null;
+      saveOwners(owners);
+      await sendMessage(chatId,
+        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun dostavka admin guruhi sifatida biriktirildi.\n` +
+        `Endi mijozlar dostavka buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.`);
+      return;
+    }
+
+    // ---- Guruhda /bekor_biriktir: bog'lanishni bekor qilish ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/bekor_biriktir(@\S+)?$/.test(text)) {
+      const owners = loadOwners();
+      const owner = findOwner(owners, from.id);
+      if (owner && String(owner.deliveryGroupId) === String(chatId)) {
+        owner.deliveryGroupId = null;
+        owner.deliveryGroupTitle = null;
+        saveOwners(owners);
+        await sendMessage(chatId, 'Bu guruh dostavka guruhi sifatidan olib tashlandi.');
+      }
+      return;
+    }
+
     // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
     if (isAdminId(from.id) && !text.startsWith('/')) {
       const awaiting = getAwaitingCustom();
@@ -567,6 +621,63 @@ async function handleTelegramUpdate(update) {
     const data = cq.data || '';
     const chatId = cq.message && cq.message.chat && cq.message.chat.id;
     const messageId = cq.message && cq.message.message_id;
+
+    // ---- Dostavka guruhi: "Qabul qilish" / "Tayyor" tugmalari (guruh a'zolari uchun, admin cheklovisiz) ----
+    if (data.startsWith('dgaccept:') || data.startsWith('dgready:')) {
+      const [action, ownerId, orderId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+
+      if (action === 'dgaccept') {
+        if (order.deliveryGroupStage === 'qabul_qilindi' || order.deliveryGroupStage === 'tayyor') {
+          await answerCallbackQuery(cq.id, 'Allaqachon qabul qilingan.');
+          return;
+        }
+        order.deliveryGroupStage = 'qabul_qilindi';
+        order.deliveryAcceptedBy = from.id;
+        order.deliveryAcceptedAt = new Date().toISOString();
+        saveOwners(owners);
+
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId,
+            `${cq.message.text || ''}\n\n✅ Qabul qilindi — ${displayName(from)}`,
+            { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `dgready:${ownerId}:${orderId}` }]] });
+        }
+        if (order.customerId) {
+          await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi, tez orada tayyorlanadi!');
+        }
+        await answerCallbackQuery(cq.id, 'Qabul qilindi ✅');
+        return;
+      }
+
+      if (action === 'dgready') {
+        if (order.deliveryGroupStage === 'tayyor') {
+          await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
+          return;
+        }
+        const wasAccepted = order.deliveryGroupStage === 'qabul_qilindi';
+        order.deliveryGroupStage = 'tayyor';
+        order.deliveryReadyBy = from.id;
+        order.deliveryReadyAt = new Date().toISOString();
+        saveOwners(owners);
+
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId,
+            `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
+        }
+        if (order.customerId) {
+          if (!wasAccepted) {
+            await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi.');
+          }
+          await sendMessage(order.customerId, '🏁 Buyurtmangiz tayyor, dostavkachi yo\'lda!');
+        }
+        await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
+        return;
+      }
+    }
 
     if (!isAdminId(from.id)) {
       await answerCallbackQuery(cq.id, 'Faqat admin qaror qabul qila oladi.');
@@ -1082,6 +1193,43 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: dostavka admin guruhi biriktirilgan-yo'qligini olish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/delivery-group-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+      return sendJSON(res, 200, {
+        ok: true,
+        bound: !!owner.deliveryGroupId,
+        groupTitle: owner.deliveryGroupTitle || null
+      });
+    });
+    return;
+  }
+
+  // ---- API: dostavka admin guruhini bog'lanishdan chiqarish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/delivery-group-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+      owner.deliveryGroupId = null;
+      owner.deliveryGroupTitle = null;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- API: aksiyalar ro'yxati (egasi) ----
   if (req.method === 'POST' && req.url === '/api/promo-list') {
     readBody(req, (err, payload) => {
@@ -1454,6 +1602,9 @@ const server = http.createServer((req, res) => {
       for (const targetId of new Set(notifyTargets)) {
         sendMessage(targetId, notifyText);
       }
+      if (orderType === 'dostavka') {
+        notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+      }
 
       return sendJSON(res, 200, { ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned, bonusBalance: customer.bonusPoints });
     });
@@ -1587,6 +1738,9 @@ const server = http.createServer((req, res) => {
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => s.role === 'oshpaz').map(s => s.id))];
       for (const targetId of new Set(notifyTargets)) {
         sendMessage(targetId, notifyText);
+      }
+      if (orderType === 'dostavka') {
+        notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       }
 
       return sendJSON(res, 200, { ok: true, orderId: order.id, total });
