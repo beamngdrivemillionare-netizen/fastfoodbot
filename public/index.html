@@ -519,6 +519,23 @@
   .order-action-btn.start { background: var(--warning); }
   .order-action-btn.ready { background: var(--success); }
 
+  /* ---- Oshxona (oshpaz) va kuryer (dostavkachi) taxtalari uchun
+     kattalashtirilgan, "bitta qarashda" o'qiladigan ko'rinish (20-bosqich):
+     bu rollar band paytda tezda ko'z yugurtirishi kerak, shuning uchun
+     eng muhim ma'lumot (taom nomlari) va amal tugmasi sezilarli darajada
+     kattalashtiriladi. Faqat #ordersBoard.orders-board-large ichida —
+     kassirning ixcham buyurtma ro'yxatiga ta'sir qilmaydi. ---- */
+  .orders-board-large .order-card { padding: var(--sp-4) var(--sp-5); margin-bottom: var(--sp-3); }
+  .orders-board-large .order-type { font-size: 19px; }
+  .orders-board-large .order-time { font-size: var(--fs-sm); }
+  .orders-board-large .order-items { font-size: 19px; font-weight: 600; line-height: 1.5; margin-bottom: var(--sp-3); }
+  .orders-board-large .status-badge { font-size: var(--fs-sm); padding: 6px 14px; }
+  .orders-board-large .order-bottom { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
+  .orders-board-large .order-total { font-size: 18px; text-align: center; }
+  .orders-board-large .order-action-btn {
+    font-size: 17px; min-height: 52px; padding: 10px 20px; width: 100%;
+  }
+
   .link-box {
     display: flex;
     gap: 6px;
@@ -2462,7 +2479,7 @@
       <div class="panel">
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
         <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
-        <div id="ordersBoard" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+        <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
     startOrdersPolling('oshpaz');
@@ -2539,7 +2556,7 @@
       <div class="panel">
         <div class="salom" style="font-size:20px;">Yetkazib berish</div>
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
-        <div id="ordersBoard" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+        <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
     startDeliveryPolling();
