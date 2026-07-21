@@ -2032,10 +2032,13 @@
 
   // ---- Oshpaz: kelgan buyurtmalar ro'yxati real-vaqtda, holatni bosqichma-bosqich o'zgartirish ----
   function renderKitchenScreen(restaurantName) {
+    // 13-bosqich: bitta vazifali rol — restoran nomi allaqachon doimiy
+    // header'da (11-bosqich) ko'rinadi, shuning uchun bu yerda takrorlanmaydi;
+    // ekran to'g'ridan-to'g'ri yagona vazifaga — buyurtmalarga — qaratiladi.
     ekran(`
       <div class="panel">
-        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Oshxona')}</div>
-        <div class="bosh">Kelgan buyurtmalar — pastdagi tugmalar bilan holatini o'zgartiring.</div>
+        <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
+        <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
         <div id="ordersBoard" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
@@ -2102,9 +2105,11 @@
   }
 
   function renderDeliveryScreen(restaurantName) {
+    // 13-bosqich: bitta vazifali rol — restoran nomi header'da (11-bosqich)
+    // ko'rinadi, shu sabab bu yerda sarlavha bevosita vazifani nomlaydi.
     ekran(`
       <div class="panel">
-        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Oshxona')}</div>
+        <div class="salom" style="font-size:20px;">Yetkazib berish</div>
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
         <div id="ordersBoard" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
