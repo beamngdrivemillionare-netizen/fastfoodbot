@@ -2831,6 +2831,81 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: KitchenOS bosh sahifa uchun "Muhim ogohlantirishlar" (6-bosqich,
+  // faqat egasi). Uchta narsa BITTALAB tekshiriladi va faqat DOLZARB
+  // bo'lganlari (count > 0 yoki holat true) ro'yxatga qo'shiladi, shu
+  // sababli natija har doim mockupdagi kabi 0 dan 3 tagacha element:
+  //   1) tugayotgan ombor mahsulotlari — item.qty <= item.minQty (markaziy
+  //      sklad + BARCHA filiallar birga, chunki egasi uchun bittagina umumiy
+  //      ogohlantirish kifoya - qaysi joyda ekanini "Ombor" ekranining o'zi
+  //      ko'rsatadi)
+  //   2) kechikayotgan buyurtmalar — /api/order-status-counts'dagi bilan
+  //      AYNAN BIR XIL hisoblash mantig'i (ORDER_DELAY_THRESHOLD_MINUTES)
+  //   3) bugungi Z-hisobot hali yopilmagan — owner.zReports'da bugungi
+  //      sana (YYYY-MM-DD) uchun yozuv yo'qligi
+  // `screen` maydoni - 13-bosqichda bosilganda qaysi ekranga o'tish
+  // kerakligini bildiradi uchun oldindan qo'shib qo'yildi.
+  if (req.method === 'POST' && req.url === '/api/dashboard-alerts') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const alerts = [];
+
+      // 1) Tugayotgan ombor mahsulotlari (markaziy sklad + barcha filiallar)
+      const stockPools = [owner, ...(owner.branches || [])];
+      let lowStockCount = 0;
+      for (const pool of stockPools) {
+        for (const item of (pool.stock || [])) {
+          if (item.minQty === null || item.minQty === undefined) continue;
+          if (item.qty <= item.minQty) lowStockCount += 1;
+        }
+      }
+      if (lowStockCount > 0) {
+        alerts.push({
+          type: 'low_stock', level: 'error', text: 'Tugayotgan mahsulotlar bor',
+          count: lowStockCount, screen: 'ombor'
+        });
+      }
+
+      // 2) Kechikayotgan buyurtmalar (bugungi, /api/order-status-counts bilan bir xil mantiq)
+      const now = new Date();
+      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
+      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
+      let delayedCount = 0;
+      for (const o of todaysOrders) {
+        if (o.status === 'tayyor') continue;
+        if ((now - new Date(o.createdAt)) > thresholdMs) delayedCount += 1;
+      }
+      if (delayedCount > 0) {
+        alerts.push({
+          type: 'delayed_orders', level: 'warning', text: 'Kechikayotgan buyurtmalar',
+          count: delayedCount, screen: 'buyurtmalar_kechikkan'
+        });
+      }
+
+      // 3) Bugungi Z-hisobot (kunlik yakuniy hisobot) hali yopilmaganmi
+      const todayDateKey = now.toISOString().slice(0, 10);
+      const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey);
+      if (!dailyReportClosed) {
+        alerts.push({
+          type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
+          count: null, screen: 'zreport'
+        });
+      }
+
+      return sendJSON(res, 200, { ok: true, alerts });
+    });
+    return;
+  }
+
   // Davr nomidan (bugun/hafta/oy/hammasi) boshlanish sanasini qaytaradi — cashflow va kuryerlar hisoboti uchun umumiy
   function resolvePeriodStart(period) {
     const now = new Date();
