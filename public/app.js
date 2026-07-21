@@ -986,6 +986,53 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (btn) btn.addEventListener('click', () => renderCashflowScreen(profile, () => renderProfileView(profile)));
   }
 
+  // 3-bosqich: KitchenOS bosh sahifa header'i — hamburger, logotip,
+  // nom/taglayn, sana va bildirishnoma qo'ng'irog'i (badge bilan).
+  // Hozircha faqat "Bosh" tabida sinov uchun ulangan — bildirishnomalar
+  // sonini serverdan olish (18-bosqich) va hamburger menyusi (14-bosqich)
+  // keyinroq ulanadi; hozircha ular placeholder ishlov beruvchiga ega.
+  const KO_MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
+    'Iyul', 'Avgust', 'Sentyabr', 'Oktyabr', 'Noyabr', 'Dekabr'];
+
+  function koTodayLabel() {
+    const d = new Date();
+    return `${d.getDate()} ${KO_MONTH_NAMES[d.getMonth()]}`;
+  }
+
+  function koHomeHeaderHtml(unreadCount) {
+    const count = unreadCount || 0;
+    return `
+      <div class="ko-home-header">
+        <div class="ko-home-header-left">
+          <button type="button" class="ko-home-header-menu-btn" id="koHeaderMenuBtn" aria-label="Menyu">
+            ${icon('menu', 'icon-lg')}
+          </button>
+          <div class="ko-home-header-logo">${icon('chef-hat', 'icon-md')}</div>
+          <div class="ko-home-header-titles">
+            <div class="ko-home-header-title">KitchenOS</div>
+            <div class="ko-home-header-subtitle">Oshxona Menejeri</div>
+          </div>
+        </div>
+        <div class="ko-home-header-right">
+          <div class="ko-home-header-date">${icon('calendar', 'icon-xs')}<span>${koTodayLabel()}</span></div>
+          <button type="button" class="ko-home-header-bell-btn" id="koHeaderBellBtn" aria-label="Bildirishnomalar">
+            ${icon('bell', 'icon-sm')}
+            ${count > 0 ? `<span class="ko-home-header-bell-badge">${count}</span>` : ''}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function wireKoHomeHeader() {
+    const menuBtn = document.getElementById('koHeaderMenuBtn');
+    const bellBtn = document.getElementById('koHeaderBellBtn');
+    // TODO (14-bosqich): hamburger yon-menyusini ochish
+    if (menuBtn) menuBtn.addEventListener('click', () => console.log('KitchenOS: menyu tugmasi (14-bosqichda ulanadi)'));
+    // TODO (15-bosqich): Bildirishnomalar ekraniga o'tish
+    if (bellBtn) bellBtn.addEventListener('click', () => console.log('KitchenOS: bell tugmasi (15-bosqichda ulanadi)'));
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -993,6 +1040,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
 
         <div class="owner-tab-panel ${ownerActiveTab === 'bosh' ? 'active' : ''}" data-tab="bosh">
+          ${koHomeHeaderHtml(0)}
           ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
           <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
           <div class="kartochka">
@@ -1138,6 +1186,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', () => setOwnerActiveTab(btn.getAttribute('data-owner-tab')));
     });
     loadOwnerDashboardStats(profile);
+    wireKoHomeHeader();
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
       renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
