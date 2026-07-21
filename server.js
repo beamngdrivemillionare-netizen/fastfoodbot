@@ -281,6 +281,35 @@ function editMessageText(chatId, messageId, text, replyMarkup) {
   return telegramApi('editMessageText', params).catch(() => {});
 }
 
+// To'lov skrinshoti kabi RASM (caption) xabarlarini tahrirlash uchun -
+// editMessageText FAQAT matnli xabarlarda ishlaydi, rasm/caption'li
+// xabarlarda Telegram xato qaytaradi, shuning uchun alohida.
+function editMessageCaption(chatId, messageId, caption, replyMarkup) {
+  const params = { chat_id: chatId, message_id: messageId, caption, parse_mode: 'HTML' };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  else params.reply_markup = JSON.stringify({ inline_keyboard: [] });
+  return telegramApi('editMessageCaption', params).catch(() => {});
+}
+
+// Mijoz yuborgan skrinshotni (from_chat_id/message_id) qayta yuklamasdan,
+// "Forwarded from" belgisisiz kassir/egasiga ko'chirib yuboradi - caption va
+// tasdiqlash tugmalari bilan birga.
+function copyMessageWithKeyboard(targetChatId, fromChatId, messageId, caption, replyMarkup) {
+  const params = {
+    chat_id: targetChatId, from_chat_id: fromChatId, message_id: messageId,
+    caption, parse_mode: 'HTML'
+  };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  return telegramApi('copyMessage', params).catch(() => {});
+}
+
+// Lokatsiya (lat/lng) berilgan bo'lsa - Google Maps havolasiga aylantiradi
+// (dostavka guruhi/oshxona xabarida bosib ochish uchun).
+function locationMapsLink(location) {
+  if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') return null;
+  return `https://maps.google.com/?q=${location.lat},${location.lng}`;
+}
+
 function displayName(user) {
   if (!user) return 'Noma\'lum';
   const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
@@ -299,7 +328,13 @@ function escapeHtmlServer(str) {
 function notifyDeliveryGroup(owner, order, creatorLabel) {
   if (!owner.deliveryGroupId) return;
   const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-  const text = `🚚 <b>Yangi dostavka buyurtmasi</b>${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}`;
+  const mapsLink = locationMapsLink(order.location);
+  const addressLines = [
+    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
+    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
+  ].filter(Boolean).join('\n');
+  const text = `🚚 <b>Yangi dostavka buyurtmasi</b>${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
+    (addressLines ? `\n\n${addressLines}` : '');
   sendMessage(owner.deliveryGroupId, text, {
     inline_keyboard: [[
       { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
@@ -615,6 +650,63 @@ async function handleTelegramUpdate(update) {
     return;
   }
 
+  // ---- Mijoz to'lov skrinshotini shaxsiy chatga RASM qilib yuborganda ----
+  // (faqat paymentType === 'karta' bo'lgan va hali "kutilmoqda"/"rad_etildi"
+  // holatidagi buyurtmalar uchun - qarang: /api/customer-order'dagi
+  // paymentProofStatus va pastdagi 'payok'/'payrej' callback'lari)
+  if (update.message && update.message.photo && update.message.chat && update.message.chat.type === 'private') {
+    const msg = update.message;
+    const from = msg.from;
+    const chatId = msg.chat.id;
+    const userId = String(from.id);
+
+    const owners = loadOwners();
+    let targetOwner = null;
+    let targetOrder = null;
+    for (const owner of owners) {
+      for (const order of (owner.orders || [])) {
+        if (String(order.customerId) !== userId) continue;
+        if (order.paymentProofStatus !== 'kutilmoqda' && order.paymentProofStatus !== 'rad_etildi') continue;
+        if (!targetOrder || new Date(order.createdAt) > new Date(targetOrder.createdAt)) {
+          targetOwner = owner;
+          targetOrder = order;
+        }
+      }
+    }
+
+    if (!targetOwner || !targetOrder) {
+      // Kutilayotgan karta to'lovi topilmadi - bu oddiy rasm bo'lishi mumkin,
+      // jim o'tkazib yuboramiz (xato deb hisoblamaymiz).
+      return;
+    }
+
+    const photos = msg.photo;
+    const bestPhoto = photos[photos.length - 1]; // Telegram eng kattasini oxiriga qo'yadi
+    targetOrder.paymentProofFileId = bestPhoto.file_id;
+    targetOrder.paymentProofStatus = 'kutilmoqda';
+    targetOrder.paymentProofSentAt = new Date().toISOString();
+    saveOwners(owners);
+
+    await sendMessage(chatId, '📤 Skrinshot qabul qilindi, tasdiqlanishini kuting...');
+
+    const itemsText = targetOrder.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const caption = `💳 <b>To'lov tasdiqlash so'raladi</b>\n` +
+      `Mijoz: ${escapeHtmlServer(targetOrder.customerName)}\n${itemsText}\n\n` +
+      `Jami: ${targetOrder.total} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}` +
+      `${targetOrder.tableNumber ? ' — stol ' + escapeHtmlServer(targetOrder.tableNumber) : ''}`;
+    const approveKb = {
+      inline_keyboard: [[
+        { text: '✅ Tasdiqlash', callback_data: `payok:${targetOwner.id}:${targetOrder.id}` },
+        { text: '❌ Rad etish', callback_data: `payrej:${targetOwner.id}:${targetOrder.id}` }
+      ]]
+    };
+    const approvers = [targetOwner.id, ...((targetOwner.staff || []).filter(s => s.role === 'kassir').map(s => s.id))];
+    for (const approverId of new Set(approvers.map(String))) {
+      copyMessageWithKeyboard(approverId, chatId, msg.message_id, caption, approveKb);
+    }
+    return;
+  }
+
   if (update.callback_query) {
     const cq = update.callback_query;
     const from = cq.from;
@@ -675,6 +767,79 @@ async function handleTelegramUpdate(update) {
           await sendMessage(order.customerId, '🏁 Buyurtmangiz tayyor, dostavkachi yo\'lda!');
         }
         await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
+        return;
+      }
+    }
+
+    // ---- To'lov skrinshotini tasdiqlash/rad etish (kassir yoki egasi uchun,
+    // admin cheklovisiz - dgaccept/dgready bilan bir xil joyga qo'yilgan) ----
+    if (data.startsWith('payok:') || data.startsWith('payrej:')) {
+      const [action, ownerId, orderId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+
+      const isOwnerUser = String(owner.id) === String(from.id);
+      const isCashier = (owner.staff || []).some(s => s.role === 'kassir' && String(s.id) === String(from.id));
+      if (!isOwnerUser && !isCashier) {
+        await answerCallbackQuery(cq.id, 'Sizda bu amal uchun ruxsat yo\'q (faqat kassir yoki egasi).');
+        return;
+      }
+
+      if (order.paymentProofStatus !== 'kutilmoqda') {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        if (chatId && messageId) {
+          await editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n(allaqachon ko'rib chiqilgan)`, null);
+        }
+        return;
+      }
+
+      if (action === 'payok') {
+        order.paymentProofStatus = 'tasdiqlandi';
+        order.paymentProofApprovedBy = from.id;
+        order.paymentProofApprovedAt = new Date().toISOString();
+        saveOwners(owners);
+
+        // ENDI (va FAQAT ENDI) - skrinshot tasdiqlangach - oshxona/kassir/
+        // dostavka guruhiga xabar ketadi (customer-order'dagi bilan bir xil).
+        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+          `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${order.total}\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
+        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'oshpaz' || s.role === 'kassir').map(s => s.id))];
+        for (const targetId of new Set(notifyTargets.map(String))) {
+          sendMessage(targetId, notifyText);
+        }
+        if (order.orderType === 'dostavka') {
+          notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        }
+
+        if (order.customerId) {
+          await sendMessage(order.customerId, '✅ To\'lovingiz tasdiqlandi! Buyurtmangiz oshxonaga yuborildi.');
+        }
+        if (chatId && messageId) {
+          await editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n✅ Tasdiqlandi — ${displayName(from)}`, null);
+        }
+        await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
+        return;
+      }
+
+      if (action === 'payrej') {
+        order.paymentProofStatus = 'rad_etildi';
+        order.paymentProofRejectedBy = from.id;
+        order.paymentProofRejectedAt = new Date().toISOString();
+        saveOwners(owners);
+
+        if (order.customerId) {
+          await sendMessage(order.customerId,
+            '❌ To\'lov skrinshoti tasdiqlanmadi. Iltimos, to\'g\'ri skrinshotni qayta (rasm qilib) yuboring ' +
+            'yoki oshxona bilan bog\'laning.');
+        }
+        if (chatId && messageId) {
+          await editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n❌ Rad etildi — ${displayName(from)}`, null);
+        }
+        await answerCallbackQuery(cq.id, 'Rad etildi ❌');
         return;
       }
     }
@@ -1494,7 +1659,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints } = payload;
+      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -1515,6 +1680,22 @@ const server = http.createServer((req, res) => {
       if (orderType === 'stol' && !String(tableNumber || '').trim()) {
         return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
       }
+
+      // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - dostavkachi
+      // mijozni topa olishi uchun kamida BITTASI bo'lishi shart: aniqlangan
+      // joylashuv (lokatsiya) YOKI qo'lda yozilgan manzil izohi.
+      let deliveryLocation = null;
+      if (orderType === 'dostavka') {
+        if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
+            Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
+          deliveryLocation = { lat: location.lat, lng: location.lng };
+        }
+        const addressNoteTrimmed = String(addressNote || '').trim();
+        if (!deliveryLocation && !addressNoteTrimmed) {
+          return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
+        }
+      }
+      const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
 
       const menu = (owner.menu || []).filter(m => m.available !== false);
       const orderItems = [];
@@ -1582,8 +1763,18 @@ const server = http.createServer((req, res) => {
         total,
         orderType,
         tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
+        location: deliveryLocation,
+        addressNote: addressNoteFinal,
         paymentType,
         status: 'yangi',
+        // YANGI: karta bilan to'lagan mijoz to'lov skrinshotini yubormaguncha
+        // va kassir/egasi shuni tasdiqlamaguncha - buyurtma "kutilmoqda"
+        // holatida turadi, oshxona/dostavka guruhiga XABAR KETMAYDI (qarang:
+        // pastdagi if (paymentType === 'karta') bloki va 'payok'/'payrej'
+        // callback'lari). Naqd/"dostavka orqali" to'lovda bu tekshiruv
+        // kerak emas - shuning uchun null.
+        paymentProofStatus: paymentType === 'karta' ? 'kutilmoqda' : null,
+        paymentProofFileId: null,
         branchId: null,
         customerId: userId,
         customerName: displayName(check.user),
@@ -1595,18 +1786,33 @@ const server = http.createServer((req, res) => {
       logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${total} so'm` });
       saveOwners(owners);
 
-      const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
-        `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
-      const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'oshpaz' || s.role === 'kassir').map(s => s.id))];
-      for (const targetId of new Set(notifyTargets)) {
-        sendMessage(targetId, notifyText);
-      }
-      if (orderType === 'dostavka') {
-        notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+      if (paymentType === 'karta') {
+        // Oshxona/kassir/dostavka guruhiga HALI xabar YUBORILMAYDI - avval
+        // mijoz to'lov skrinshotini shu botning shaxsiy chatiga yuborishi,
+        // keyin kassir/egasi tasdiqlashi kerak (qarang: 'payok' callback -
+        // xuddi shu notifyText/notifyTargets/notifyDeliveryGroup o'sha yerda
+        // takrorlanadi, FAQAT tasdiqlangandan keyin ishga tushadi).
+        await sendMessage(userId,
+          '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.\n\n' +
+          'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
+          'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
+      } else {
+        const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+          `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'oshpaz' || s.role === 'kassir').map(s => s.id))];
+        for (const targetId of new Set(notifyTargets)) {
+          sendMessage(targetId, notifyText);
+        }
+        if (orderType === 'dostavka') {
+          notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        }
       }
 
-      return sendJSON(res, 200, { ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned, bonusBalance: customer.bonusPoints });
+      return sendJSON(res, 200, {
+        ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
+        bonusBalance: customer.bonusPoints, paymentPending: paymentType === 'karta'
+      });
     });
     return;
   }
