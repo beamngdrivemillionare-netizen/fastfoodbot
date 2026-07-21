@@ -818,10 +818,33 @@
     opacity: 0; position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; border: none; padding: 0;
   }
   .brand-color-preview {
-    display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+    display: flex; flex-direction: column; gap: var(--sp-3);
     background: var(--surface-1); border-radius: var(--radius-md); padding: var(--sp-3) var(--sp-4); margin-top: var(--sp-2);
   }
-  .brand-color-preview .brand-preview-label { font-size: var(--fs-xs); color: var(--text-muted); width: 100%; }
+  .brand-color-preview .brand-preview-label { font-size: var(--fs-xs); color: var(--text-muted); }
+  /* 29-bosqich: jonli ko'rish — bir nechta haqiqiy komponent (header,
+     tugmalar, belgilar) bitta blokda, tanlangan rangdan darhol ta'sirlanadi. */
+  .brand-preview-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+  .brand-preview-row .btn { width: auto; margin: 0; padding: 0 16px; min-height: 38px; }
+  .brand-preview-header {
+    display: flex; align-items: center; gap: var(--sp-2);
+    background: var(--surface-0); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3);
+  }
+  .brand-preview-header .brand-preview-logo {
+    width: 28px; height: 28px; border-radius: var(--radius-sm); flex-shrink: 0;
+    background: var(--brand-primary-light); color: var(--brand-primary-dark);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .brand-preview-header .brand-preview-shop-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); flex: 1; }
+  /* 26-bosqich: hisoblangan kontrast nisbati foydalanuvchiga ko'rinadigan
+     ogohlantirish/tasdiq sifatida chiqariladi (avval faqat ichki hisob edi). */
+  .brand-preview-contrast {
+    display: flex; align-items: center; gap: 6px;
+    font-size: var(--fs-xs); font-weight: 600; padding: 6px 10px; border-radius: var(--radius-sm);
+  }
+  .brand-preview-contrast .icon { width: 14px; height: 14px; }
+  .brand-preview-contrast.ok { background: var(--success-bg); color: var(--success); }
+  .brand-preview-contrast.warn { background: var(--warning-bg); color: var(--warning); }
 
   /* =========================================================================
      IKONOGRAFIYA (9-bosqich): yagona chiziqli (outline) ikon tizimi.
@@ -1208,6 +1231,20 @@
     const a = hexToRgb(hex), b = hexToRgb(towardHex);
     return rgbToHex({ r: a.r + (b.r - a.r) * amount, g: a.g + (b.g - a.g) * amount, b: a.b + (b.b - a.b) * amount });
   }
+  // 26-bosqich: hisoblangan kontrastni foydalanuvchiga ko'rsatish (matn/tugma
+  // rangi ustidagi rang bilan WCAG AA me'yoriga [>=4.5:1] mosligini tekshiradi).
+  function brandContrastInfoHtml(hex) {
+    const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
+    const onColor = pickOnColor(base);
+    const ratio = contrastRatio(base, onColor);
+    const ok = ratio >= 4.5;
+    return `
+      <div class="brand-preview-contrast ${ok ? 'ok' : 'warn'}">
+        ${icon(ok ? 'check' : 'warning', 'icon-xs')}
+        Kontrast nisbati: ${ratio.toFixed(1)}:1 — ${ok ? "matn yaxshi o'qiladi (WCAG AA)" : "past, matn qiyin o'qilishi mumkin"}
+      </div>
+    `;
+  }
 
   // Bitta asosiy rangdan --brand-primary-dark / --brand-primary-light /
   // --brand-on-primary'ni hisoblab, :root ustiga qo'yadi (jonli ko'rish —
@@ -1230,9 +1267,10 @@
     root.removeProperty('--brand-on-primary');
   }
 
-  function brandSwatchesHtml(current) {
+  function brandSwatchesHtml(current, shopName) {
     const cur = isValidHexColor(current) ? current.toUpperCase() : DEFAULT_BRAND_COLOR;
     const isPreset = BRAND_COLOR_PRESETS.map(c => c.toUpperCase()).includes(cur);
+    const name = shopName ? escapeHtml(shopName) : "Sizning oshxonangiz";
     return `
       <div class="brand-color-swatches" id="brandSwatches">
         ${BRAND_COLOR_PRESETS.map(c => `
@@ -1246,9 +1284,21 @@
         </label>
       </div>
       <div class="brand-color-preview" id="brandColorPreview">
-        <span class="brand-preview-label">Namuna ko'rinish:</span>
-        <button type="button" class="btn" style="width:auto; padding:0 18px; margin:0;">Buyurtma berish</button>
-        <span class="badge paid">Bonus: 120 ball</span>
+        <span class="brand-preview-label">Namuna ko'rinish — o'zgarishlar darhol, saqlashdan oldin ham ko'rinadi:</span>
+        <div class="brand-preview-header">
+          <span class="brand-preview-logo">${icon('restaurant', 'icon-xs')}</span>
+          <span class="brand-preview-shop-name">${name}</span>
+          <span class="role-badge">Egasi</span>
+        </div>
+        <div class="brand-preview-row">
+          <button type="button" class="btn">Buyurtma berish</button>
+          <button type="button" class="btn ikkinchi">Bekor qilish</button>
+        </div>
+        <div class="brand-preview-row">
+          <span class="badge paid">Bonus: 120 ball</span>
+          <span class="badge warning">Kutilmoqda</span>
+        </div>
+        <div id="brandPreviewContrast">${brandContrastInfoHtml(cur)}</div>
       </div>
     `;
   }
@@ -1257,11 +1307,17 @@
   function attachBrandSwatchHandlers(onChange) {
     const wrap = document.getElementById('brandSwatches');
     if (!wrap) return;
+    const updateContrast = (hex) => {
+      const el = document.getElementById('brandPreviewContrast');
+      if (el) el.innerHTML = brandContrastInfoHtml(hex);
+    };
     wrap.querySelectorAll('[data-brand-color]').forEach(btn => btn.addEventListener('click', () => {
       wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
       btn.classList.add('selected');
       btn.innerHTML = icon('check', 'icon-xs');
-      onChange(btn.getAttribute('data-brand-color'));
+      const hex = btn.getAttribute('data-brand-color');
+      onChange(hex);
+      updateContrast(hex);
     }));
     const customInput = document.getElementById('brandColorCustom');
     if (customInput) customInput.addEventListener('input', (e) => {
@@ -1271,6 +1327,7 @@
       label.classList.add('selected');
       label.style.background = hex;
       onChange(hex);
+      updateContrast(hex);
     });
   }
 
@@ -1555,8 +1612,11 @@
           <label class="field-label">Logotip havolasi (ixtiyoriy, rasm linki)</label>
           <input type="text" id="pLogo" placeholder="https://..." value="${escapeHtml(p.logoUrl || '')}">
           <label class="field-label">Brend rangi (mijozlar menyusi va ilova shu rangda ko'rinadi)</label>
-          ${brandSwatchesHtml(pendingBrandColor)}
-          <button class="btn" id="saveProfileBtn" style="margin-top:14px;">Saqlash</button>
+          ${brandSwatchesHtml(pendingBrandColor, p.name)}
+          <div class="btn-row" style="margin-top:14px;">
+            <button class="btn ikkinchi" id="cancelProfileBtn">← Bekor qilish</button>
+            <button class="btn" id="saveProfileBtn">Saqlash</button>
+          </div>
           <div class="xabar" id="profileMsg"></div>
         </div>
       </div>
@@ -1565,6 +1625,14 @@
     attachBrandSwatchHandlers((hex) => {
       pendingBrandColor = hex;
       applyBrandColor(hex);
+    });
+
+    // Jonli ko'rish saqlashdan oldingi taxminiy holat — shu sababli bekor
+    // qilinganda haqiqiy saqlangan rangga qaytarib, o'zgarishlarni tashlab
+    // yuboradi (29-bosqich: preview har doim rad etib bo'lishi kerak).
+    document.getElementById('cancelProfileBtn').addEventListener('click', () => {
+      applyBrandColor(p.brandColor);
+      renderProfileView(p);
     });
 
     document.getElementById('saveProfileBtn').addEventListener('click', async () => {
