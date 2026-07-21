@@ -491,9 +491,146 @@
   .empty-state .empty-state-icon { font-size: 34px; margin-bottom: var(--sp-3); opacity: 0.7; }
   .empty-state .empty-state-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
   .empty-state .empty-state-desc { font-size: var(--fs-sm); color: var(--text-muted); max-width: 260px; line-height: var(--lh-body); }
+
+  /* =========================================================================
+     IKONOGRAFIYA (9-bosqich): yagona chiziqli (outline) ikon tizimi.
+     Barcha ikonlar #icon-sprite ichidagi <symbol>lardan <use> orqali
+     chaqiriladi — shu sababli hammasi bir xil qalinlik/uslubda bo'ladi va
+     rangi currentColor orqali atrofdagi matn rangiga (yoki --brand-primary
+     ga) avtomatik moslashadi. Emoji faqat promo-banner'da (🎁) qoldirildi.
+     ========================================================================= */
+  .icon {
+    width: 18px;
+    height: 18px;
+    display: inline-block;
+    vertical-align: -3px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .icon-xs { width: 14px; height: 14px; vertical-align: -2px; }
+  .icon-lg { width: 24px; height: 24px; vertical-align: -6px; }
+  .icon-xl { width: 34px; height: 34px; }
+  .icon-filled { fill: currentColor; }
+  .icon-muted { color: var(--text-muted); }
+  .icon-danger { color: var(--danger); }
+  .icon-success { color: var(--success); }
+  .icon-warning { color: var(--warning); }
+  .icon-brand { color: var(--brand-primary); }
 </style>
 </head>
 <body>
+<!-- =========================================================================
+     IKON-SPRITE (9-bosqich): barcha platformada ishlatiladigan chiziqli
+     ikonlarning yagona manbasi. Har bir <symbol> 24x24 grid, 1.8px chiziq
+     qalinligida chizilgan (Design Tokens bo'limidagi .icon klassiga qarang).
+     Yangi ikon kerak bo'lsa — shu yerga yangi <symbol id="icon-..."> qo'shiladi,
+     boshqa joyga emas (yagona manba printsipi buziladi).
+     ========================================================================= -->
+<svg id="icon-sprite" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <symbol id="icon-restaurant" viewBox="0 0 24 24">
+    <path d="M7 2v6a2 2 0 0 1-2 2M7 2v18M4 2v4"/>
+    <path d="M17 2c-2.1 0-3.7 2.4-3.7 5.6 0 2.4 1.1 4.4 2.7 5.3V20"/>
+  </symbol>
+  <symbol id="icon-edit" viewBox="0 0 24 24">
+    <path d="M12 20h9"/>
+    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+  </symbol>
+  <symbol id="icon-check" viewBox="0 0 24 24">
+    <path d="M20 6 9 17l-5-5"/>
+  </symbol>
+  <symbol id="icon-check-circle" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="m8.2 12.3 2.6 2.6 5-5.2"/>
+  </symbol>
+  <symbol id="icon-x" viewBox="0 0 24 24">
+    <path d="M18 6 6 18"/>
+    <path d="M6 6l12 12"/>
+  </symbol>
+  <symbol id="icon-x-circle" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="m9.5 9.5 5 5"/>
+    <path d="m14.5 9.5-5 5"/>
+  </symbol>
+  <symbol id="icon-box" viewBox="0 0 24 24">
+    <path d="M21 8 12 3 3 8l9 5 9-5Z"/>
+    <path d="M3 8v8l9 5 9-5V8"/>
+    <path d="M12 13v8"/>
+  </symbol>
+  <symbol id="icon-wallet" viewBox="0 0 24 24">
+    <path d="M3 7.5A2 2 0 0 1 5 5.5h13a1 1 0 0 1 1 1V9"/>
+    <path d="M3 7.5v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6.5a2 2 0 0 0-2-2H6"/>
+    <circle cx="16.3" cy="14" r="1.2"/>
+  </symbol>
+  <symbol id="icon-ai" viewBox="0 0 24 24">
+    <rect x="5" y="8" width="14" height="10" rx="3"/>
+    <path d="M12 8V4"/>
+    <circle cx="12" cy="3" r="1.1"/>
+    <circle cx="9.2" cy="13" r="1.1"/>
+    <circle cx="14.8" cy="13" r="1.1"/>
+    <path d="M9 17h6"/>
+  </symbol>
+  <symbol id="icon-users" viewBox="0 0 24 24">
+    <circle cx="9" cy="8" r="3.2"/>
+    <path d="M3.3 20a5.7 5.7 0 0 1 11.4 0"/>
+    <circle cx="17.2" cy="9" r="2.5"/>
+    <path d="M15.8 13.3a4.6 4.6 0 0 1 4.9 4.3"/>
+  </symbol>
+  <symbol id="icon-link" viewBox="0 0 24 24">
+    <path d="M9.5 14.5 14.5 9.5"/>
+    <path d="M11 6.3 13 4.3a3.5 3.5 0 0 1 5 5l-2 2"/>
+    <path d="M13 17.7 11 19.7a3.5 3.5 0 0 1-5-5l2-2"/>
+  </symbol>
+  <symbol id="icon-warning" viewBox="0 0 24 24">
+    <path d="M12 3 2 21h20L12 3Z"/>
+    <path d="M12 10v5"/>
+    <circle cx="12" cy="18" r="0.9" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="icon-building" viewBox="0 0 24 24">
+    <rect x="4" y="3" width="16" height="18" rx="1"/>
+    <path d="M8 7h2M14 7h2M8 11h2M14 11h2M8 15h2M14 15h2"/>
+    <path d="M10 21v-4h4v4"/>
+  </symbol>
+  <symbol id="icon-clipboard" viewBox="0 0 24 24">
+    <rect x="5" y="4" width="14" height="17" rx="2"/>
+    <path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/>
+    <path d="M8 10h8M8 14h8M8 18h5"/>
+  </symbol>
+  <symbol id="icon-scooter" viewBox="0 0 24 24">
+    <circle cx="6" cy="18" r="2.3"/>
+    <circle cx="18" cy="18" r="2.3"/>
+    <path d="M6 18h6l2-6h4"/>
+    <path d="M12 12 10 6H7"/>
+    <path d="M14 6h3"/>
+  </symbol>
+  <symbol id="icon-trophy" viewBox="0 0 24 24">
+    <path d="M7 4h10v4a5 5 0 0 1-10 0V4Z"/>
+    <path d="M7 5H4a3 3 0 0 0 3 5"/>
+    <path d="M17 5h3a3 3 0 0 1-3 5"/>
+    <path d="M12 13v4"/>
+    <path d="M8 21h8"/>
+    <path d="M9 21v-2a3 3 0 0 1 3-3 3 3 0 0 1 3 3v2"/>
+  </symbol>
+  <symbol id="icon-star" viewBox="0 0 24 24">
+    <path d="M12 3.5 14.6 9l6 .9-4.3 4.2 1 6-5.3-2.8L6.7 20l1-6L3.4 9.9l6-.9L12 3.5Z"/>
+  </symbol>
+  <symbol id="icon-heart" viewBox="0 0 24 24">
+    <path d="M12 20.5S3.5 15 3.5 9.2A4.7 4.7 0 0 1 12 6.4a4.7 4.7 0 0 1 8.5 2.8C20.5 15 12 20.5 12 20.5Z"/>
+  </symbol>
+  <symbol id="icon-pin" viewBox="0 0 24 24">
+    <path d="M12 21s7-6.5 7-11.5A7 7 0 0 0 5 9.5C5 14.5 12 21 12 21Z"/>
+    <circle cx="12" cy="9.5" r="2.3"/>
+  </symbol>
+  <symbol id="icon-card" viewBox="0 0 24 24">
+    <rect x="3" y="5" width="18" height="14" rx="2"/>
+    <path d="M3 10h18"/>
+    <path d="M7 15h4"/>
+  </symbol>
+</svg>
+
 <div id="app"><div class="xato">Tekshirilmoqda...</div></div>
 
 <script>
@@ -512,6 +649,13 @@
       body: JSON.stringify(body)
     });
     return r.json();
+  }
+
+  // Ikonografiya (9-bosqich): #icon-sprite ichidagi <symbol>ga ishora qiluvchi
+  // <svg><use> yasovchi yagona yordamchi. name — sprite'dagi "icon-" dan keyingi
+  // qism (masalan 'box' → #icon-box). extraClass ixtiyoriy (masalan 'icon-lg icon-danger').
+  function icon(name, extraClass) {
+    return `<svg class="icon${extraClass ? ' ' + extraClass : ''}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
   }
 
   function escapeHtml(str) {
@@ -570,15 +714,15 @@
             <div>
               <div class="owner-id">${escapeHtml(o.id)}</div>
               ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
-              ${o.profile && o.profile.name ? `<div class="owner-username">🍽 ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username">Profil to'ldirilmagan</div>`}
+              ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username">Profil to'ldirilmagan</div>`}
               <div class="owner-expiry">${escapeHtml(expiryText(o))}</div>
               <div class="owner-price" data-edit-price="${escapeHtml(o.id)}" style="cursor:pointer; text-decoration:underline dotted;">
-                Obuna narxi: ${o.price ? escapeHtml(String(o.price)) + ' so\'m/oy' : 'kiritilmagan'} ✏️
+                Obuna narxi: ${o.price ? escapeHtml(String(o.price)) + ' so\'m/oy' : 'kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
               </div>
             </div>
             <div class="owner-actions">
               <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}" style="cursor:pointer;">
-                ${o.paid ? "To'langan ✅" : "To'lanmagan ❌"}
+                ${o.paid ? `To'langan ${icon('check', 'icon-xs icon-success')}` : `To'lanmagan ${icon('x', 'icon-xs icon-danger')}`}
               </span>
               <button data-remove-id="${escapeHtml(o.id)}">O'chirish</button>
             </div>
@@ -930,27 +1074,27 @@
         <div class="kartochka">
           <h2>Sklad</h2>
           <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
-          <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">📦 Sklad boshqaruvini ochish</button>
+          <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">${icon('box', 'icon-xs')} Sklad boshqaruvini ochish</button>
         </div>
         <div class="kartochka">
           <h2>Moliya</h2>
           <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
-          <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">💰 Moliyani ochish</button>
+          <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">${icon('wallet', 'icon-xs')} Moliyani ochish</button>
         </div>
         <div class="kartochka">
           <h2>AI tahlil</h2>
           <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
-          <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">🤖 AI tahlilni ochish</button>
+          <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">${icon('ai', 'icon-xs')} AI tahlilni ochish</button>
         </div>
         <div class="kartochka">
           <h2>Xodimlar nazorati</h2>
           <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
-          <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">👥 Xodimlar nazoratini ochish</button>
+          <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">${icon('users', 'icon-xs')} Xodimlar nazoratini ochish</button>
         </div>
         <div class="kartochka">
           <h2>Mijozlar uchun menyu</h2>
           <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
-          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">🔗 Mijozlar havolasini olish</button>
+          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
           <div id="customerLinkWrap"></div>
           <div class="xabar" id="customerLinkMsg"></div>
         </div>
@@ -1272,7 +1416,7 @@
     if (!statusEl) return;
     const res = await apiPost('/api/delivery-group-status', { initData });
     if (res.ok && res.bound) {
-      statusEl.innerHTML = `✅ Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
+      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
       if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
       statusEl.textContent = '— Hali dostavka guruhi biriktirilmagan.';
@@ -1328,7 +1472,7 @@
         <div>
           <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
-          <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ' · retsept ✓' : ''}</div>
+          <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : ''}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
           <button data-edit-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Tahrirlash</button>
@@ -1596,7 +1740,7 @@
       renderCashierScreen(restaurantName);
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
-      topMsg.textContent = `✅ Buyurtma yuborildi (${res.total} so'm)`;
+      topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${res.total} so'm)`;
       document.querySelector('.panel').prepend(topMsg);
     } else {
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -1793,7 +1937,7 @@
       return `
         <div class="menu-item ${low ? 'low-stock' : ''}">
           <div>
-            <div class="m-name">${escapeHtml(s.name)}${low ? ' ⚠️' : ''}</div>
+            <div class="m-name">${escapeHtml(s.name)}${low ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
             <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
           </div>
           <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
@@ -1832,7 +1976,7 @@
         ${role === 'egasi' ? `
         <div class="kartochka">
           <h2>Joylashuv</h2>
-          <select id="stockBranchSelect">${branchOptionsHtml(null).replace('— Markaziy (filialsiz) —', '🏢 Markaziy sklad')}</select>
+          <select id="stockBranchSelect">${branchOptionsHtml(null).replace('— Markaziy (filialsiz) —', 'Markaziy sklad')}</select>
         </div>` : ''}
         <div class="kartochka">
           <h2>Mahsulot kiritish (kirim)</h2>
@@ -1849,7 +1993,7 @@
         <div class="kartochka">
           <h2>Sklad qoldig'i</h2>
           <div id="stockList"><div class="bosh">Yuklanmoqda...</div></div>
-          <button class="btn ikkinchi" id="openAuditBtn" style="margin-top:10px;">📋 Kunlik audit qilish</button>
+          <button class="btn ikkinchi" id="openAuditBtn" style="margin-top:10px;">${icon('clipboard', 'icon-xs')} Kunlik audit qilish</button>
         </div>
         <div class="kartochka">
           <h2>Harakatlar tarixi</h2>
@@ -2111,8 +2255,8 @@
       <div class="panel">
         <div class="salom" style="font-size:20px;">Moliya</div>
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">🛵 Dostavkachilar hisoboti</button>
-        <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">📋 Kunlik Z-hisobot</button>
+        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">${icon('scooter', 'icon-xs')} Dostavkachilar hisoboti</button>
+        <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
         <div class="tab-row">
           <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
           <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
@@ -2265,7 +2409,7 @@
     return forecast.slice(0, 10).map(f => `
       <div class="menu-item">
         <div style="flex:1;">
-          <div class="m-name">${escapeHtml(f.name)}${f.shortage ? ' ⚠️' : ''}</div>
+          <div class="m-name">${escapeHtml(f.name)}${f.shortage ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
           <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)} · Ertangi ehtiyoj: ${f.predictedNeed} ${escapeHtml(f.unit)}</div>
         </div>
       </div>
@@ -2372,7 +2516,7 @@
     return report.map((s, i) => `
       <div class="owner-item">
         <div>
-          <div class="owner-id">${i + 1}. ${s.username ? '@' + escapeHtml(s.username) : 'ID: ' + escapeHtml(s.id)}${s.isTop ? ' 🏆' : ''}</div>
+          <div class="owner-id">${i + 1}. ${s.username ? '@' + escapeHtml(s.username) : 'ID: ' + escapeHtml(s.id)}${s.isTop ? ' ' + icon('trophy', 'icon-xs icon-warning') : ''}</div>
           <div class="owner-username">${escapeHtml(s.roleLabel)}</div>
           <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
         </div>
@@ -2828,7 +2972,7 @@
         <div class="info">
           <div class="salom" style="font-size:20px; margin-bottom:2px;">${escapeHtml(r.name || 'Oshxona')}</div>
           ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
-          ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">⭐ Bonus: ${customerState.bonusPoints} ball</div>` : ''}
+          ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
         </div>
       </div>
     `;
@@ -2853,7 +2997,7 @@
         <div class="catalog-body">
           <div style="display:flex; justify-content:space-between; align-items:flex-start;">
             <div class="m-name">${escapeHtml(m.name)}</div>
-            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${isFav ? '❤️' : '🤍'}</button>
+            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
           </div>
           ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
           <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
@@ -2946,7 +3090,7 @@
           </div>
           <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
             <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
-              ${customerState.location ? '✅ Joylashuv aniqlandi (qayta aniqlash)' : '📍 Joylashuvni aniqlash'}
+              ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
             </button>
             <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
             <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - dostavkachi oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
@@ -3018,12 +3162,12 @@
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           customerState.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          locationStatusEl.textContent = '✅ Joylashuv aniqlandi.';
+          locationStatusEl.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi.`;
           locationStatusEl.className = 'xabar ok';
-          locationBtn.textContent = '✅ Joylashuv aniqlandi (qayta aniqlash)';
+          locationBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
         },
         () => {
-          locationStatusEl.textContent = '❌ Joylashuvni aniqlab bo\'lmadi (ruxsat berilmagan bo\'lishi mumkin). Iltimos, manzilni yozib qoldiring.';
+          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo\'lmadi (ruxsat berilmagan bo\'lishi mumkin). Iltimos, manzilni yozib qoldiring.`;
           locationStatusEl.className = 'xabar err';
         },
         { enableHighAccuracy: true, timeout: 10000 }
@@ -3058,7 +3202,7 @@
         ${customerHeaderHtml()}
         ${customerTabRowHtml()}
         <div id="customerMenuList" style="margin-top:10px;">
-          ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda 🤍 tugmasini bosing.</div>`}
+          ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda ${icon('heart', 'icon-xs icon-muted')} tugmasini bosing.</div>`}
         </div>
       </div>
     `);
@@ -3150,14 +3294,14 @@
       topMsg.className = 'xabar ok';
       if (res.paymentPending) {
         if (res.paymentConfirmMethod === 'naqd_kassa') {
-          topMsg.innerHTML = `🍽 Buyurtma qabul qilindi (${res.total} so'm).<br>` +
+          topMsg.innerHTML = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm).<br>` +
             `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
         } else {
-          topMsg.innerHTML = `💳 Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
+          topMsg.innerHTML = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
             `Iltimos, to'lov chekining rasmini (skrinshotini) shu botning shaxsiy chatiga yuboring.`;
         }
       } else {
-        topMsg.textContent = `✅ Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+        topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
       }
       document.querySelector('.panel').prepend(topMsg);
     } else {
