@@ -161,15 +161,63 @@ function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
 }
 
-// Berilgan userId qaysi egasining xodimi ekanini (va rolini) topadi
+// Taom rasmi: https:// havola YOKI galereyadan tanlangan rasm (base64 data URL) bo'lishi mumkin.
+// Base64 rasm hajmi cheklanadi (owners.json fayli haddan tashqari katta bo'lib ketmasligi uchun).
+const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000; // taxminan ~2.2MB dekodlangan rasm (so'rov hajmi cheklovidan kichik)
+function isValidImageValue(value) {
+  if (!value) return true; // bo'sh qiymat ruxsat etiladi (rasm shart emas)
+  if (/^https?:\/\//i.test(value)) return true;
+  if (/^data:image\/(png|jpe?g|webp);base64,/i.test(value)) {
+    return value.length <= MAX_MENU_IMAGE_BASE64_CHARS;
+  }
+  return false;
+}
+
+// Xodimning rollarini har doim massiv shaklida qaytaradi — eski ma'lumotda
+// bitta `role` (string) saqlangan bo'lishi mumkin, buni ham qo'llab-quvvatlaydi.
+function normalizeStaffRoles(staff) {
+  if (!staff) return [];
+  if (Array.isArray(staff.roles) && staff.roles.length) {
+    return staff.roles.filter(isValidRole);
+  }
+  if (staff.role && isValidRole(staff.role)) return [staff.role];
+  return [];
+}
+
+// Xodimda berilgan rol bor-yo'qligini tekshiradi (bir nechta rol biriktirilgan bo'lishi mumkin)
+function staffHasRole(staff, role) {
+  return normalizeStaffRoles(staff).includes(role);
+}
+
+// ctx (resolveOwnerContext natijasi) berilgan rolga ega-yo'qligini tekshiradi.
+// Egasi uchun ctx.role har doim 'egasi' — xodim uchun ctx.roles massividan tekshiriladi.
+function ctxHasRole(ctx, role) {
+  if (!ctx) return false;
+  if (ctx.role === 'egasi') return role === 'egasi';
+  return Array.isArray(ctx.roles) ? ctx.roles.includes(role) : ctx.role === role;
+}
+
+// ctx berilgan rollardan BIRIGA bo'lsa ham ega bo'lsa true qaytaradi
+function ctxHasAnyRole(ctx, roles) {
+  return roles.some(r => ctxHasRole(ctx, r));
+}
+
+// Bir nechta rol nomlarini o'qiladigan matn qilib birlashtiradi (masalan: "Kassir, Oshpaz")
+function rolesLabel(roles) {
+  return (roles || []).map(r => STAFF_ROLES[r] || r).join(', ') || '—';
+}
+
+// Berilgan userId qaysi egasining xodimi ekanini (va rol(lar)ini) topadi
 function findStaffInfo(owners, userId) {
   for (const owner of owners) {
     const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
     if (staff) {
+      const roles = normalizeStaffRoles(staff);
       return {
         ownerId: owner.id,
         ownerName: (owner.profile && owner.profile.name) || null,
-        role: staff.role,
+        role: roles[0] || staff.role || null,
+        roles,
         staff
       };
     }
@@ -178,15 +226,23 @@ function findStaffInfo(owners, userId) {
 }
 
 // Berilgan userId qaysi oshxonaga tegishli ekanini aniqlaydi (egasining o'zi yoki uning xodimi)
-// Qaytaradi: { owner, role } — role: 'egasi' yoki 'kassir'/'oshpaz'/'sklad'/'dostavka'; topilmasa null
+// Qaytaradi: { owner, role, roles, branchId } — role: 'egasi' yoki xodimning birinchi roli
+// (orqaga moslik uchun), roles: xodimga biriktirilgan BARCHA rollar massivi; topilmasa null
 function resolveOwnerContext(owners, userId) {
   const owner = findOwner(owners, userId);
-  if (isOwnerAccessValid(owner)) return { owner, role: 'egasi', branchId: null };
+  if (isOwnerAccessValid(owner)) return { owner, role: 'egasi', roles: ['egasi'], branchId: null };
 
   const staffInfo = findStaffInfo(owners, userId);
   if (staffInfo) {
     const staffOwner = owners.find(o => String(o.id) === String(staffInfo.ownerId));
-    if (staffOwner) return { owner: staffOwner, role: staffInfo.role, branchId: staffInfo.staff.branchId || null };
+    if (staffOwner) {
+      return {
+        owner: staffOwner,
+        role: staffInfo.role,
+        roles: staffInfo.roles,
+        branchId: staffInfo.staff.branchId || null
+      };
+    }
   }
   return null;
 }
@@ -701,7 +757,7 @@ async function handleTelegramUpdate(update) {
         { text: '❌ Rad etish', callback_data: `payrej:${targetOwner.id}:${targetOrder.id}` }
       ]]
     };
-    const approvers = [targetOwner.id, ...((targetOwner.staff || []).filter(s => s.role === 'kassir').map(s => s.id))];
+    const approvers = [targetOwner.id, ...((targetOwner.staff || []).filter(s => staffHasRole(s, 'kassir')).map(s => s.id))];
     for (const approverId of new Set(approvers.map(String))) {
       copyMessageWithKeyboard(approverId, chatId, msg.message_id, caption, approveKb);
     }
@@ -783,7 +839,7 @@ async function handleTelegramUpdate(update) {
       if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
 
       const isOwnerUser = String(owner.id) === String(from.id);
-      const isCashier = (owner.staff || []).some(s => s.role === 'kassir' && String(s.id) === String(from.id));
+      const isCashier = (owner.staff || []).some(s => staffHasRole(s, 'kassir') && String(s.id) === String(from.id));
       if (!isOwnerUser && !isCashier) {
         await answerCallbackQuery(cq.id, 'Sizda bu amal uchun ruxsat yo\'q (faqat kassir yoki egasi).');
         return;
@@ -818,7 +874,7 @@ async function handleTelegramUpdate(update) {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${order.total}\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
-        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'oshpaz' || s.role === 'kassir').map(s => s.id))];
+        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         for (const targetId of new Set(notifyTargets.map(String))) {
           sendMessage(targetId, notifyText);
         }
@@ -949,10 +1005,22 @@ function sendJSON(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// 4MB — galereyadan tanlangan taom rasmi (base64, kichraytirilgan holda) + boshqa maydonlar sig'ishi uchun
+const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
 function readBody(req, cb) {
   let body = '';
-  req.on('data', chunk => { body += chunk; if (body.length > 1e6) req.destroy(); });
+  let tooLarge = false;
+  req.on('data', chunk => {
+    if (tooLarge) return;
+    body += chunk;
+    if (body.length > MAX_REQUEST_BODY_BYTES) {
+      tooLarge = true;
+      cb(new Error('body_too_large'));
+      req.destroy();
+    }
+  });
   req.on('end', () => {
+    if (tooLarge) return;
     try { cb(null, JSON.parse(body || '{}')); }
     catch (e) { cb(e); }
   });
@@ -982,7 +1050,8 @@ const server = http.createServer((req, res) => {
         isAdmin: admin,
         isOwner: !admin && ownerOk,
         role: staffInfo ? staffInfo.role : null,
-        roleLabel: staffInfo ? (STAFF_ROLES[staffInfo.role] || staffInfo.role) : null,
+        roles: staffInfo ? staffInfo.roles : null,
+        roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
         ownerRestaurantName: staffInfo ? staffInfo.ownerName : null,
         hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
         reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
@@ -1008,11 +1077,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi xodim qo'shadi (kassir/oshpaz/sklad/dostavka) ----
+  // ---- API: egasi xodim qo'shadi (kassir/oshpaz/sklad/dostavka — bir nechta rol birga bo'lishi mumkin) ----
   if (req.method === 'POST' && req.url === '/api/add-staff') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, input, role, branchId } = payload;
+      const { initData, input, role, roles, branchId } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -1021,8 +1090,11 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi xodim qo\'sha oladi' });
 
-      if (!isValidRole(role)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri rol tanlandi.' });
+      // `roles` massiv sifatida keladi (checkbox'lar) — eski frontend hali bitta `role` yuborsa ham ishlaydi
+      const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
+      const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole);
+      if (!uniqueRoles.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
       }
 
       let branchIdVal = null;
@@ -1053,16 +1125,48 @@ const server = http.createServer((req, res) => {
       owner.staff.push({
         id: resolved.id,
         username: resolved.username || null,
-        role,
+        role: uniqueRoles[0], // orqaga moslik uchun (eski kod shu maydonni o'qishi mumkin)
+        roles: uniqueRoles,
         branchId: branchIdVal,
         addedAt: new Date().toISOString()
       });
       saveOwners(owners);
 
       sendMessage(resolved.id,
-        `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${STAFF_ROLES[role]}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
+        `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${rolesLabel(uniqueRoles)}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
 
       return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodimning lavozimlarini o'zgartiradi (checkbox bilan - bir nechtasi bo'lishi mumkin) ----
+  if (req.method === 'POST' && req.url === '/api/set-staff-roles') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, roles } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const staff = (owner.staff || []).find(s => String(s.id) === String(id));
+      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Bunday xodim topilmadi' });
+
+      const uniqueRoles = [...new Set(Array.isArray(roles) ? roles : [])].filter(isValidRole);
+      if (!uniqueRoles.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
+      }
+
+      staff.roles = uniqueRoles;
+      staff.role = uniqueRoles[0]; // orqaga moslik uchun
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, staff });
     });
     return;
   }
@@ -1260,8 +1364,8 @@ const server = http.createServer((req, res) => {
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
       if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
       const imageTrim = String(imageUrl || '').trim();
-      if (imageTrim && !/^https?:\/\//i.test(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun to\'g\'ri havola (https://...) kiriting.' });
+      if (!isValidImageValue(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
       }
 
       if (!owner.menu) owner.menu = [];
@@ -1314,8 +1418,8 @@ const server = http.createServer((req, res) => {
       if (description !== undefined) item.description = String(description || '').trim() || null;
       if (imageUrl !== undefined) {
         const imageTrim = String(imageUrl || '').trim();
-        if (imageTrim && !/^https?:\/\//i.test(imageTrim)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun to\'g\'ri havola (https://...) kiriting.' });
+        if (!isValidImageValue(imageTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
         }
         item.imageUrl = imageTrim || null;
       }
@@ -1837,7 +1941,7 @@ const server = http.createServer((req, res) => {
             { text: '❌ Bekor qilish', callback_data: `payrej:${owner.id}:${order.id}` }
           ]]
         };
-        const cashApprovers = [owner.id, ...((owner.staff || []).filter(s => s.role === 'kassir').map(s => s.id))];
+        const cashApprovers = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'kassir')).map(s => s.id))];
         for (const approverId of new Set(cashApprovers.map(String))) {
           sendMessage(approverId, confirmCaption, confirmKb);
         }
@@ -1845,7 +1949,7 @@ const server = http.createServer((req, res) => {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
-        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'oshpaz' || s.role === 'kassir').map(s => s.id))];
+        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         for (const targetId of new Set(notifyTargets)) {
           sendMessage(targetId, notifyText);
         }
@@ -1885,7 +1989,7 @@ const server = http.createServer((req, res) => {
       if (!item.lowStockAlertSent) {
         item.lowStockAlertSent = true;
         const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
-        const targets = [owner.id, ...((owner.staff || []).filter(s => s.role === 'sklad' && (s.branchId || null) === (branchId || null)).map(s => s.id))];
+        const targets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'sklad') && (s.branchId || null) === (branchId || null)).map(s => s.id))];
         for (const t of new Set(targets)) {
           if (String(t) === String(excludeUserId)) continue;
           sendMessage(t, text);
@@ -1898,11 +2002,11 @@ const server = http.createServer((req, res) => {
 
   // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
   // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi
-  function canSetOrderStatus(role, newStatus) {
+  function canSetOrderStatus(ctx, newStatus) {
     if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
-    if (role === 'egasi') return true; // egasi istalgan holatga o'tkaza oladi (tuzatish uchun)
-    if (role === 'oshpaz') return newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor';
-    if (role === 'kassir') return newStatus === 'tayyor'; // kassir ham "Tayyor" tugmasini bosa oladi
+    if (ctxHasRole(ctx, 'egasi')) return true; // egasi istalgan holatga o'tkaza oladi (tuzatish uchun)
+    if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
+    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true; // kassir ham "Tayyor" tugmasini bosa oladi
     return false;
   }
 
@@ -1916,7 +2020,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || (ctx.role !== 'kassir' && ctx.role !== 'egasi')) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir buyurtma yaratishi mumkin' });
       }
 
@@ -1987,7 +2091,7 @@ const server = http.createServer((req, res) => {
       const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
         `${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
-      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => s.role === 'oshpaz').map(s => s.id))];
+      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       for (const targetId of new Set(notifyTargets)) {
         sendMessage(targetId, notifyText);
       }
@@ -2010,7 +2114,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'kassir', 'oshpaz', 'dostavka'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz', 'dostavka'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
 
@@ -2019,7 +2123,7 @@ const server = http.createServer((req, res) => {
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
       // Dostavkachiga faqat "Tayyor" bo'lgan, hali hech kim yetkazib bermagan dostavka buyurtmalari ko'rinadi
-      if (ctx.role === 'dostavka') {
+      if (ctxHasRole(ctx, 'dostavka')) {
         orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
       }
 
@@ -2040,14 +2144,14 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'kassir', 'oshpaz'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
 
       if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
         return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri holat.' });
       }
-      if (!canSetOrderStatus(ctx.role, status)) {
+      if (!canSetOrderStatus(ctx, status)) {
         return sendJSON(res, 200, { ok: false, reason: 'Sizga bu holatni belgilashga ruxsat yo\'q.' });
       }
 
@@ -2097,7 +2201,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || ctx.role !== 'dostavka') {
+      if (!ctx || !ctxHasRole(ctx, 'dostavka')) {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat dostavkachi bu amalni bajara oladi' });
       }
 
@@ -2130,7 +2234,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
 
@@ -2155,7 +2259,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
 
@@ -2258,7 +2362,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
 
@@ -2385,7 +2489,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
       if (!Array.isArray(entries) || !entries.length) {
@@ -2460,7 +2564,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !['egasi', 'sklad'].includes(ctx.role)) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
 
@@ -2688,7 +2792,7 @@ const server = http.createServer((req, res) => {
       const fromDate = resolvePeriodStart(period);
       const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
 
-      const couriers = (owner.staff || []).filter(s => s.role === 'dostavka');
+      const couriers = (owner.staff || []).filter(s => staffHasRole(s, 'dostavka'));
       const deliveredOrders = (owner.orders || []).filter(o =>
         o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= fromDate);
 
@@ -3098,7 +3202,8 @@ const server = http.createServer((req, res) => {
           id: staff.id,
           username: staff.username || null,
           role: staff.role,
-          roleLabel: STAFF_ROLES[staff.role] || staff.role,
+          roles: normalizeStaffRoles(staff),
+          roleLabel: rolesLabel(normalizeStaffRoles(staff)),
           actionCount, errorCount, lastActiveAt,
           score: actionCount - errorCount * 2
         };
