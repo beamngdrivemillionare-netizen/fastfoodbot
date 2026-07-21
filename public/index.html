@@ -317,6 +317,36 @@
   .modal h3 { font-size: 16px; margin-bottom: 8px; }
   .modal p { font-size: 14px; opacity: 0.8; line-height: 1.4; margin-bottom: 16px; word-break: break-all; }
   .hidden { display: none !important; }
+
+  /* ---- J. Mijozlar uchun menyu (katalog, sevimlilar, aksiya, bonus) ---- */
+  .cat-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-top: 10px; }
+  .cat-opt {
+    flex: 0 0 auto; padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+    background: var(--tg-theme-secondary-bg-color, #f2f2f7); cursor: pointer; white-space: nowrap;
+  }
+  .cat-opt.selected {
+    background: var(--tg-theme-button-color, #2ea6ff);
+    color: var(--tg-theme-button-text-color, #ffffff);
+  }
+  .catalog-item {
+    background: var(--tg-theme-bg-color, #ffffff);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    border: 1px solid rgba(0,0,0,0.06);
+    text-align: left;
+  }
+  .catalog-img { width: 100%; height: 140px; object-fit: cover; display: block; background: var(--tg-theme-secondary-bg-color, #f2f2f7); }
+  .catalog-body { padding: 12px 14px; }
+  .catalog-desc { font-size: 13px; opacity: 0.7; margin-top: 4px; line-height: 1.4; }
+  .fav-btn { border: none; background: none; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 0 0 8px; }
+  .promo-banner {
+    background: linear-gradient(135deg, #fff3d6, #ffe9b8);
+    border-radius: 12px; padding: 12px 14px; margin-top: 10px; font-size: 13px;
+    border: 2px solid transparent; cursor: pointer; color: #7a5200;
+  }
+  .promo-banner.selected { border-color: #f0a500; }
+  .customer-link-hint { font-size: 12px; opacity: 0.65; margin-top: 8px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -344,6 +374,40 @@
     return String(str).replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
+  }
+
+  // Galereyadan tanlangan rasm faylini o'qib, hajmini kichraytirib (max 800px),
+  // JPEG base64 data URL shaklida qaytaradi — server hajmi cheklangan bo'lgani uchun kerak.
+  function readImageFileAsCompressedDataUrl(file, maxSize = 800, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      if (!file) return resolve(null);
+      if (!file.type || !file.type.startsWith('image/')) {
+        return reject(new Error('Fayl rasm emas.'));
+      }
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Faylni o\'qib bo\'lmadi.'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('Rasmni ochib bo\'lmadi.'));
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > height && width > maxSize) {
+            height = Math.round(height * (maxSize / width));
+            width = maxSize;
+          } else if (height > maxSize) {
+            width = Math.round(width * (maxSize / height));
+            height = maxSize;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
   }
 
   // ---- Admin panelini chizish ----
@@ -590,18 +654,69 @@
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
   const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Dostavkachi' };
 
+  function staffRoles(s) {
+    if (Array.isArray(s.roles) && s.roles.length) return s.roles;
+    return s.role ? [s.role] : [];
+  }
+
   function staffListHtml(staff) {
     if (!staff || !staff.length) return `<div class="bosh">Hozircha xodimlar yo'q.</div>`;
-    return staff.map(s => `
+    return staff.map(s => {
+      const branch = branchState.branches.find(b => b.id === s.branchId);
+      const roles = staffRoles(s);
+      const roleBadges = roles.map(r => `<span class="role-badge">${escapeHtml(ROLE_LABELS[r] || r)}</span>`).join(' ');
+      const roleCheckboxes = Object.entries(ROLE_LABELS).map(([key, label]) => `
+        <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 8px 2px 0; font-size:12px;">
+          <input type="checkbox" data-staff-role-checkbox="${escapeHtml(s.id)}" value="${key}" ${roles.includes(key) ? 'checked' : ''}>
+          ${escapeHtml(label)}
+        </label>
+      `).join('');
+      return `
       <div class="owner-item">
         <div>
           <div class="owner-id">${escapeHtml(s.id)}</div>
           ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
-          <div class="owner-expiry"><span class="role-badge">${escapeHtml(ROLE_LABELS[s.role] || s.role)}</span></div>
+          <div class="owner-expiry">${roleBadges} · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
+          <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:6px; font-size:12px;">${branchOptionsHtml(s.branchId)}</select>
+          <div style="margin-top:6px;">${roleCheckboxes}</div>
         </div>
         <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
       </div>
+    `;
+    }).join('');
+  }
+
+  function branchListHtml(branches) {
+    if (!branches || !branches.length) return `<div class="bosh">Hozircha filiallar yo'q.</div>`;
+    return branches.map(b => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(b.name)}</div>
+          <div class="owner-username">${escapeHtml(b.address)}</div>
+          ${b.phone ? `<div class="owner-expiry">${escapeHtml(b.phone)}</div>` : ''}
+        </div>
+        <button data-remove-branch-id="${escapeHtml(b.id)}">O'chirish</button>
+      </div>
     `).join('');
+  }
+
+  let branchState = { branches: [] };
+
+  function branchOptionsHtml(selectedId) {
+    const opts = [`<option value="">— Markaziy (filialsiz) —</option>`];
+    for (const b of branchState.branches) {
+      opts.push(`<option value="${escapeHtml(b.id)}" ${selectedId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
+    }
+    return opts.join('');
+  }
+
+  async function loadBranchAndRender() {
+    const listEl = document.getElementById('branchList');
+    const res = await apiPost('/api/branch-list', { initData });
+    branchState.branches = res.ok ? res.branches : [];
+    if (listEl) listEl.innerHTML = branchListHtml(branchState.branches);
+    const staffBranchSelect = document.getElementById('staffBranchInput');
+    if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
   }
 
   function renderProfileView(profile) {
@@ -620,13 +735,29 @@
           <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
         </div>
         <div class="kartochka">
+          <h2>Filial qo'shish</h2>
+          <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
+          <input type="text" id="branchAddressInput" placeholder="Manzil">
+          <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
+          <button class="btn" id="addBranchBtn">Filial qo'shish</button>
+          <div class="xabar" id="branchMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Filiallar</h2>
+          <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
           <h2>Xodim qo'shish</h2>
           <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-          <select id="staffRoleInput">
-            <option value="kassir">Kassir</option>
-            <option value="oshpaz">Oshpaz</option>
-            <option value="sklad">Sklad mas'uli</option>
-            <option value="dostavka">Dostavkachi</option>
+          <div style="margin:8px 0;">
+            <div style="font-size:13px; color:var(--tg-theme-hint-color,#888); margin-bottom:4px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
+            <label style="display:inline-flex; align-items:center; gap:4px; margin:2px 10px 2px 0;"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
+          </div>
+          <select id="staffBranchInput">
+            <option value="">— Markaziy (filialsiz) —</option>
           </select>
           <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
           <div class="xabar" id="staffMsg"></div>
@@ -640,6 +771,11 @@
           <input type="text" id="menuNameInput" placeholder="Taom nomi">
           <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
           <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
+          <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
+          <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
+          <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
+          <img id="menuImagePreview" style="display:none; max-width:120px; max-height:120px; border-radius:8px; margin-top:8px;">
+          <input type="hidden" id="menuImageInput">
           <button class="btn" id="addMenuBtn">Qo'shish</button>
           <div class="xabar" id="menuMsg"></div>
         </div>
@@ -657,6 +793,58 @@
           <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
           <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">💰 Moliyani ochish</button>
         </div>
+        <div class="kartochka">
+          <h2>AI tahlil</h2>
+          <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
+          <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">🤖 AI tahlilni ochish</button>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar nazorati</h2>
+          <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
+          <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">👥 Xodimlar nazoratini ochish</button>
+        </div>
+        <div class="kartochka">
+          <h2>Mijozlar uchun menyu</h2>
+          <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
+          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">🔗 Mijozlar havolasini olish</button>
+          <div id="customerLinkWrap"></div>
+          <div class="xabar" id="customerLinkMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Dostavka admin guruhi</h2>
+          <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+          <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+          <div class="customer-link-hint">
+            Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
+            Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+          </div>
+          <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+          <div class="xabar" id="deliveryGroupMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Aksiya/chegirma qo'shish</h2>
+          <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
+          <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
+          <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
+          <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
+          <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
+          <div class="xabar" id="promoMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Aksiyalar ro'yxati</h2>
+          <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Bonus tizimi</h2>
+          <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
+          <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-top:10px;">
+            <input type="checkbox" id="bonusEnabledInput">
+            Bonus tizimini yoqish
+          </label>
+          <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
+          <button class="btn" id="saveBonusBtn">Saqlash</button>
+          <div class="xabar" id="bonusMsg"></div>
+        </div>
         <div class="bosh" style="margin-top:12px;">Keyingi bo'limlar (hisobotlar) tez orada shu yerga qo'shiladi.</div>
       </div>
     `);
@@ -667,11 +855,36 @@
     document.getElementById('openCashflowBtn').addEventListener('click', () => {
       renderCashflowScreen(profile, () => renderProfileView(profile));
     });
+    document.getElementById('openAiBtn').addEventListener('click', () => {
+      renderAiScreen(profile, () => renderProfileView(profile));
+    });
+    document.getElementById('openStaffControlBtn').addEventListener('click', () => {
+      renderStaffControlScreen(profile, () => renderProfileView(profile));
+    });
+
+    document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('menuMsg');
+      const preview = document.getElementById('menuImagePreview');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('menuImageInput').value = dataUrl || '';
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
 
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
       const name = document.getElementById('menuNameInput').value.trim();
       const price = document.getElementById('menuPriceInput').value.trim();
       const category = document.getElementById('menuCategoryInput').value.trim();
+      const description = document.getElementById('menuDescriptionInput').value.trim();
+      const imageUrl = document.getElementById('menuImageInput').value.trim();
       const msgEl = document.getElementById('menuMsg');
       if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
         msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
@@ -680,13 +893,17 @@
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, category });
+      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl });
       if (res.ok) {
         msgEl.textContent = 'Qo\'shildi.';
         msgEl.className = 'xabar ok';
         document.getElementById('menuNameInput').value = '';
         document.getElementById('menuPriceInput').value = '';
         document.getElementById('menuCategoryInput').value = '';
+        document.getElementById('menuDescriptionInput').value = '';
+        document.getElementById('menuImageInput').value = '';
+        document.getElementById('menuImageFileInput').value = '';
+        document.getElementById('menuImagePreview').style.display = 'none';
         loadMenuAndRender();
       } else {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -696,20 +913,27 @@
 
     document.getElementById('addStaffBtn').addEventListener('click', async () => {
       const val = document.getElementById('staffInput').value.trim();
-      const role = document.getElementById('staffRoleInput').value;
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
+      const branchId = document.getElementById('staffBranchInput').value;
       const msgEl = document.getElementById('staffMsg');
       if (!val) {
         msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
         msgEl.className = 'xabar err';
         return;
       }
+      if (!roles.length) {
+        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/add-staff', { initData, input: val, role });
+      const res = await apiPost('/api/add-staff', { initData, input: val, roles, branchId });
       if (res.ok) {
         msgEl.textContent = 'Xodim qo\'shildi.';
         msgEl.className = 'xabar ok';
         document.getElementById('staffInput').value = '';
+        document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
         loadStaffAndRender();
       } else {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -725,8 +949,225 @@
       loadStaffAndRender();
     });
 
-    loadStaffAndRender();
+    document.getElementById('staffList').addEventListener('change', async (e) => {
+      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
+      if (branchStaffId) {
+        e.target.disabled = true;
+        await apiPost('/api/set-staff-branch', { initData, id: branchStaffId, branchId: e.target.value });
+        loadStaffAndRender();
+        return;
+      }
+      const roleStaffId = e.target.getAttribute('data-staff-role-checkbox');
+      if (roleStaffId) {
+        const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
+        const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
+        if (!roles.length) {
+          e.target.checked = true; // kamida bitta lavozim qolishi shart
+          alert('Xodimda kamida bitta lavozim qolishi kerak.');
+          return;
+        }
+        checkboxes.forEach(cb => cb.disabled = true);
+        await apiPost('/api/set-staff-roles', { initData, id: roleStaffId, roles });
+        loadStaffAndRender();
+      }
+    });
+
+    document.getElementById('addBranchBtn').addEventListener('click', async () => {
+      const name = document.getElementById('branchNameInput').value.trim();
+      const address = document.getElementById('branchAddressInput').value.trim();
+      const phone = document.getElementById('branchPhoneInput').value.trim();
+      const msgEl = document.getElementById('branchMsg');
+      if (!name || !address) {
+        msgEl.textContent = 'Filial nomi va manzilini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/branch-add', { initData, name, address, phone });
+      if (res.ok) {
+        msgEl.textContent = 'Filial qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('branchNameInput').value = '';
+        document.getElementById('branchAddressInput').value = '';
+        document.getElementById('branchPhoneInput').value = '';
+        loadBranchAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('branchList').addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-remove-branch-id');
+      if (!id) return;
+      e.target.disabled = true;
+      await apiPost('/api/branch-remove', { initData, id });
+      loadBranchAndRender();
+    });
+
+    document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('customerLinkMsg');
+      const wrap = document.getElementById('customerLinkWrap');
+      msgEl.textContent = 'Yaratilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/customer-link', { initData });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        wrap.innerHTML = '';
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span>${escapeHtml(res.link)}</span>
+          <button id="copyCustomerLinkBtn">Nusxalash</button>
+        </div>
+        <div class="customer-link-hint">Bu havolani mijozlaringizga (masalan, ijtimoiy tarmoqlarda yoki stol ustida QR kod qilib) ulashing.</div>
+      `;
+      document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          msgEl.textContent = 'Havola nusxalandi.';
+          msgEl.className = 'xabar ok';
+        }).catch(() => {
+          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
+          msgEl.className = 'xabar err';
+        });
+      });
+    });
+
+    document.getElementById('addPromoBtn').addEventListener('click', async () => {
+      const title = document.getElementById('promoTitleInput').value.trim();
+      const description = document.getElementById('promoDescInput').value.trim();
+      const discountPercent = document.getElementById('promoPercentInput').value.trim();
+      const minTotal = document.getElementById('promoMinInput').value.trim();
+      const msgEl = document.getElementById('promoMsg');
+      if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
+        msgEl.textContent = 'Aksiya nomi va chegirma foizini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/promo-add', { initData, title, description, discountPercent, minTotal });
+      if (res.ok) {
+        msgEl.textContent = 'Aksiya qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('promoTitleInput').value = '';
+        document.getElementById('promoDescInput').value = '';
+        document.getElementById('promoPercentInput').value = '';
+        document.getElementById('promoMinInput').value = '';
+        loadPromoAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('promoList').addEventListener('click', async (e) => {
+      const toggleId = e.target.getAttribute('data-toggle-promo-id');
+      const removeId = e.target.getAttribute('data-remove-promo-id');
+      if (toggleId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-toggle', { initData, id: toggleId });
+        loadPromoAndRender();
+      } else if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-remove', { initData, id: removeId });
+        loadPromoAndRender();
+      }
+    });
+
+    document.getElementById('saveBonusBtn').addEventListener('click', async () => {
+      const enabled = document.getElementById('bonusEnabledInput').checked;
+      const earnPercent = document.getElementById('bonusPercentInput').value.trim();
+      const msgEl = document.getElementById('bonusMsg');
+      if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
+        msgEl.textContent = 'Bonus foizini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/bonus-settings-save', { initData, enabled, earnPercent: earnPercent || 0 });
+      if (res.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('deliveryGroupMsg');
+      msgEl.textContent = 'Bekor qilinmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/delivery-group-remove', { initData });
+      if (res.ok) {
+        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
+        msgEl.className = 'xabar ok';
+        loadDeliveryGroupStatus();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadBranchAndRender().then(loadStaffAndRender);
     loadMenuAndRender();
+    loadPromoAndRender();
+    loadBonusSettingsAndRender();
+    loadDeliveryGroupStatus();
+  }
+
+  async function loadDeliveryGroupStatus() {
+    const statusEl = document.getElementById('deliveryGroupStatus');
+    const removeBtn = document.getElementById('removeDeliveryGroupBtn');
+    if (!statusEl) return;
+    const res = await apiPost('/api/delivery-group-status', { initData });
+    if (res.ok && res.bound) {
+      statusEl.innerHTML = `✅ Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    } else {
+      statusEl.textContent = '— Hali dostavka guruhi biriktirilmagan.';
+      if (removeBtn) removeBtn.classList.add('hidden');
+    }
+  }
+
+  function promoListHtml(promotions) {
+    if (!promotions || !promotions.length) return `<div class="bosh">Hali aksiya qo'shilmagan.</div>`;
+    return promotions.map(p => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div>
+          <div class="owner-id">${escapeHtml(p.title)} — ${p.discountPercent}%</div>
+          ${p.description ? `<div class="owner-username">${escapeHtml(p.description)}</div>` : ''}
+          ${p.minTotal ? `<div class="owner-username">Min: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${p.active ? 'paid' : 'unpaid'}">${p.active ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-promo-id="${escapeHtml(p.id)}">${p.active ? 'To\'xtatish' : 'Yoqish'}</button>
+          <button data-remove-promo-id="${escapeHtml(p.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadPromoAndRender() {
+    const listEl = document.getElementById('promoList');
+    if (!listEl) return;
+    const res = await apiPost('/api/promo-list', { initData });
+    listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
+  }
+
+  async function loadBonusSettingsAndRender() {
+    const enabledEl = document.getElementById('bonusEnabledInput');
+    if (!enabledEl) return;
+    const res = await apiPost('/api/bonus-settings-get', { initData });
+    const settings = res.ok ? res.settings : { enabled: false, earnPercent: 5 };
+    enabledEl.checked = !!settings.enabled;
+    document.getElementById('bonusPercentInput').value = settings.earnPercent || '';
   }
 
   async function loadStaffAndRender() {
@@ -741,12 +1182,14 @@
     return menu.map(m => `
       <div class="menu-item">
         <div>
-          <div class="m-name">${escapeHtml(m.name)}</div>
+          <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
           <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ' · retsept ✓' : ''}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+          <button data-edit-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Tahrirlash</button>
           <button data-recipe-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">Retsept</button>
+          <button data-toggle-avail-id="${escapeHtml(m.id)}" style="border:none; background:none; color:var(--tg-theme-button-color,#2ea6ff); font-size:13px; font-weight:600; cursor:pointer;">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
           <button data-remove-menu-id="${escapeHtml(m.id)}" style="border:none; background:none; color:#e5484d; font-size:13px; font-weight:600; cursor:pointer;">O'chirish</button>
         </div>
       </div>
@@ -766,11 +1209,27 @@
         loadMenuAndRender();
       });
     });
+    listEl.querySelectorAll('[data-edit-menu-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-menu-id');
+        const menuItem = menu.find(m => m.id === id);
+        if (menuItem) renderMenuItemEditOverlay(menuItem);
+      });
+    });
     listEl.querySelectorAll('[data-recipe-menu-id]').forEach(btn => {
       btn.addEventListener('click', () => {
         const id = btn.getAttribute('data-recipe-menu-id');
         const menuItem = menu.find(m => m.id === id);
         if (menuItem) openRecipeEditor(menuItem);
+      });
+    });
+    listEl.querySelectorAll('[data-toggle-avail-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-toggle-avail-id');
+        const menuItem = menu.find(m => m.id === id);
+        btn.disabled = true;
+        await apiPost('/api/menu-update', { initData, id, available: menuItem ? menuItem.available === false : true });
+        loadMenuAndRender();
       });
     });
   }
@@ -993,8 +1452,7 @@
       renderCashierScreen(restaurantName);
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
-      topMsg.style.whiteSpace = 'pre-line';
-      topMsg.textContent = `🍽 Buyurtmangiz qabul qilindi!\n\nIltimos, xohishingiz bo'lsa avval kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi. Rahmat! 🙏`;
+      topMsg.textContent = `✅ Buyurtma yuborildi (${res.total} so'm)`;
       document.querySelector('.panel').prepend(topMsg);
     } else {
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -1027,13 +1485,7 @@
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
 
     let actionBtn = '';
-    let paidBadge = '';
-    if (!order.paid) {
-      paidBadge = `<span class="status-badge yangi" style="background:#fff3cd;color:#8a6d00;">To'lov kutilmoqda</span>`;
-      if (role === 'kassir' || role === 'egasi') {
-        actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-mark-paid="1">To'lov qabul qilindi</button>`;
-      }
-    } else if (order.status === 'yangi') {
+    if (order.status === 'yangi') {
       if (role === 'oshpaz') {
         actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyorlanmoqda">Boshlash</button>`;
       } else if (role === 'kassir' || role === 'egasi') {
@@ -1050,7 +1502,7 @@
             <div class="order-type">${orderLabel}</div>
             <div class="order-time">${timeAgo(order.createdAt)}</div>
           </div>
-          ${paidBadge || `<span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>`}
+          <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
         </div>
         <div class="order-items">${itemsHtml}</div>
         <div class="order-bottom">
@@ -1075,18 +1527,6 @@
         const orderId = btn.getAttribute('data-order-id');
         const status = btn.getAttribute('data-set-status');
         const res = await apiPost('/api/update-order-status', { initData, orderId, status });
-        if (!res.ok) {
-          alert(res.reason || 'Xatolik yuz berdi.');
-        }
-        lastOrdersSnapshot = null; // majburiy qayta chizish
-        await refreshOrdersBoard(role);
-      });
-    });
-    board.querySelectorAll('[data-mark-paid]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const orderId = btn.getAttribute('data-order-id');
-        const res = await apiPost('/api/order-mark-paid', { initData, orderId });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
         }
@@ -1200,8 +1640,9 @@
   const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
   let stockState = { stock: [] };
   let currentStockRole = null;
+  let currentStockBranchId = null;
 
-  function stockListHtml(stock, canRemove) {
+  function stockListHtml(stock, canRemove, canTransfer) {
     if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
     return stock.map(s => {
       const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
@@ -1211,7 +1652,10 @@
             <div class="m-name">${escapeHtml(s.name)}${low ? ' ⚠️' : ''}</div>
             <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
           </div>
-          ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:#e5484d;font-size:13px;font-weight:600;cursor:pointer;">O'chirish</button>` : ''}
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+            ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:var(--tg-theme-button-color,#2ea6ff);font-size:13px;font-weight:600;cursor:pointer;">Filialga o'tkazish</button>` : ''}
+            ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" style="border:none;background:none;color:#e5484d;font-size:13px;font-weight:600;cursor:pointer;">O'chirish</button>` : ''}
+          </div>
         </div>
       `;
     }).join('');
@@ -1236,10 +1680,16 @@
 
   function renderStockScreen(restaurantName, role, onBack) {
     currentStockRole = role;
+    currentStockBranchId = null;
     ekran(`
       <div class="panel">
         ${onBack ? `<button class="btn ikkinchi" id="stockBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <div class="salom" style="font-size:20px;">Sklad</div>
+        ${role === 'egasi' ? `
+        <div class="kartochka">
+          <h2>Joylashuv</h2>
+          <select id="stockBranchSelect">${branchOptionsHtml(null).replace('— Markaziy (filialsiz) —', '🏢 Markaziy sklad')}</select>
+        </div>` : ''}
         <div class="kartochka">
           <h2>Mahsulot kiritish (kirim)</h2>
           <input type="text" id="stockNameInput" placeholder="Mahsulot nomi">
@@ -1266,6 +1716,14 @@
 
     if (onBack) document.getElementById('stockBackBtn').addEventListener('click', onBack);
 
+    if (role === 'egasi') {
+      document.getElementById('stockBranchSelect').addEventListener('change', (e) => {
+        currentStockBranchId = e.target.value || null;
+        loadStockAndRender();
+        loadMovementsAndRender();
+      });
+    }
+
     document.getElementById('stockAddBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('stockAddMsg');
       const name = document.getElementById('stockNameInput').value.trim();
@@ -1280,7 +1738,7 @@
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/stock-add', { initData, name, qty, unit, price, minQty });
+      const res = await apiPost('/api/stock-add', { initData, name, qty, unit, price, minQty, branchId: currentStockBranchId });
       if (res.ok) {
         msgEl.textContent = 'Qo\'shildi.';
         msgEl.className = 'xabar ok';
@@ -1305,22 +1763,78 @@
   async function loadStockAndRender() {
     const el = document.getElementById('stockList');
     if (!el) return;
-    const res = await apiPost('/api/stock-list', { initData });
+    const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
     stockState.stock = res.ok ? res.stock : [];
-    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi');
+    const canTransfer = currentStockRole === 'egasi' && !currentStockBranchId && branchState.branches.length > 0;
+    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi', canTransfer);
     el.querySelectorAll('[data-remove-stock-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        await apiPost('/api/stock-remove', { initData, id: btn.getAttribute('data-remove-stock-id') });
+        await apiPost('/api/stock-remove', { initData, id: btn.getAttribute('data-remove-stock-id'), branchId: currentStockBranchId });
         loadStockAndRender();
       });
     });
+    el.querySelectorAll('[data-transfer-stock-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-transfer-stock-id');
+        const item = stockState.stock.find(s => s.id === id);
+        if (item) openTransferForm(item);
+      });
+    });
+  }
+
+  // ---- Markaziy skladdan filialga o'tkazish (transfer) oynasi ----
+  function openTransferForm(item) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px;">
+        <h3>Filialga o'tkazish</h3>
+        <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
+        <select id="transferBranchSelect">${branchOptionsHtml(null).replace('<option value="">— Markaziy (filialsiz) —</option>', '')}</select>
+        <input type="text" id="transferQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
+        <div class="xabar" id="transferMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="transferCancelBtn">Bekor qilish</button>
+          <button class="btn" id="transferSubmitBtn">O'tkazish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('transferCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('transferSubmitBtn').onclick = async () => {
+      const branchId = document.getElementById('transferBranchSelect').value;
+      const qty = document.getElementById('transferQtyInput').value.trim();
+      const msgEl = document.getElementById('transferMsg');
+      if (!branchId) {
+        msgEl.textContent = 'Filialni tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        msgEl.textContent = 'To\'g\'ri miqdor kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'O\'tkazilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/stock-transfer', { initData, stockId: item.id, branchId, qty });
+      if (res.ok) {
+        overlay.remove();
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
   }
 
   async function loadMovementsAndRender() {
     const el = document.getElementById('stockMovements');
     if (!el) return;
-    const res = await apiPost('/api/stock-movements', { initData });
+    const res = await apiPost('/api/stock-movements', { initData, branchId: currentStockBranchId });
     el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
   }
 
@@ -1369,7 +1883,7 @@
       }
       msgEl.textContent = 'Yuborilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/audit-submit', { initData, entries });
+      const res = await apiPost('/api/audit-submit', { initData, entries, branchId: currentStockBranchId });
       if (res.ok) {
         overlay.remove();
         showAuditReport(res.audit);
@@ -1461,6 +1975,11 @@
           <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
         </div>
         <div id="cfStats"><div class="bosh">Yuklanmoqda...</div></div>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Filiallar solishtiruvi</h2>
+          <div id="cfBranchReport"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>` : ''}
         <div class="kartochka">
           <h2>Xarajat qo'shish</h2>
           <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
@@ -1515,6 +2034,30 @@
     });
 
     loadCashflowData();
+    if (branchState.branches.length) loadBranchReportAndRender();
+  }
+
+  function branchReportHtml(report) {
+    if (!report || !report.length) return `<div class="bosh">Ma'lumot yo'q.</div>`;
+    const maxIncome = Math.max(1, ...report.map(r => r.income));
+    return report.map(r => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${escapeHtml(r.branchName)}</div>
+          <div class="m-price">${cfFormatSum(r.income)} · ${r.orderCount} buyurtma · o'rtacha chek: ${cfFormatSum(r.avgCheck)}</div>
+          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
+            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(r.income / maxIncome * 100)}%;"></div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadBranchReportAndRender() {
+    const el = document.getElementById('cfBranchReport');
+    if (!el) return;
+    const res = await apiPost('/api/branch-report', { initData, period: cashflowState.period });
+    el.innerHTML = branchReportHtml(res.ok ? res.report : []);
   }
 
   async function loadCashflowData() {
@@ -1539,6 +2082,220 @@
         loadCashflowData();
       });
     });
+  }
+
+  // ---- Egasi: H. AI analitika (32-34-bosqich) — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ----
+  let aiState = { period: 'week' };
+
+  function aiTopItemsHtml(topItems) {
+    if (!topItems || !topItems.length) return `<div class="bosh">Bu davrda buyurtma bo'lmagan.</div>`;
+    const maxQty = Math.max(1, ...topItems.map(it => it.qty));
+    return topItems.map((it, i) => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${i + 1}. ${escapeHtml(it.name)}</div>
+          <div class="m-price">${it.qty} dona · ${cfFormatSum(it.revenue)}</div>
+          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
+            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(it.qty / maxQty * 100)}%;"></div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function aiPeakHtml(topHours, topDays) {
+    const hoursText = (topHours && topHours.length)
+      ? topHours.map(h => `${h.hour}:00 (${h.count} ta)`).join(', ')
+      : 'Ma\'lumot yo\'q';
+    const daysText = (topDays && topDays.length)
+      ? topDays.map(d => `${d.dayLabel} (${d.count} ta)`).join(', ')
+      : 'Ma\'lumot yo\'q';
+    return `
+      <div class="profile-row"><b>Eng band soatlar:</b> ${escapeHtml(hoursText)}</div>
+      <div class="profile-row"><b>Eng band kunlar:</b> ${escapeHtml(daysText)}</div>
+    `;
+  }
+
+  function aiForecastHtml(forecast) {
+    if (!forecast || !forecast.length) return `<div class="bosh">Prognoz uchun yetarli sklad harakati tarixi yo'q (oxirgi 7 kun).</div>`;
+    return forecast.slice(0, 10).map(f => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${escapeHtml(f.name)}${f.shortage ? ' ⚠️' : ''}</div>
+          <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)} · Ertangi ehtiyoj: ${f.predictedNeed} ${escapeHtml(f.unit)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderAiScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">AI tahlil</div>
+        <button class="btn ikkinchi" id="aiBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${aiState.period === 'week' ? 'selected' : ''}" data-ai-period="week">Hafta</div>
+          <div class="tab-opt ${aiState.period === 'month' ? 'selected' : ''}" data-ai-period="month">Oy</div>
+          <div class="tab-opt ${aiState.period === 'all' ? 'selected' : ''}" data-ai-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Eng ko'p sotilgan taomlar</h2>
+          <div id="aiTopItems"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Pik vaqtlar</h2>
+          <div id="aiPeak"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Ertangi sklad ehtiyoji (prognoz)</h2>
+          <div id="aiForecast"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>AI'dan so'rang</h2>
+          <input type="text" id="aiQuestionInput" placeholder="Masalan: bugun foyda qancha bo'ldi?">
+          <button class="btn" id="aiAskBtn">Yuborish</button>
+          <div class="xabar" id="aiAskMsg"></div>
+          <div id="aiAnswer" style="margin-top:10px; white-space:pre-line;"></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('aiBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-ai-period');
+      if (!p || p === aiState.period) return;
+      aiState.period = p;
+      renderAiScreen(profile, onBack);
+    });
+
+    document.getElementById('aiAskBtn').addEventListener('click', async () => {
+      const question = document.getElementById('aiQuestionInput').value.trim();
+      const msgEl = document.getElementById('aiAskMsg');
+      const answerEl = document.getElementById('aiAnswer');
+      if (!question) {
+        msgEl.textContent = 'Savolingizni kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'AI javob tayyorlamoqda...';
+      msgEl.className = 'xabar';
+      answerEl.textContent = '';
+      const res = await apiPost('/api/ai-ask', { initData, question });
+      if (res.ok) {
+        msgEl.textContent = '';
+        msgEl.className = 'xabar';
+        answerEl.textContent = res.answer;
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadAiData();
+  }
+
+  async function loadAiData() {
+    const topEl = document.getElementById('aiTopItems');
+    const peakEl = document.getElementById('aiPeak');
+    const forecastEl = document.getElementById('aiForecast');
+    if (!topEl) return;
+    const res = await apiPost('/api/ai-analytics', { initData, period: aiState.period });
+    if (!res.ok) {
+      topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      peakEl.innerHTML = '';
+      forecastEl.innerHTML = '';
+      return;
+    }
+    topEl.innerHTML = aiTopItemsHtml(res.topItems);
+    peakEl.innerHTML = aiPeakHtml(res.topHours, res.topDays);
+    forecastEl.innerHTML = aiForecastHtml(res.forecast);
+  }
+
+  // ---- Egasi: I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ----
+  let staffControlState = { period: 'month' };
+  const STAFF_ACTION_LABELS = {
+    buyurtma_yaratdi: 'Buyurtma yaratdi',
+    holat_tayyorlanmoqda: 'Tayyorlanmoqda deb belgiladi',
+    holat_tayyor: 'Tayyor deb belgiladi',
+    yetkazdi: 'Yetkazib berdi',
+    sklad_kirim: 'Skladga kirim qildi',
+    audit_topshirdi: 'Audit topshirdi'
+  };
+
+  function staffPerformanceHtml(report) {
+    if (!report || !report.length) return `<div class="bosh">Hali xodim qo'shilmagan.</div>`;
+    return report.map((s, i) => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${i + 1}. ${s.username ? '@' + escapeHtml(s.username) : 'ID: ' + escapeHtml(s.id)}${s.isTop ? ' 🏆' : ''}</div>
+          <div class="owner-username">${escapeHtml(s.roleLabel)}</div>
+          <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
+        </div>
+        <div style="text-align:right; font-weight:700; color:#2ea6ff;">${s.score}<div style="font-size:11px; opacity:.6; font-weight:400;">ball</div></div>
+      </div>
+    `).join('');
+  }
+
+  function staffActivityLogHtml(entries) {
+    if (!entries || !entries.length) return `<div class="bosh">Hali amal qayd etilmagan.</div>`;
+    return entries.map(e => `
+      <div class="cf-expense-item">
+        <div>
+          <div class="cf-e-note"><b>${escapeHtml(e.displayName)}</b> (${escapeHtml(e.roleLabel)}) — ${escapeHtml(STAFF_ACTION_LABELS[e.action] || e.action)}</div>
+          ${e.note ? `<div class="cf-e-note">${escapeHtml(e.note)}</div>` : ''}
+          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderStaffControlScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Xodimlar nazorati</div>
+        <button class="btn ikkinchi" id="scBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${staffControlState.period === 'week' ? 'selected' : ''}" data-sc-period="week">Hafta</div>
+          <div class="tab-opt ${staffControlState.period === 'month' ? 'selected' : ''}" data-sc-period="month">30 kun</div>
+          <div class="tab-opt ${staffControlState.period === 'all' ? 'selected' : ''}" data-sc-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar reytingi</h2>
+          <div id="scRating"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>So'nggi amallar (jurnal)</h2>
+          <div id="scLog"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('scBackBtn').addEventListener('click', () => onBack && onBack());
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-sc-period');
+      if (!p || p === staffControlState.period) return;
+      staffControlState.period = p;
+      renderStaffControlScreen(profile, onBack);
+    });
+
+    loadStaffControlData();
+  }
+
+  async function loadStaffControlData() {
+    const ratingEl = document.getElementById('scRating');
+    const logEl = document.getElementById('scLog');
+    if (!ratingEl) return;
+
+    const perfRes = await apiPost('/api/staff-performance-report', { initData, period: staffControlState.period });
+    ratingEl.innerHTML = perfRes.ok
+      ? staffPerformanceHtml(perfRes.report)
+      : `<div class="xabar err">${escapeHtml(perfRes.reason || 'Xatolik yuz berdi.')}</div>`;
+
+    const logRes = await apiPost('/api/staff-activity-log', { initData, limit: 50 });
+    logEl.innerHTML = logRes.ok
+      ? staffActivityLogHtml(logRes.entries)
+      : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
   }
 
   // ---- Egasi: Dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
@@ -1804,6 +2561,74 @@
     };
   }
 
+  function renderMenuItemEditOverlay(menuItem) {
+    let pendingImage = menuItem.imageUrl || '';
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;">
+        <h3>Taomni tahrirlash</h3>
+        <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
+        <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
+        <input type="text" id="editMenuCategoryInput" placeholder="Kategoriya (ixtiyoriy)" value="${escapeHtml(menuItem.category || '')}">
+        <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
+        <div style="font-size:12px; color:var(--tg-theme-hint-color,#888); margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
+        <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" style="${pendingImage ? '' : 'display:none;'} max-width:120px; max-height:120px; border-radius:8px; margin:6px 0; display:block;">
+        <input type="file" id="editMenuImageFileInput" accept="image/*">
+        <div class="xabar" id="editMenuMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="editMenuCancelBtn">Bekor qilish</button>
+          <button class="btn" id="editMenuSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
+
+    document.getElementById('editMenuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('editMenuMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        pendingImage = dataUrl || '';
+        const preview = document.getElementById('editMenuImagePreview');
+        preview.src = pendingImage;
+        preview.style.display = pendingImage ? 'block' : 'none';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('editMenuSaveBtn').onclick = async () => {
+      const name = document.getElementById('editMenuNameInput').value.trim();
+      const price = document.getElementById('editMenuPriceInput').value.trim();
+      const category = document.getElementById('editMenuCategoryInput').value.trim();
+      const description = document.getElementById('editMenuDescriptionInput').value.trim();
+      const msgEl = document.getElementById('editMenuMsg');
+      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
+        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/menu-update', {
+        initData, id: menuItem.id, name, price, category, description, imageUrl: pendingImage
+      });
+      if (res.ok) {
+        overlay.remove();
+        loadMenuAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
+  }
+
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
     if (res.ok && res.profile) renderProfileView(res.profile);
@@ -1815,6 +2640,448 @@
     renderAdminPanel(res.ok ? res.owners : []);
   }
 
+  // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
+  // Mijoz "Mijozlar havolasi" orqali kirganda bot ?customer=<ownerId> bilan Mini App'ni ochadi
+  let customerState = {
+    ownerId: null,
+    restaurant: null,
+    menu: [],
+    promotions: [],
+    favorites: [],
+    bonusPoints: 0,
+    bonusEnabled: false,
+    cart: {},
+    orderType: 'stol',
+    paymentType: 'naqd',
+    tableNumber: '',
+    location: null,
+    addressNote: '',
+    tab: 'menyu',
+    category: 'hammasi',
+    promoId: '',
+    usePoints: false
+  };
+
+  function customerCartTotal() {
+    return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
+  }
+
+  function customerTabRowHtml() {
+    return `
+      <div class="tab-row">
+        <div class="tab-opt ${customerState.tab === 'menyu' ? 'selected' : ''}" data-customer-tab="menyu">Menyu</div>
+        <div class="tab-opt ${customerState.tab === 'sevimli' ? 'selected' : ''}" data-customer-tab="sevimli">Sevimlilar</div>
+        <div class="tab-opt ${customerState.tab === 'tarix' ? 'selected' : ''}" data-customer-tab="tarix">Buyurtmalarim</div>
+      </div>
+    `;
+  }
+
+  function customerHeaderHtml() {
+    const r = customerState.restaurant || {};
+    return `
+      <div class="profile-view" style="margin-bottom:12px;">
+        ${r.logoUrl ? `<img class="logo-preview" src="${escapeHtml(r.logoUrl)}" onerror="this.style.display='none'">` : ''}
+        <div class="info">
+          <div class="salom" style="font-size:20px; margin-bottom:2px;">${escapeHtml(r.name || 'Oshxona')}</div>
+          ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
+          ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">⭐ Bonus: ${customerState.bonusPoints} ball</div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function customerCategoriesHtml() {
+    const cats = ['hammasi', ...new Set(customerState.menu.map(m => m.category).filter(Boolean))];
+    if (cats.length <= 1) return '';
+    return `
+      <div class="cat-row">
+        ${cats.map(c => `<div class="cat-opt ${customerState.category === c ? 'selected' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c === 'hammasi' ? 'Hammasi' : c)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  function customerItemCardHtml(m) {
+    const qty = customerState.cart[m.id] || 0;
+    const isFav = customerState.favorites.includes(m.id);
+    return `
+      <div class="catalog-item">
+        ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : ''}
+        <div class="catalog-body">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${isFav ? '❤️' : '🤍'}</button>
+          </div>
+          ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+            <div class="qty-controls">
+              <button data-cqty-minus="${escapeHtml(m.id)}">-</button>
+              <span class="qty-val">${qty}</span>
+              <button data-cqty-plus="${escapeHtml(m.id)}">+</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function customerMenuListHtml() {
+    const filtered = customerState.category === 'hammasi'
+      ? customerState.menu
+      : customerState.menu.filter(m => m.category === customerState.category);
+    if (!filtered.length) return `<div class="bosh">Bu kategoriyada taom yo'q.</div>`;
+    return filtered.map(customerItemCardHtml).join('');
+  }
+
+  function customerPromoBannerHtml() {
+    if (!customerState.promotions.length) return '';
+    return customerState.promotions.map(p => `
+      <div class="promo-banner ${customerState.promoId === p.id ? 'selected' : ''}" data-promo-id="${escapeHtml(p.id)}">
+        <div style="font-weight:700;">🎁 ${escapeHtml(p.title)} — ${p.discountPercent}% chegirma</div>
+        ${p.description ? `<div style="font-size:12px; opacity:0.8; margin-top:2px;">${escapeHtml(p.description)}</div>` : ''}
+        ${p.minTotal ? `<div style="font-size:12px; opacity:0.7; margin-top:2px;">Minimal buyurtma: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  function attachCustomerCatalogHandlers() {
+    const listEl = document.getElementById('customerMenuList');
+    if (!listEl) return;
+    listEl.querySelectorAll('[data-cqty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-plus');
+      customerState.cart[id] = (customerState.cart[id] || 0) + 1;
+      listEl.innerHTML = customerState.tab === 'sevimli'
+        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
+        : customerMenuListHtml();
+      attachCustomerCatalogHandlers();
+      updateCustomerCartTotal();
+    });
+    listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-minus');
+      customerState.cart[id] = Math.max(0, (customerState.cart[id] || 0) - 1);
+      listEl.innerHTML = customerState.tab === 'sevimli'
+        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
+        : customerMenuListHtml();
+      attachCustomerCatalogHandlers();
+      updateCustomerCartTotal();
+    });
+    listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute('data-fav-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
+      if (res.ok) customerState.favorites = res.favorites;
+      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+      else {
+        listEl.innerHTML = customerMenuListHtml();
+        attachCustomerCatalogHandlers();
+      }
+    });
+  }
+
+  function updateCustomerCartTotal() {
+    const el = document.getElementById('cCartTotalVal');
+    if (el) el.textContent = customerCartTotal() + " so'm";
+  }
+
+  function renderCustomerMenuTab() {
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        ${customerPromoBannerHtml()}
+        ${customerCategoriesHtml()}
+        <div id="customerMenuList" style="margin-top:10px;">${customerMenuListHtml()}</div>
+        <div class="cart-bar">
+          <div class="type-row" id="cOrderTypeRow">
+            ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+              <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
+            `).join('')}
+          </div>
+          <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
+            <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
+          </div>
+          <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
+            <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
+              ${customerState.location ? '✅ Joylashuv aniqlandi (qayta aniqlash)' : '📍 Joylashuvni aniqlash'}
+            </button>
+            <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
+            <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - dostavkachi oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+          </div>
+          <div class="type-row" id="cPaymentTypeRow">
+            ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
+              <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
+            `).join('')}
+          </div>
+          ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:8px;">
+              <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
+              Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
+            </label>
+          ` : ''}
+          <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${customerCartTotal()} so'm</span></div>
+          <button class="btn" id="cSendOrderBtn">Buyurtma berish</button>
+          <div class="xabar" id="cOrderMsg"></div>
+        </div>
+      </div>
+    `);
+
+    attachCustomerCatalogHandlers();
+    attachCustomerTabHandlers();
+
+    const catRow = document.querySelector('.cat-row');
+    if (catRow) catRow.addEventListener('click', (e) => {
+      const c = e.target.getAttribute('data-cat');
+      if (!c) return;
+      customerState.category = c;
+      renderCustomerMenuTab();
+    });
+
+    document.querySelectorAll('[data-promo-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-promo-id');
+        customerState.promoId = customerState.promoId === id ? '' : id;
+        renderCustomerMenuTab();
+      });
+    });
+
+    document.getElementById('cOrderTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-corder-type');
+      if (!t) return;
+      customerState.orderType = t;
+      renderCustomerMenuTab();
+    });
+    document.getElementById('cPaymentTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-cpayment-type');
+      if (!t) return;
+      customerState.paymentType = t;
+      renderCustomerMenuTab();
+    });
+    const tableInput = document.getElementById('cTableInput');
+    if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
+
+    // YANGI: dostavka - joylashuvni aniqlash (brauzer/Telegram webview
+    // Geolocation API orqali) va manzil izohi.
+    const locationBtn = document.getElementById('cLocationBtn');
+    const locationStatusEl = document.getElementById('cLocationStatus');
+    if (locationBtn) locationBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        locationStatusEl.textContent = 'Kechirasiz, bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni yozib qoldiring.';
+        locationStatusEl.className = 'xabar err';
+        return;
+      }
+      locationStatusEl.textContent = 'Aniqlanmoqda...';
+      locationStatusEl.className = 'xabar';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          customerState.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          locationStatusEl.textContent = '✅ Joylashuv aniqlandi.';
+          locationStatusEl.className = 'xabar ok';
+          locationBtn.textContent = '✅ Joylashuv aniqlandi (qayta aniqlash)';
+        },
+        () => {
+          locationStatusEl.textContent = '❌ Joylashuvni aniqlab bo\'lmadi (ruxsat berilmagan bo\'lishi mumkin). Iltimos, manzilni yozib qoldiring.';
+          locationStatusEl.className = 'xabar err';
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    const addressNoteInput = document.getElementById('cAddressNoteInput');
+    if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
+
+    const pointsCheckbox = document.getElementById('cUsePoints');
+    if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
+
+    document.getElementById('cSendOrderBtn').addEventListener('click', sendCustomerOrder);
+  }
+
+  function attachCustomerTabHandlers() {
+    const tabRow = document.querySelector('.tab-row');
+    if (!tabRow) return;
+    tabRow.addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-customer-tab');
+      if (!t || t === customerState.tab) return;
+      customerState.tab = t;
+      if (t === 'sevimli') renderCustomerFavoritesTab();
+      else if (t === 'tarix') renderCustomerHistoryTab();
+      else renderCustomerMenuTab();
+    });
+  }
+
+  function renderCustomerFavoritesTab() {
+    const favItems = customerState.menu.filter(m => customerState.favorites.includes(m.id));
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerMenuList" style="margin-top:10px;">
+          ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda 🤍 tugmasini bosing.</div>`}
+        </div>
+      </div>
+    `);
+    attachCustomerCatalogHandlers();
+    attachCustomerTabHandlers();
+  }
+
+  function customerOrderHistoryCardHtml(o) {
+    const itemsText = o.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
+            <div class="order-time">${timeAgo(o.createdAt)}</div>
+          </div>
+          <span class="status-badge ${o.status}">${ORDER_STATUS_LABELS[o.status] || o.status}</span>
+        </div>
+        <div class="order-items">${itemsText}</div>
+        <div class="order-bottom">
+          <div class="order-total">${o.total} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${o.discountAmount})</span>` : ''}</div>
+          ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderCustomerHistoryTab() {
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    attachCustomerTabHandlers();
+    const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
+    const listEl = document.getElementById('customerHistoryList');
+    if (!listEl) return;
+    const orders = res.ok ? res.orders : [];
+    listEl.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
+  }
+
+  async function sendCustomerOrder() {
+    const msgEl = document.getElementById('cOrderMsg');
+    const items = Object.entries(customerState.cart)
+      .filter(([, qty]) => qty > 0)
+      .map(([id, qty]) => ({ id, qty }));
+
+    if (!items.length) {
+      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+    if (customerState.orderType === 'stol' && !customerState.tableNumber.trim()) {
+      msgEl.textContent = 'Stol raqamini kiriting.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+    if (customerState.orderType === 'dostavka' && !customerState.location && !customerState.addressNote.trim()) {
+      msgEl.textContent = 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.';
+      msgEl.className = 'xabar err';
+      return;
+    }
+
+    msgEl.textContent = 'Yuborilmoqda...';
+    msgEl.className = 'xabar';
+    const res = await apiPost('/api/customer-order', {
+      initData,
+      ownerId: customerState.ownerId,
+      items,
+      orderType: customerState.orderType,
+      tableNumber: customerState.tableNumber,
+      paymentType: customerState.paymentType,
+      promoId: customerState.promoId || null,
+      usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
+      location: customerState.orderType === 'dostavka' ? customerState.location : null,
+      addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : ''
+    });
+
+    if (res.ok) {
+      customerState.cart = {};
+      customerState.usePoints = false;
+      customerState.bonusPoints = res.bonusBalance;
+      customerState.location = null;
+      customerState.addressNote = '';
+      renderCustomerMenuTab();
+      const topMsg = document.createElement('div');
+      topMsg.className = 'xabar ok';
+      if (res.paymentPending) {
+        if (res.paymentConfirmMethod === 'naqd_kassa') {
+          topMsg.innerHTML = `🍽 Buyurtma qabul qilindi (${res.total} so'm).<br>` +
+            `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
+        } else {
+          topMsg.innerHTML = `💳 Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
+            `Iltimos, to'lov chekining rasmini (skrinshotini) shu botning shaxsiy chatiga yuboring.`;
+        }
+      } else {
+        topMsg.textContent = `✅ Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+      }
+      document.querySelector('.panel').prepend(topMsg);
+    } else {
+      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+      msgEl.className = 'xabar err';
+    }
+  }
+
+  async function renderCustomerApp(ownerId) {
+    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
+    if (!verifyRes.ok) {
+      ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(verifyRes.reason || 'Bu menyu hozircha mavjud emas.')}</div>`);
+      return;
+    }
+    customerState.ownerId = ownerId;
+    customerState.restaurant = verifyRes.restaurant;
+    customerState.favorites = verifyRes.customer.favorites || [];
+    customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
+    customerState.bonusEnabled = !!verifyRes.bonusEnabled;
+
+    const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
+    customerState.menu = menuRes.ok ? menuRes.menu : [];
+    customerState.promotions = menuRes.ok ? menuRes.promotions : [];
+
+    renderCustomerMenuTab();
+  }
+
+  function customerRestaurantPickerHtml(restaurants) {
+    return restaurants.map(r => `
+      <div class="owner-item" data-pick-restaurant-id="${escapeHtml(r.id)}" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${escapeHtml(r.name)}</div>
+          ${r.address ? `<div class="owner-username">${escapeHtml(r.address)}</div>` : ''}
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `).join('');
+  }
+
+  async function renderCustomerEntry() {
+    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    const res = await apiPost('/api/customer-restaurants-list', { initData });
+    const restaurants = res.ok ? res.restaurants : [];
+
+    if (!restaurants.length) {
+      ekran('<div class="xato">Hozircha faol oshxona topilmadi.<br>Iltimos, keyinroq urinib ko\'ring.</div>');
+      return;
+    }
+    if (restaurants.length === 1) {
+      renderCustomerApp(restaurants[0].id);
+      return;
+    }
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Oshxonani tanlang</div>
+        <div class="owner-list" style="margin-top:14px;">${customerRestaurantPickerHtml(restaurants)}</div>
+      </div>
+    `);
+    document.querySelectorAll('[data-pick-restaurant-id]').forEach(el => {
+      el.addEventListener('click', () => renderCustomerApp(el.getAttribute('data-pick-restaurant-id')));
+    });
+  }
+
+  // ==================== Bosh oynani ochish ====================
+  const urlParams = new URLSearchParams(location.search);
+  const customerOwnerId = urlParams.get('customer');
+
   if (!tg || !initData) {
     // Oddiy brauzerdan yoki Telegram tashqarisidan ochilsa — kirish rad etiladi
     ekran('<div class="xato">Kirish rad etildi.<br>Bu ilova faqat Telegram orqali ishlaydi.</div>');
@@ -1822,30 +3089,35 @@
     tg.ready();
     tg.expand();
 
-    fetch('/api/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData })
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.ok) {
-          ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(data.reason || 'Bu ilovaga ruxsatingiz yo\'q.')}</div>`);
-          return;
-        }
-        if (data.isAdmin) {
-          loadOwnersAndRender();
-        } else if (data.isOwner) {
-          loadOwnProfileAndRender();
-        } else if (data.role) {
-          renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
-        } else {
-          ekran('<div class="xato">Kirish rad etildi.<br>Sizga ruxsat berilmagan.</div>');
-        }
+    if (customerOwnerId) {
+      renderCustomerApp(customerOwnerId);
+    } else {
+      fetch('/api/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData })
       })
-      .catch(() => {
-        ekran('<div class="xato">Xatolik yuz berdi.<br>Qaytadan urinib ko\'ring.</div>');
-      });
+        .then(r => r.json())
+        .then(data => {
+          if (!data.ok) {
+            // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
+            renderCustomerEntry();
+            return;
+          }
+          if (data.isAdmin) {
+            loadOwnersAndRender();
+          } else if (data.isOwner) {
+            loadOwnProfileAndRender();
+          } else if (data.role) {
+            renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName);
+          } else {
+            renderCustomerEntry();
+          }
+        })
+        .catch(() => {
+          ekran('<div class="xato">Xatolik yuz berdi.<br>Qaytadan urinib ko\'ring.</div>');
+        });
+    }
   }
 </script>
 </body>
