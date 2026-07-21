@@ -759,6 +759,17 @@
           <div class="xabar" id="customerLinkMsg"></div>
         </div>
         <div class="kartochka">
+          <h2>Dostavka admin guruhi</h2>
+          <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+          <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+          <div class="customer-link-hint">
+            Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
+            Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+          </div>
+          <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+          <div class="xabar" id="deliveryGroupMsg"></div>
+        </div>
+        <div class="kartochka">
           <h2>Aksiya/chegirma qo'shish</h2>
           <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
           <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
@@ -997,10 +1008,40 @@
       }
     });
 
+    document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('deliveryGroupMsg');
+      msgEl.textContent = 'Bekor qilinmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/delivery-group-remove', { initData });
+      if (res.ok) {
+        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
+        msgEl.className = 'xabar ok';
+        loadDeliveryGroupStatus();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
     loadBranchAndRender().then(loadStaffAndRender);
     loadMenuAndRender();
     loadPromoAndRender();
     loadBonusSettingsAndRender();
+    loadDeliveryGroupStatus();
+  }
+
+  async function loadDeliveryGroupStatus() {
+    const statusEl = document.getElementById('deliveryGroupStatus');
+    const removeBtn = document.getElementById('removeDeliveryGroupBtn');
+    if (!statusEl) return;
+    const res = await apiPost('/api/delivery-group-status', { initData });
+    if (res.ok && res.bound) {
+      statusEl.innerHTML = `✅ Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    } else {
+      statusEl.textContent = '— Hali dostavka guruhi biriktirilmagan.';
+      if (removeBtn) removeBtn.classList.add('hidden');
+    }
   }
 
   function promoListHtml(promotions) {
