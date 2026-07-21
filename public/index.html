@@ -794,6 +794,36 @@
   .network-error-state .network-error-retry-btn:disabled { opacity: 0.6; }
 
   /* =========================================================================
+     BREND RANG TANLASH (25-27-bosqich): palitra + moslashtiriladigan rang.
+     Tanlangan asosiy rangdan to'q/och variantlar va ustidagi matn rangi
+     (oq/qora) JS orqali kontrast hisobi bilan avtomatik chiqariladi —
+     shu sababli bu yerda faqat asosiy rangning o'zi tanlanadi.
+     Qo'llanish doirasi: faqat shu oshxonaga tegishli ekranlar (egasi,
+     xodimlar, mijozlar menyusi). Admin paneli har doim standart rangda
+     qoladi, chunki u birorta aniq oshxonaga tegishli emas. ---- */
+  .brand-color-swatches { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 6px 0 4px; }
+  .brand-swatch {
+    width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent;
+    box-sizing: border-box; cursor: pointer; padding: 0; position: relative;
+    display: inline-flex; align-items: center; justify-content: center;
+    box-shadow: inset 0 0 0 1px var(--border-color-strong);
+  }
+  .brand-swatch.selected { border-color: var(--text-primary); }
+  .brand-swatch .icon { width: 18px; height: 18px; }
+  .brand-swatch-custom {
+    background: conic-gradient(red, orange, yellow, green, blue, violet, red);
+    overflow: hidden;
+  }
+  .brand-swatch-custom input[type="color"] {
+    opacity: 0; position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; border: none; padding: 0;
+  }
+  .brand-color-preview {
+    display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+    background: var(--surface-1); border-radius: var(--radius-md); padding: var(--sp-3) var(--sp-4); margin-top: var(--sp-2);
+  }
+  .brand-color-preview .brand-preview-label { font-size: var(--fs-xs); color: var(--text-muted); width: 100%; }
+
+  /* =========================================================================
      IKONOGRAFIYA (9-bosqich): yagona chiziqli (outline) ikon tizimi.
      Barcha ikonlar #icon-sprite ichidagi <symbol>lardan <use> orqali
      chaqiriladi — shu sababli hammasi bir xil qalinlik/uslubda bo'ladi va
@@ -1138,6 +1168,112 @@
     }[c]));
   }
 
+  // =========================================================================
+  // BREND RANGI (25-27-bosqich): tanlangan bitta asosiy rangdan barcha
+  // bog'liq tokenlar (to'q soya, och foniy, ustidagi matn rangi) avtomatik
+  // hisoblanadi — shu bilan har bir oshxona egasi faqat bitta rang tanlasa
+  // kifoya, qolgani WCAG kontrast formulasi asosida o'zi to'g'irlanadi.
+  // =========================================================================
+  const BRAND_COLOR_PRESETS = ['#E4232A', '#E67E22', '#1E8A55', '#12897E', '#1E6FD9', '#7B3FE4', '#D63384', '#2B2E33'];
+  const DEFAULT_BRAND_COLOR = '#E4232A';
+
+  function isValidHexColor(hex) {
+    return typeof hex === 'string' && /^#[0-9A-Fa-f]{6}$/.test(hex);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace('#', '');
+    const num = parseInt(h, 16);
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+  }
+  function rgbToHex({ r, g, b }) {
+    const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
+    return '#' + [r, g, b].map(v => clamp(v).toString(16).padStart(2, '0')).join('');
+  }
+  function relativeLuminance({ r, g, b }) {
+    const chan = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+  }
+  function contrastRatio(hexA, hexB) {
+    const lA = relativeLuminance(hexToRgb(hexA));
+    const lB = relativeLuminance(hexToRgb(hexB));
+    const [lighter, darker] = lA > lB ? [lA, lB] : [lB, lA];
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+  // Berilgan fon rangi ustiga oq yoki qora matn qo'yilsa qaysi biri o'qilishi
+  // osonroq bo'lishini WCAG kontrast nisbati bo'yicha tanlaydi.
+  function pickOnColor(hex) {
+    return contrastRatio(hex, '#FFFFFF') >= contrastRatio(hex, '#111111') ? '#FFFFFF' : '#111111';
+  }
+  function mixColor(hex, towardHex, amount) {
+    const a = hexToRgb(hex), b = hexToRgb(towardHex);
+    return rgbToHex({ r: a.r + (b.r - a.r) * amount, g: a.g + (b.g - a.g) * amount, b: a.b + (b.b - a.b) * amount });
+  }
+
+  // Bitta asosiy rangdan --brand-primary-dark / --brand-primary-light /
+  // --brand-on-primary'ni hisoblab, :root ustiga qo'yadi (jonli ko'rish —
+  // 29-bosqich: saqlashdan oldin ham darhol ko'rinadi).
+  function applyBrandColor(hex) {
+    const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
+    const root = document.documentElement.style;
+    root.setProperty('--brand-primary', base);
+    root.setProperty('--brand-primary-dark', mixColor(base, '#000000', 0.18));
+    root.setProperty('--brand-primary-light', mixColor(base, '#FFFFFF', 0.9));
+    root.setProperty('--brand-on-primary', pickOnColor(base));
+  }
+  // 27-bosqich: qo'llanish doirasi qoidasi — admin paneli yoki hali hech
+  // qaysi oshxonaga bog'lanmagan ekranlar uchun standart rangga qaytaradi.
+  function resetBrandColor() {
+    const root = document.documentElement.style;
+    root.removeProperty('--brand-primary');
+    root.removeProperty('--brand-primary-dark');
+    root.removeProperty('--brand-primary-light');
+    root.removeProperty('--brand-on-primary');
+  }
+
+  function brandSwatchesHtml(current) {
+    const cur = isValidHexColor(current) ? current.toUpperCase() : DEFAULT_BRAND_COLOR;
+    const isPreset = BRAND_COLOR_PRESETS.map(c => c.toUpperCase()).includes(cur);
+    return `
+      <div class="brand-color-swatches" id="brandSwatches">
+        ${BRAND_COLOR_PRESETS.map(c => `
+          <button type="button" class="brand-swatch ${cur === c.toUpperCase() ? 'selected' : ''}" data-brand-color="${c}" style="background:${c};" aria-label="${c}">
+            ${cur === c.toUpperCase() ? icon('check', 'icon-xs') : ''}
+          </button>
+        `).join('')}
+        <label class="brand-swatch brand-swatch-custom ${!isPreset ? 'selected' : ''}" style="${!isPreset ? `background:${cur};` : ''}" title="Boshqa rang">
+          <input type="color" id="brandColorCustom" value="${cur}">
+          ${!isPreset ? icon('check', 'icon-xs') : ''}
+        </label>
+      </div>
+      <div class="brand-color-preview" id="brandColorPreview">
+        <span class="brand-preview-label">Namuna ko'rinish:</span>
+        <button type="button" class="btn" style="width:auto; padding:0 18px; margin:0;">Buyurtma berish</button>
+        <span class="badge paid">Bonus: 120 ball</span>
+      </div>
+    `;
+  }
+  // Palitra/moslashtirilgan rang tanlagichini formaga ulaydi. onChange(hex)
+  // har bir tanlashda chaqiriladi (jonli ko'rish uchun darhol qo'llash).
+  function attachBrandSwatchHandlers(onChange) {
+    const wrap = document.getElementById('brandSwatches');
+    if (!wrap) return;
+    wrap.querySelectorAll('[data-brand-color]').forEach(btn => btn.addEventListener('click', () => {
+      wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
+      btn.classList.add('selected');
+      btn.innerHTML = icon('check', 'icon-xs');
+      onChange(btn.getAttribute('data-brand-color'));
+    }));
+    const customInput = document.getElementById('brandColorCustom');
+    if (customInput) customInput.addEventListener('input', (e) => {
+      const hex = e.target.value;
+      wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
+      const label = customInput.closest('.brand-swatch-custom');
+      label.classList.add('selected');
+      label.style.background = hex;
+      onChange(hex);
+    });
+  }
+
   // Galereyadan tanlangan rasm faylini o'qib, hajmini kichraytirib (max 800px),
   // JPEG base64 data URL shaklida qaytaradi — server hajmi cheklangan bo'lgani uchun kerak.
   function readImageFileAsCompressedDataUrl(file, maxSize = 800, quality = 0.72) {
@@ -1401,6 +1537,7 @@
   function renderProfileForm(existing) {
     if (!existing) { renderProfileOnboarding(); return; }
     const p = existing;
+    let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     ekran(`
       <div class="panel">
@@ -1417,11 +1554,18 @@
           <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
           <label class="field-label">Logotip havolasi (ixtiyoriy, rasm linki)</label>
           <input type="text" id="pLogo" placeholder="https://..." value="${escapeHtml(p.logoUrl || '')}">
-          <button class="btn" id="saveProfileBtn" style="margin-top:6px;">Saqlash</button>
+          <label class="field-label">Brend rangi (mijozlar menyusi va ilova shu rangda ko'rinadi)</label>
+          ${brandSwatchesHtml(pendingBrandColor)}
+          <button class="btn" id="saveProfileBtn" style="margin-top:14px;">Saqlash</button>
           <div class="xabar" id="profileMsg"></div>
         </div>
       </div>
     `);
+
+    attachBrandSwatchHandlers((hex) => {
+      pendingBrandColor = hex;
+      applyBrandColor(hex);
+    });
 
     document.getElementById('saveProfileBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('profileMsg');
@@ -1431,7 +1575,8 @@
         address: document.getElementById('pAddress').value.trim(),
         phone: document.getElementById('pPhone').value.trim(),
         workHours: document.getElementById('pWorkHours').value.trim(),
-        logoUrl: document.getElementById('pLogo').value.trim()
+        logoUrl: document.getElementById('pLogo').value.trim(),
+        brandColor: pendingBrandColor
       };
       msgEl.textContent = 'Saqlanmoqda...';
       msgEl.className = 'xabar';
@@ -1439,6 +1584,7 @@
       if (!res.ok) {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
+        applyBrandColor(p.brandColor);
         return;
       }
       renderProfileView(res.profile);
@@ -2224,7 +2370,8 @@
   }
 
   // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
-  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl) {
+  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl, brandColor) {
+    applyBrandColor(brandColor);
     setAppHeader(logoUrl, restaurantName, roleLabel);
     if (role === 'kassir') {
       renderCashierScreen(restaurantName);
@@ -3890,11 +4037,12 @@
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
-    if (res.ok && res.profile) renderProfileView(res.profile);
-    else renderProfileForm(res.ok ? res.profile : null);
+    if (res.ok && res.profile) { applyBrandColor(res.profile.brandColor); renderProfileView(res.profile); }
+    else { resetBrandColor(); renderProfileForm(res.ok ? res.profile : null); }
   }
 
   async function loadOwnersAndRender() {
+    resetBrandColor();
     const res = await apiPost('/api/owners', { initData });
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnersAndRender); return; }
     renderAdminPanel(res.ok ? res.owners : []);
@@ -4299,6 +4447,7 @@
     customerState.favorites = verifyRes.customer.favorites || [];
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
+    applyBrandColor(verifyRes.restaurant.brandColor);
     setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
@@ -4322,6 +4471,7 @@
 
   async function renderCustomerEntry() {
     clearAppHeader();
+    resetBrandColor();
     ekran('<div class="xato">Tekshirilmoqda...</div>');
     const res = await apiPost('/api/customer-restaurants-list', { initData });
     if (res.networkError) {
@@ -4384,7 +4534,7 @@
     } else if (data.isOwner) {
       loadOwnProfileAndRender();
     } else if (data.role) {
-      renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl);
+      renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor);
     } else {
       renderCustomerEntry();
     }
