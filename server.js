@@ -217,6 +217,7 @@ function findStaffInfo(owners, userId) {
         ownerId: owner.id,
         ownerName: (owner.profile && owner.profile.name) || null,
         ownerLogoUrl: (owner.profile && owner.profile.logoUrl) || null,
+        ownerBrandColor: (owner.profile && owner.profile.brandColor) || null,
         role: roles[0] || staff.role || null,
         roles,
         staff
@@ -1055,6 +1056,7 @@ const server = http.createServer((req, res) => {
         roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
         ownerRestaurantName: staffInfo ? staffInfo.ownerName : null,
         ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : null,
+        ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : null,
         hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
         reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
       });
@@ -1663,7 +1665,8 @@ const server = http.createServer((req, res) => {
           id: o.id,
           name: o.profile.name,
           address: o.profile.address,
-          logoUrl: o.profile.logoUrl || null
+          logoUrl: o.profile.logoUrl || null,
+          brandColor: o.profile.brandColor || null
         }));
 
       return sendJSON(res, 200, { ok: true, restaurants });
@@ -1698,7 +1701,8 @@ const server = http.createServer((req, res) => {
           address: (owner.profile && owner.profile.address) || null,
           phone: (owner.profile && owner.profile.phone) || null,
           workHours: (owner.profile && owner.profile.workHours) || null,
-          logoUrl: (owner.profile && owner.profile.logoUrl) || null
+          logoUrl: (owner.profile && owner.profile.logoUrl) || null,
+          brandColor: (owner.profile && owner.profile.brandColor) || null
         },
         customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints },
         bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
@@ -3242,7 +3246,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/save-profile') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, name, address, phone, workHours, logoUrl } = payload;
+      const { initData, name, address, phone, workHours, logoUrl, brandColor } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -3258,6 +3262,7 @@ const server = http.createServer((req, res) => {
       const phoneTrim = String(phone || '').trim();
       const workHoursTrim = String(workHours || '').trim();
       const logoTrim = String(logoUrl || '').trim();
+      const brandColorTrim = String(brandColor || '').trim();
 
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Oshxona nomini kiriting.' });
       if (!addressTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzilni kiriting.' });
@@ -3266,6 +3271,9 @@ const server = http.createServer((req, res) => {
       }
       if (logoTrim && !/^https?:\/\//i.test(logoTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Logotip uchun to\'g\'ri havola (https://...) kiriting.' });
+      }
+      if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #E4232A).' });
       }
 
       const owners2 = loadOwners();
@@ -3277,6 +3285,7 @@ const server = http.createServer((req, res) => {
         phone: phoneTrim,
         workHours: workHoursTrim || null,
         logoUrl: logoTrim || null,
+        brandColor: brandColorTrim || null,
         completedAt: wasCompleted ? target.profile.completedAt : new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
