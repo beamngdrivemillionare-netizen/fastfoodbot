@@ -156,6 +156,11 @@ const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dos
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
 // ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
 const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
+// 5-bosqich: "Kechikayotgan" tayyor holatida bo'lmagan ma'lumot modelida
+// mavjud emas — shu sababli hisoblab chiqariladi: buyurtma yaratilganidan
+// shuncha daqiqa o'tib ham hali "tayyor" bo'lmasa, kechikkan hisoblanadi.
+// Hozircha taxminiy qiymat — kerak bo'lsa keyinroq moslashtirish mumkin.
+const ORDER_DELAY_THRESHOLD_MINUTES = 20;
 
 function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
@@ -2728,6 +2733,100 @@ const server = http.createServer((req, res) => {
       const recentExpenses = (owner.expenses || []).slice(0, 30);
 
       return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES });
+    });
+    return;
+  }
+
+  // ---- API: KitchenOS bosh sahifa uchun kunlik xulosa (4-bosqich) —
+  // bugungi savdo / sof foyda / buyurtmalar / o'rtacha chek va shularni
+  // kechagi kunga solishtirish uchun kechagi qiymatlar (faqat egasi).
+  // Foizni hisoblash frontend tomonda (7-8-bosqich) qilinadi — bu yerda
+  // faqat xom raqamlar qaytariladi. ----
+  if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const now = new Date();
+      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(todayStart.getDate() - 1);
+
+      // Bugun: mavjud cashflowBucket'dan foydalanamiz (yuqori chegarasiz —
+      // kelajakdagi sanali buyurtma bo'lmagani uchun bu xavfsiz).
+      const today = cashflowBucket(owner, todayStart);
+
+      // Kecha: FAQAT kecha kuni (bugungi kunni kiritmaslik uchun ikki
+      // tomonlama chegara kerak) — shu sababli alohida hisoblanadi.
+      const yesterdayOrders = (owner.orders || []).filter(o => {
+        const d = new Date(o.createdAt);
+        return d >= yesterdayStart && d < todayStart;
+      });
+      const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + (o.total || 0), 0);
+      const yesterdayExpense = (owner.expenses || []).filter(e => {
+        const d = new Date(e.createdAt);
+        return d >= yesterdayStart && d < todayStart;
+      }).reduce((s, e) => s + (e.amount || 0), 0);
+
+      const summary = {
+        todaySales: today.income,
+        yesterdaySales: yesterdayIncome,
+        todayNetProfit: today.net,
+        yesterdayNetProfit: yesterdayIncome - yesterdayExpense,
+        todayOrderCount: today.orderCount,
+        yesterdayOrderCount: yesterdayOrders.length,
+        todayAvgCheck: today.orderCount ? Math.round(today.income / today.orderCount) : 0,
+        yesterdayAvgCheck: yesterdayOrders.length ? Math.round(yesterdayIncome / yesterdayOrders.length) : 0
+      };
+
+      return sendJSON(res, 200, { ok: true, summary });
+    });
+    return;
+  }
+
+  // ---- API: KitchenOS bosh sahifa uchun buyurtma holat-sonlari (5-bosqich) —
+  // "Bugungi holat" bannerida ko'rsatiladigan Yangi / Tayyorlanmoqda / Tayyor /
+  // Kechikayotgan sonlari (faqat egasi). "Kechikayotgan" alohida saqlangan
+  // status emas — ORDER_DELAY_THRESHOLD_MINUTES'dan hisoblab chiqariladi va
+  // shu daqiqadan o'tib ketgan "yangi"/"tayyorlanmoqda" buyurtmalar
+  // Yangi/Tayyorlanmoqda sonidan chiqarilib, shu yerga qo'shiladi (ikki marta
+  // hisoblanmasligi uchun). ----
+  if (req.method === 'POST' && req.url === '/api/order-status-counts') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const now = new Date();
+      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
+
+      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
+
+      let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
+      for (const o of todaysOrders) {
+        if (o.status === 'tayyor') { tayyor += 1; continue; }
+        const ageMs = now - new Date(o.createdAt);
+        if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
+        if (o.status === 'tayyorlanmoqda') tayyorlanmoqda += 1;
+        else yangi += 1; // status hali belgilanmagan yoki 'yangi'
+      }
+
+      return sendJSON(res, 200, {
+        ok: true,
+        counts: { yangi, tayyorlanmoqda, tayyor, kechikayotgan },
+        delayThresholdMinutes: ORDER_DELAY_THRESHOLD_MINUTES
+      });
     });
     return;
   }
