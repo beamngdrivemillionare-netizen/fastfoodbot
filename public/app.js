@@ -977,6 +977,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/cashflow', { initData });
     const el2 = document.getElementById('ownerDashboardStats');
     if (!el2) return; // foydalanuvchi allaqachon boshqa tabga o'tgan bo'lishi mumkin
+    // 19-bosqich: internet uzilgan holatni alohida ushlaymiz — umumiy
+    // "yuklanmadi" matni o'rniga renderNetworkErrorInline() orqali "Qayta
+    // urinish" tugmasi ko'rsatiladi (loyihadagi boshqa yuklovchilar bilan
+    // bir xil pattern).
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadOwnerDashboardStats(profile)); return; }
     if (!res.ok) {
       el2.outerHTML = `<div class="kartochka" id="ownerDashboardStats"><div class="bosh">Statistika yuklanmadi.</div></div>`;
       return;
@@ -1246,6 +1251,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/dashboard-summary', { initData });
     const el2 = document.getElementById('koKpiGrid');
     if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (res.networkError) {
+      // koKpiGrid CSS grid (2 ustunli) ekanligi sababli xatolik holatini
+      // to'g'ridan-to'g'ri shu konteyner ichiga qo'ymaymiz (grid katakchasiga
+      // siqilib, noto'g'ri ko'rinardi) — avval oddiy kartochkaga almashtirib,
+      // keyin renderNetworkErrorInline() shu yangi elementga ulanadi.
+      el2.outerHTML = `<div class="kartochka" id="koKpiGrid"></div>`;
+      renderNetworkErrorInline(document.getElementById('koKpiGrid'), res.reason, () => loadKoKpiGrid(profile));
+      return;
+    }
     if (!res.ok) {
       el2.outerHTML = `<div class="ko-kpi-grid" id="koKpiGrid"><div class="bosh">KPI ma'lumotlari yuklanmadi.</div></div>`;
       return;
@@ -1313,6 +1327,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/order-status-counts', { initData });
     const el2 = document.getElementById('koStatusBanner');
     if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoStatusBanner(profile)); return; }
     if (!res.ok) {
       el2.outerHTML = `<div class="ko-status-banner kartochka" id="koStatusBanner"><div class="bosh">Bugungi holat yuklanmadi.</div></div>`;
       return;
@@ -1460,6 +1475,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/dashboard-alerts', { initData });
     const el2 = document.getElementById('koAlertsList');
     if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoAlertsList(profile)); return; }
     if (!res.ok) {
       el2.outerHTML = `<div class="ko-alerts-card kartochka" id="koAlertsList"><div class="section-label">Muhim ogohlantirishlar</div><div class="bosh">Yuklanmadi.</div></div>`;
       // Xatolik holatida badge sonini eskicha (yuklanmagan) holatda
@@ -1505,6 +1521,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/dashboard-alerts', { initData });
     const el2 = document.getElementById('notifList');
     if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadNotificationsList(profile)); return; }
     if (!res.ok) {
       el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
       return;
