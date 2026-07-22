@@ -1414,7 +1414,15 @@
      .sectioned-menu-tabs) tepada mahkamlanadi — cashierStatusChips kabi
      boshqa .cat-row ishlatuvchi joylarga bu ta'sir qilmasligi uchun
      alohida klass bilan cheklandi. */
-  .sectioned-menu-tabs { position: sticky; top: 0; z-index: 5; background: var(--surface-0); padding-top: 8px; padding-bottom: 12px; }
+  .sectioned-menu-tabs { position: sticky; top: 0; z-index: 5; background: var(--surface-0); padding-top: 8px; padding-bottom: 12px; scroll-snap-type: x proximity; }
+  .sectioned-menu-tabs .cat-opt { scroll-snap-align: start; }
+  @media (max-width: 380px) {
+    /* 34-bosqich: kichik ekranlarda chiplar torlik qilmasligi uchun
+       bo'shliq/padding biroz siqiladi — gorizontal scroll o'zi allaqachon
+       ishlaydi (.cat-row: overflow-x auto), bu faqat mos sig'dirishga yordam. */
+    .sectioned-menu-tabs { gap: var(--sp-1); }
+    .sectioned-menu-tabs .cat-opt { padding: 0 12px; font-size: var(--fs-sm); }
+  }
   .cat-opt {
     flex: 0 0 auto; padding: 0 16px; min-height: 40px; border-radius: var(--radius-pill); font-size: var(--fs-sm); font-weight: 600;
     background: var(--surface-1); color: var(--text-secondary); cursor: pointer; white-space: nowrap;
@@ -1425,9 +1433,12 @@
     background: var(--brand-primary);
     color: var(--brand-on-primary);
   }
-  .cat-heading { font-size: var(--fs-h1); font-weight: 700; margin: var(--sp-4) 0 var(--sp-1); }
-  .menu-section:first-of-type .cat-heading { margin-top: var(--sp-1); }
-  .menu-section + .menu-section { margin-top: var(--sp-2); }
+  .cat-heading { font-size: var(--fs-h1); font-weight: 700; margin: 0 0 var(--sp-2); }
+  /* 33-bosqich: bo'limlar orasidagi bo'shliq bitta joyda (.menu-section)
+     boshqariladi — .cat-heading endi faqat sarlavha bilan grid orasidagi
+     kichik bo'shliqqa javob beradi, takrorlanuvchi qo'shni marginlar yo'q. */
+  .menu-section { margin-top: var(--sp-5); }
+  .menu-section:first-of-type { margin-top: var(--sp-1); }
   .catalog-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
