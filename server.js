@@ -1199,6 +1199,206 @@ function readBody(req, cb) {
   });
 }
 
+// =============================================================================
+// AI DIREKTOR: har tongi avtomatik hisobot (Telegram xabari).
+// Quyidagi funksiyalar pastdagi `server` (http.createServer) ichidagi
+// computeCashflow/computeStockForecast/computeTopItems bilan BIR XIL
+// mantiqqa asoslangan, lekin ATAYLAB shu yerda (modul darajasida) ALOHIDA
+// yozilgan — chunki o'sha funksiyalar so'rov handler'ining o'zi ICHIDA
+// joylashgan (har bir HTTP so'rovda qayta e'lon qilinadi) va pastdagi
+// kunlik setInterval'dan (bu ham modul darajasida, so'rovdan tashqarida
+// ishlashi kerak) chaqirib bo'lmaydi. Hisoblash formulalari bir xil,
+// faqat joylashuvi boshqa — ikkalasini ham o'zgartirsangiz ikkalasida ham
+// yangilang.
+// =============================================================================
+
+const AI_DIRECTOR_HOUR = 8; // Toshkent vaqti bilan soat nechada yuborilishi (08:00)
+const AI_DIRECTOR_TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+function aiDirDateKey(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).toISOString().slice(0, 10);
+}
+function aiDirDayStartFromKey(dateKey) {
+  return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - AI_DIRECTOR_TZ_OFFSET_MS);
+}
+function aiDirDayStart(input) {
+  return aiDirDayStartFromKey(aiDirDateKey(input));
+}
+function aiDirTashkentHour(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCHours();
+}
+
+// [fromDate, toDate) oralig'idagi kirim/xarajat/foyda/buyurtmalar soni.
+function aiDirCashBucket(owner, fromDate, toDate) {
+  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
+  const expenses = (owner.expenses || []).filter(e => { const t = new Date(e.createdAt); return t >= fromDate && t < toDate; });
+  const income = orders.reduce((s, o) => s + (o.total || 0), 0);
+  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  return { income, expense, net: income - expense, orderCount: orders.length };
+}
+
+// [fromDate, toDate) oralig'ida taom bo'yicha sotilgan miqdor/tushum (Map: id -> {name, qty, revenue})
+function aiDirItemStats(owner, fromDate, toDate) {
+  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
+  const byId = new Map();
+  for (const o of orders) {
+    for (const it of (o.items || [])) {
+      const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
+      cur.qty += it.qty;
+      cur.revenue += it.price * it.qty;
+      byId.set(it.id, cur);
+    }
+  }
+  return byId;
+}
+
+// Oxirgi 7 kunni undan oldingi 7 kun bilan solishtirib, sezilarli (kamida
+// 15%) kamaygan taomlarni topadi. Juda kam sondagi (haftasiga 5 donadan
+// kam) taomlar hisobga olinmaydi — kichik sonlarda foiz ma'nosiz katta
+// chiqib ketishi mumkin (masalan 1 donadan 0 taga - "100% kamaydi" degani
+// chalg'ituvchi bo'lardi).
+function aiDirDecliningItems(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
+  const prev7Start = new Date(todayStart.getTime() - 14 * 86400000);
+
+  const last7 = aiDirItemStats(owner, last7Start, todayStart);
+  const prev7 = aiDirItemStats(owner, prev7Start, last7Start);
+
+  const declining = [];
+  for (const [id, cur] of last7) {
+    const prev = prev7.get(id);
+    if (!prev || prev.qty < 5) continue;
+    const changePercent = ((cur.qty - prev.qty) / prev.qty) * 100;
+    if (changePercent <= -15) {
+      declining.push({ id, name: cur.name, qtyNow: cur.qty, qtyPrev: prev.qty, changePercent: Math.round(changePercent) });
+    }
+  }
+  declining.sort((a, b) => a.changePercent - b.changePercent);
+  return declining;
+}
+
+// Sklad: qaysi mahsulotlar necha kunga (taxminan) yetishini hisoblaydi
+// (markaziy sklad + BARCHA filiallar birga) - oxirgi 7 kunlik "chiqim"
+// (buyurtma orqali sarflangan) harakatlar o'rtachasi asosida.
+function aiDirStockRunway(owner) {
+  const since = new Date(Date.now() - 7 * 86400000);
+  const pools = [owner, ...(owner.branches || [])];
+  const result = [];
+  for (const pool of pools) {
+    const usageById = new Map();
+    for (const m of (pool.stockMovements || [])) {
+      if (m.type !== 'chiqim') continue;
+      if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
+      if (new Date(m.createdAt) < since) continue;
+      usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
+    }
+    for (const item of (pool.stock || [])) {
+      const used7d = usageById.get(item.id) || 0;
+      if (used7d <= 0) continue;
+      const avgDaily = used7d / 7;
+      if (avgDaily <= 0) continue;
+      result.push({ name: item.name, unit: item.unit, qty: item.qty, avgDaily, daysLeft: item.qty / avgDaily });
+    }
+  }
+  result.sort((a, b) => a.daysLeft - b.daysLeft);
+  return result;
+}
+
+// Eng ko'p TUSHUM keltirgan taom (oxirgi 7 kun). Diqqat: menyu taomlarida
+// tan narxi (cost) kuzatilmagani sabab bu "eng FOYDALI" emas — halol,
+// chalg'itmaydigan atama sifatida "eng ko'p tushum keltirgan" ishlatiladi.
+function aiDirTopItem(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
+  const stats = aiDirItemStats(owner, last7Start, todayStart);
+  let top = null;
+  for (const it of stats.values()) {
+    if (!top || it.revenue > top.revenue) top = it;
+  }
+  return top;
+}
+
+// To'liq "AI Direktor" kunlik hisobotini Telegram uchun tayyor (HTML) matn
+// qilib tuzadi - qoidaviy (AI kaliti kerak emas, har doim ishlaydi).
+function buildAiDirectorText(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const yestStart = new Date(todayStart.getTime() - 86400000);
+  const dayBeforeStart = new Date(todayStart.getTime() - 2 * 86400000);
+
+  const yesterday = aiDirCashBucket(owner, yestStart, todayStart);
+  const dayBefore = aiDirCashBucket(owner, dayBeforeStart, yestStart);
+  const incomeChangePercent = dayBefore.income > 0
+    ? Math.round(((yesterday.income - dayBefore.income) / dayBefore.income) * 100)
+    : null;
+
+  const topItem = aiDirTopItem(owner);
+  const runway = aiDirStockRunway(owner);
+  const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 3);
+  const declining = aiDirDecliningItems(owner);
+
+  const fmt = (n) => Math.round(n).toLocaleString('ru-RU').replace(/,/g, ' ');
+
+  const lines = ['📊 <b>Bugungi holat</b>', ''];
+  lines.push(`Kecha tushum: <b>${fmt(yesterday.income)} so'm</b>` +
+    (incomeChangePercent !== null ? ` (${incomeChangePercent > 0 ? '+' : ''}${incomeChangePercent}%)` : ''));
+  lines.push(`Foyda: <b>${fmt(yesterday.net)} so'm</b>`);
+  if (topItem) lines.push(`Eng ko'p tushum keltirgan taom (7 kun): <b>${escapeHtmlServer(topItem.name)}</b>`);
+
+  if (urgentStock.length) {
+    lines.push('');
+    for (const s of urgentStock) {
+      lines.push(s.daysLeft < 1
+        ? `⚠️ ${escapeHtmlServer(s.name)} bugun tugashi mumkin.`
+        : `⚠️ ${escapeHtmlServer(s.name)} taxminan ${Math.floor(s.daysLeft)} kunga yetadi.`);
+    }
+  }
+
+  if (declining.length) {
+    const d = declining[0];
+    lines.push('');
+    lines.push(`Oxirgi 7 kunda <b>${escapeHtmlServer(d.name)}</b> savdosi ${Math.abs(d.changePercent)}% kamaygan.`);
+    lines.push('');
+    lines.push(`💡 <b>Tavsiya:</b> bugun ${escapeHtmlServer(d.name)} uchun aksiya qiling yoki xaridni kamaytiring.`);
+  }
+
+  return lines.join('\n');
+}
+
+// Bitta egaga AI Direktor hisobotini yuboradi va yuborilgan sanani
+// (bugungi.zayta yubormaslik uchun) yozib qo'yadi. `force` — Mini App'dan
+// "Hozir yubor" bosilganda bugun allaqachon yuborilgan bo'lsa ham qayta
+// yuborish uchun.
+async function sendAiDirectorDigest(owner, force) {
+  const todayKey = aiDirDateKey(new Date());
+  if (!force && owner.aiDirectorLastSent === todayKey) return false;
+  const text = buildAiDirectorText(owner);
+  await sendMessage(owner.id, text);
+  owner.aiDirectorLastSent = todayKey;
+  return true;
+}
+
+// Har 10 daqiqada bir marta tekshiradi: Toshkent vaqti bilan soat
+// AI_DIRECTOR_HOUR bo'lgan (va bugun hali yuborilmagan) har bir egaga
+// avtomatik yuboradi. `aiDirectorEnabled` egasi tomonidan o'chirilgan
+// bo'lsa (=== false), o'sha egaga yuborilmaydi (standart holat - yoqilgan).
+setInterval(() => {
+  if (aiDirTashkentHour(new Date()) !== AI_DIRECTOR_HOUR) return;
+  const owners = pruneExpiredOwners();
+  let changed = false;
+  (async () => {
+    for (const owner of owners) {
+      if (!isOwnerAccessValid(owner)) continue;
+      if (owner.aiDirectorEnabled === false) continue;
+      const sent = await sendAiDirectorDigest(owner, false);
+      if (sent) changed = true;
+    }
+    if (changed) saveOwners(owners);
+  })().catch(() => {});
+}, 10 * 60 * 1000);
+
 const server = http.createServer((req, res) => {
   // ---- API: initData tekshirish (mini app ochilganda) ----
   if (req.method === 'POST' && req.url === '/api/verify') {
@@ -3661,6 +3861,71 @@ const server = http.createServer((req, res) => {
         topDays: peak.topDays,
         forecast
       });
+    });
+    return;
+  }
+
+  // ---- API: AI Direktor - hozirgi holatga qarab hisobotni OLDINDAN KO'RISH
+  // (Mini App'da matn sifatida ko'rsatish uchun, Telegram'ga yubormasdan) ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-preview') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      return sendJSON(res, 200, {
+        ok: true,
+        text: buildAiDirectorText(owner),
+        enabled: owner.aiDirectorEnabled !== false,
+        sentToday: owner.aiDirectorLastSent === aiDirDateKey(new Date()),
+        hour: AI_DIRECTOR_HOUR
+      });
+    });
+    return;
+  }
+
+  // ---- API: AI Direktor hisobotini HOZIR (Telegram'ga) yuborish ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-send-now') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      sendAiDirectorDigest(owner, true).then(() => {
+        saveOwners(owners);
+        sendJSON(res, 200, { ok: true });
+      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
+    });
+    return;
+  }
+
+  // ---- API: AI Direktorning har tongi (soat 08:00, Toshkent) avtomatik
+  // xabarini yoqish/o'chirish ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, enabled } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      owner.aiDirectorEnabled = !!enabled;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, enabled: owner.aiDirectorEnabled });
     });
     return;
   }
