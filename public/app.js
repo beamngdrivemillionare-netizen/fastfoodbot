@@ -2401,6 +2401,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
 
+  // Dostavka buyurtmasida "Naqd" to'lov varianti ko'rsatilmaydi — kuryer
+  // naqd pulni mijozdan olishi "Dostavka orqali" varianti bilan ifodalanadi,
+  // shuning uchun ikkalasi bir vaqtda kerak emas (chalkashlikni oldini olish).
+  function visiblePaymentTypeEntries(orderType) {
+    return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => !(orderType === 'dostavka' && k === 'naqd'));
+  }
+  // orderType "dostavka"ga o'zgarganda, agar hozirgi tanlov "naqd" bo'lsa —
+  // ko'rinmaydigan variant tanlangan holda qolib ketmasligi uchun "karta"ga almashtiramiz.
+  function ensureValidPaymentType(state) {
+    if (state.orderType === 'dostavka' && state.paymentType === 'naqd') {
+      state.paymentType = 'karta';
+    }
+  }
+
   let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '', tab: 'yaratish', lastOrderRequestId: null };
 
   function cashierCartTotal() {
@@ -2440,7 +2454,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <input type="text" id="tableNumberInput" placeholder="Stol raqami" value="${escapeHtml(cashierState.tableNumber)}" inputmode="numeric">
           </div>
           <div class="type-row" id="paymentTypeRow">
-            ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
+            ${visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
               <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
             `).join('')}
           </div>
@@ -2465,6 +2479,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const t = e.target.getAttribute('data-order-type');
       if (!t) return;
       cashierState.orderType = t;
+      ensureValidPaymentType(cashierState);
       renderCashierScreen(restaurantName, onBack);
     });
     document.getElementById('paymentTypeRow').addEventListener('click', (e) => {
@@ -4022,6 +4037,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${c.username ? `<div class="owner-username">@${escapeHtml(c.username)}</div>` : ''}
           <div class="owner-expiry">Buyurtmalar: ${c.orderCount} ta</div>
           <div class="owner-price">Jami pul: ${cfFormatSum(c.totalAmount)}</div>
+          ${c.pendingAmount > 0 ? `
+            <div class="owner-expiry" style="color:var(--rang-xato,#e04b4b);">Kuryerda (hali topshirilmagan): ${cfFormatSum(c.pendingAmount)}</div>
+            <button class="btn ikkinchi" style="margin-top:6px; padding:6px 10px; font-size:13px;" data-cr-collect="${escapeHtml(c.id)}">Pulni oldim</button>
+          ` : ''}
         </div>
         <div class="rating-badge">${cfFormatSum(c.commission)}<div class="rating-unit">komissiya</div></div>
       </div>
@@ -4099,6 +4118,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
       commissionInput.value = res.commissionPercent;
     }
     listEl.innerHTML = courierReportRowsHtml(res.report);
+
+    listEl.querySelectorAll('[data-cr-collect]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const courierId = btn.getAttribute('data-cr-collect');
+        btn.disabled = true;
+        btn.textContent = 'Yuklanmoqda...';
+        const cRes = await apiPost('/api/courier-collect-cash', { initData, courierId });
+        if (cRes.ok) {
+          loadCourierReport();
+        } else {
+          btn.disabled = false;
+          btn.textContent = 'Pulni oldim';
+          alert(cRes.reason || 'Xatolik yuz berdi.');
+        }
+      });
+    });
   }
 
   // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
@@ -4672,7 +4707,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
       </div>
       <div class="type-row" id="cPaymentTypeRow">
-        ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
+        ${visiblePaymentTypeEntries(customerState.orderType).map(([k, label]) => `
           <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
         `).join('')}
       </div>
@@ -4716,6 +4751,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const t = e.target.getAttribute('data-corder-type');
       if (!t) return;
       customerState.orderType = t;
+      ensureValidPaymentType(customerState);
       renderCheckoutModalBody(overlay);
     });
     modalEl.querySelector('#cPaymentTypeRow').addEventListener('click', (e) => {
