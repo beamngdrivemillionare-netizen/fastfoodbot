@@ -1447,8 +1447,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   // 4 ta skeleton-kartochkani 2x2 grid ichida qaytaradi — sahifa birinchi
   // chizilganda shu ko'rinadi, keyin loadKoKpiGrid() natija bilan almashtiradi.
+  // 2-bosqich: "O'rtacha chek" kartochkasi olib tashlandi — 3-bosqichda
+  // o'rniga "Kuryer hisoboti" kartochkasi qo'shiladi.
   function koKpiGridSkeletonHtml() {
-    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', "O'rtacha chek"];
+    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar'];
     return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
   }
 
@@ -1466,6 +1468,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   // 8-bosqich: 4 ta KPI-kartochkani /api/dashboard-summary natijasidan
   // yasab, 2x2 grid ichida qaytaradi.
+  // 2-bosqich: "O'rtacha chek" kartochkasi vaqtincha olib tashlandi — uning
+  // o'rniga 3-bosqichda "Kuryer hisoboti" kartochkasi qo'shiladi (shu funksiya
+  // o'sha bosqichda yana to'rt kartochkali holatga qaytadi).
   function koKpiGridHtml(summary) {
     const cards = [
       koKpiCardHtml('wallet', 'Bugungi savdo',
@@ -1476,10 +1481,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         koFormatDelta(summary.todayNetProfit, summary.yesterdayNetProfit)),
       koKpiCardHtml('clipboard', 'Buyurtmalar',
         koFormatCompact(summary.todayOrderCount),
-        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount)),
-      koKpiCardHtml('card', "O'rtacha chek",
-        koFormatCompact(summary.todayAvgCheck),
-        koFormatDelta(summary.todayAvgCheck, summary.yesterdayAvgCheck))
+        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount))
     ];
     return `<div class="ko-kpi-grid" id="koKpiGrid">${cards.join('')}</div>`;
   }
