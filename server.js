@@ -191,7 +191,7 @@ const STAFF_ROLES = {
   kassir: 'Kassir',
   oshpaz: 'Oshpaz',
   sklad: 'Sklad mas\'uli',
-  dostavka: 'Dostavkachi'
+  dostavka: 'Kuryer'
 };
 
 // ====== Filiallar (G. Filiallar tizimi) — har bir egasi bir nechta filial ocha oladi ======
@@ -489,6 +489,19 @@ function displayName(user) {
   return name || (user.username ? '@' + user.username : String(user.id));
 }
 
+// Mijoz "Tanishuv" shaklida o'zi kiritgan Ism+Familiyani birinchi navbatda
+// ishlatadi — buyurtmalarda "Mijoz:" sifatida shu ko'rsatiladi. Bu Telegram
+// profilidagi (taxallus bo'lishi mumkin bo'lgan) ismdan ko'ra ishonchliroq,
+// chunki mijoz buni ro'yxatdan o'tishda bevosita o'zi yozgan. Ro'yxatdan
+// o'tmagan bo'lsa (masalan eski buyurtmalar) Telegram nomiga qaytadi.
+function customerDisplayName(userId, tgUser) {
+  const profile = findProfile(userId);
+  if (profile && profile.firstName) {
+    return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
+  }
+  return displayName(tgUser);
+}
+
 // Telegram xabarlari HTML parse_mode bilan yuborilgani uchun, foydalanuvchi kiritgan matnni xavfsiz qilib chiqaramiz
 function escapeHtmlServer(str) {
   return String(str).replace(/[&<>"']/g, c => ({
@@ -725,6 +738,58 @@ async function handleStartCommand(chatId, from, text) {
     return;
   }
 
+  // Xodim uchun bir martalik taklif havolasi: /start staffinv_<ownerId>_<token>
+  if (payload.startsWith('staffinv_')) {
+    const rest = payload.replace(/^staffinv_/, '');
+    const sepIdx = rest.indexOf('_');
+    const ownerId = sepIdx >= 0 ? rest.slice(0, sepIdx) : '';
+    const token = sepIdx >= 0 ? rest.slice(sepIdx + 1) : '';
+
+    const owners = pruneExpiredOwners();
+    const owner = findOwner(owners, ownerId);
+    const invite = owner && (owner.staffInvites || []).find(i => i.token === token);
+
+    if (!owner || !invite || invite.used || new Date(invite.expiresAt) <= new Date()) {
+      await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, menejerdan yangi havola so\'rang.');
+      return;
+    }
+    if (isAdminId(from.id)) {
+      await sendMessage(chatId, 'Siz administratorsiz, xodim bo\'la olmaysiz.');
+      return;
+    }
+    if (findOwner(owners, from.id)) {
+      await sendMessage(chatId, 'Siz allaqachon oshxona egasisiz, xodim bo\'la olmaysiz.');
+      return;
+    }
+    const existingStaff = findStaffInfo(owners, from.id);
+    if (existingStaff) {
+      await sendMessage(chatId, existingStaff.ownerId === owner.id
+        ? 'Siz allaqachon shu oshxonaning xodimisiz. Mini App tugmasi orqali oching.'
+        : 'Siz boshqa oshxonada xodim sifatida ro\'yxatdasiz.');
+      return;
+    }
+
+    invite.used = true;
+    invite.usedBy = String(from.id);
+    invite.usedAt = new Date().toISOString();
+
+    if (!owner.staff) owner.staff = [];
+    owner.staff.push({
+      id: String(from.id),
+      username: from.username || null,
+      role: invite.roles[0],
+      roles: invite.roles,
+      branchId: invite.branchId || null,
+      addedAt: new Date().toISOString()
+    });
+    saveOwners(owners);
+
+    await sendMessage(chatId,
+      `👋 Siz <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> jamoasiga <b>${escapeHtmlServer(rolesLabel(invite.roles))}</b> sifatida qo\'shildingiz.\nMini App tugmasi orqali oching.`);
+    sendMessage(owner.id, `✅ ${escapeHtmlServer(displayName(from))}${from.username ? ' (@' + escapeHtmlServer(from.username) + ')' : ''} taklif havolasi orqali <b>${escapeHtmlServer(rolesLabel(invite.roles))}</b> sifatida jamoaga qo\'shildi.`);
+    return;
+  }
+
   const token = payload.replace(/^inv_/, '');
   const invite = findInvite(token);
 
@@ -926,8 +991,8 @@ async function handleTelegramUpdate(update) {
         order.deliveryAcceptedAt = new Date().toISOString();
         // Guruhdagi "Qabul qilish" bosilganda buyurtmaning asosiy status'i ham
         // yangilanadi ("tayyorlanmoqda"), aks holda u Mini App bosqichlaridan
-        // uzilib qoladi (masalan, keyinroq "tayyor" belgilanganda dostavkachiga
-        // ko'rinmay qoladi — chunki dostavkachi ro'yxati order.status'ga qarab
+        // uzilib qoladi (masalan, keyinroq "tayyor" belgilanganda kuryerga
+        // ko'rinmay qoladi — chunki kuryer ro'yxati order.status'ga qarab
         // filtrlanadi, deliveryGroupStage'ga emas).
         if (order.status === 'yangi') {
           order.status = 'tayyorlanmoqda';
@@ -965,8 +1030,8 @@ async function handleTelegramUpdate(update) {
         order.deliveryReadyBy = from.id;
         order.deliveryReadyAt = new Date().toISOString();
         // Asosiy status ham "tayyor"ga o'tkaziladi — shu maydon orqali
-        // dostavkachilarga buyurtmalar ro'yxati (/api/orders-list) filtrlanadi,
-        // shu jumladan guruhga yangi qo'shilgan dostavkachi uchun ham.
+        // kuryerlarga buyurtmalar ro'yxati (/api/orders-list) filtrlanadi,
+        // shu jumladan guruhga yangi qo'shilgan kuryer uchun ham.
         order.status = 'tayyor';
         order.updatedAt = new Date().toISOString();
         order.updatedBy = String(from.id);
@@ -979,11 +1044,11 @@ async function handleTelegramUpdate(update) {
         }
         if (order.customerId) {
           const readyMsg = order.orderType === 'dostavka'
-            ? '🏁 Buyurtmangiz tayyor, dostavkachi yo\'lda!'
+            ? '🏁 Buyurtmangiz tayyor, kuryer yo\'lda!'
             : '🏁 Buyurtmangiz tayyor!';
           await sendMessage(order.customerId, readyMsg);
         }
-        // Kassir(lar)ga va (dostavka bo'lsa) dostavkachi(lar)ga ham
+        // Kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga ham
         // Mini App'dagi "Tayyor" tugmasidagi kabi avtomatik bildirishnoma
         // yuboriladi, xabarni o'zi yuborgan xodimdan tashqari.
         {
@@ -1559,6 +1624,64 @@ const server = http.createServer((req, res) => {
         `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${rolesLabel(uniqueRoles)}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
 
       return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: xodim qo'shish uchun BIR MARTALIK havola yaratish (faqat egasi) ----
+  // Manager Telegram ID/username so'ramasdan, tayyor lavozim(lar) va filial
+  // bilan havola yaratadi — xodim shu havolani bosib botni ochsa, avtomatik
+  // (tasdiqlashsiz) o'sha lavozim(lar) bilan jamoaga qo'shiladi. Havola FAQAT
+  // bir marta ishlatiladi (birinchi bosgan odam qo'shiladi, keyin yaroqsiz
+  // bo'lib qoladi) va 24 soatdan keyin muddati tugaydi.
+  if (req.method === 'POST' && req.url === '/api/create-staff-invite') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, role, roles, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi havola yarata oladi' });
+
+      const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
+      const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole);
+      if (!uniqueRoles.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
+      }
+
+      let branchIdVal = null;
+      if (branchId) {
+        if (!findBranch(owner, branchId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+        }
+        branchIdVal = branchId;
+      }
+
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+
+      const token = crypto.randomBytes(16).toString('hex');
+      if (!owner.staffInvites) owner.staffInvites = [];
+      // Eskirgan/ishlatilgan takliflarni tozalab boramiz — fayl cheksiz o'sib ketmasligi uchun
+      owner.staffInvites = owner.staffInvites.filter(inv => !inv.used && new Date(inv.expiresAt) > new Date());
+      owner.staffInvites.push({
+        token,
+        roles: uniqueRoles,
+        branchId: branchIdVal,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        used: false,
+        usedBy: null,
+        usedAt: null
+      });
+      saveOwners(owners);
+
+      const link = `https://t.me/${BOT_USERNAME}?start=staffinv_${owner.id}_${token}`;
+      return sendJSON(res, 200, { ok: true, link, roles: uniqueRoles });
     });
     return;
   }
@@ -2239,7 +2362,7 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
       }
 
-      // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - dostavkachi
+      // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - kuryer
       // mijozni topa olishi uchun kamida BITTASI bo'lishi shart: aniqlangan
       // joylashuv (lokatsiya) YOKI qo'lda yozilgan manzil izohi.
       let deliveryLocation = null;
@@ -2350,7 +2473,7 @@ const server = http.createServer((req, res) => {
         paymentProofFileId: null,
         branchId: null,
         customerId: userId,
-        customerName: displayName(check.user),
+        customerName: customerDisplayName(userId, check.user),
         source: 'customer',
         createdAt: new Date().toISOString(),
         createdBy: userId
@@ -2611,7 +2734,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi, dostavkachi — real-vaqtda polling uchun) ----
+  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi, kuryer — real-vaqtda polling uchun) ----
   if (req.method === 'POST' && req.url === '/api/orders-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -2629,7 +2752,7 @@ const server = http.createServer((req, res) => {
         .slice()
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-      // Dostavkachiga faqat "Tayyor" bo'lgan, hali hech kim yetkazib bermagan dostavka buyurtmalari ko'rinadi
+      // Kuryerga faqat "Tayyor" bo'lgan, hali hech kim yetkazib bermagan dostavka buyurtmalari ko'rinadi
       if (ctxHasRole(ctx, 'dostavka')) {
         orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
       }
@@ -2677,7 +2800,7 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
       saveOwners(owners);
 
-      // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) dostavkachi(lar)ga avtomatik bildirishnoma
+      // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga avtomatik bildirishnoma
       if (status === 'tayyor') {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
@@ -2697,7 +2820,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: dostavkachi buyurtmani "Yetkazildi" deb belgilaydi (F/26-bosqich: dostavkachi hisoboti uchun asos) ----
+  // ---- API: kuryer buyurtmani "Yetkazildi" deb belgilaydi (F/26-bosqich: kuryer hisoboti uchun asos) ----
   if (req.method === 'POST' && req.url === '/api/deliver-order') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -2709,7 +2832,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
       if (!ctx || !ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faqat dostavkachi bu amalni bajara oladi' });
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
       }
 
       const order = (ctx.owner.orders || []).find(o => o.id === orderId);
@@ -2732,9 +2855,9 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: egasi xato bosilgan "Yetkazildi" belgisini bekor qiladi ----
-  // (masalan, dostavkachi boshqa buyurtmani bosib yuborgan yoki hali yetkazmasdan
+  // (masalan, kuryer boshqa buyurtmani bosib yuborgan yoki hali yetkazmasdan
   // tugmani bosib yuborgan holatlarni tuzatish uchun). Faqat "egasi" roliga ruxsat
-  // berilgan — dostavkachining o'ziga bu huquq berilmagan, aks holda u o'z hisobotini
+  // berilgan — kuryerning o'ziga bu huquq berilmagan, aks holda u o'z hisobotini
   // (yetkazgan buyurtmalar sonini) o'zi o'zgartira olardi.
   if (req.method === 'POST' && req.url === '/api/undo-deliver-order') {
     readBody(req, (err, payload) => {
@@ -3180,7 +3303,7 @@ const server = http.createServer((req, res) => {
   }
 
   // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda, buyurtmalar soni va xarajat kategoriyalari bo'yicha taqsimotni hisoblaydi
-  // Kirim ikkiga ajratiladi: kassaIncome (stolga/olib ketish — kassada turgan pul) va dostavkaIncome (dostavka orqali — dostavkachi qo'lida, kassadan alohida)
+  // Kirim ikkiga ajratiladi: kassaIncome (stolga/olib ketish — kassada turgan pul) va dostavkaIncome (dostavka orqali — kuryer qo'lida, kassadan alohida)
   function cashflowBucket(owner, fromDate) {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
@@ -3539,7 +3662,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
+  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/courier-report') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3577,7 +3700,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: dostavkachilar komissiya foizini o'zgartirish (faqat egasi) ----
+  // ---- API: kuryerlar komissiya foizini o'zgartirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/set-courier-commission') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
