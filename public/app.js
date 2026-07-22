@@ -810,6 +810,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka">
           <div class="bosh">${usingOwnerSession ? 'Siz login/parol orqali kirgansiz.' : 'Bu qurilmada parol eslab qolingan.'}</div>
           <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
+
+          <h2 style="margin-top:18px;">Xavfsizlik</h2>
+          <button class="btn ikkinchi" id="togglePwChangeBtn">Parolni almashtirish</button>
+          <div id="pwChangeForm" class="hidden" style="margin-top:10px;">
+            <label class="field-label">Joriy parol</label>
+            <input type="password" id="pwCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
+            <label class="field-label">Yangi parol</label>
+            <input type="password" id="pwNewInput" autocomplete="new-password" placeholder="Kamida 6 belgi">
+            <label class="field-label">Yangi parolni takrorlang</label>
+            <input type="password" id="pwNewRepeatInput" autocomplete="new-password" placeholder="Yangi parolni qayta kiriting">
+            <div class="btn-row">
+              <button class="btn ikkinchi" id="pwChangeCancelBtn">Bekor qilish</button>
+              <button class="btn" id="pwChangeSaveBtn">Saqlash</button>
+            </div>
+            <div class="xabar" id="pwChangeMsg"></div>
+          </div>
+
+          ${tg ? `
+          <button class="btn ikkinchi xavfli" id="togglePwRemoveBtn" style="margin-top:14px;">Parolni o'chirish</button>
+          <div id="pwRemoveForm" class="hidden" style="margin-top:10px;">
+            <div class="bosh">Parol o'chirilsa, bundan buyon faqat Telegram orqali kirish imkoni qoladi. Tasdiqlash uchun joriy parolingizni kiriting.</div>
+            <label class="field-label">Joriy parol</label>
+            <input type="password" id="pwRemoveCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
+            <div class="btn-row">
+              <button class="btn ikkinchi" id="pwRemoveCancelBtn">Bekor qilish</button>
+              <button class="btn xavfli" id="pwRemoveConfirmBtn">Parolni o'chirish</button>
+            </div>
+            <div class="xabar" id="pwRemoveMsg"></div>
+          </div>
+          ` : ''}
         </div>
         ` : ''}
       </div>
@@ -821,6 +851,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     } else if (ownerHasTelegramLogin) {
       const logoutBtn = document.getElementById('ownerLogoutBtn');
       if (logoutBtn) logoutBtn.addEventListener('click', ownerTelegramGateLogout);
+    }
+
+    if (usingOwnerSession || ownerHasTelegramLogin) {
+      attachOwnerPasswordSecurityHandlers();
     }
 
     attachBrandSwatchHandlers((hex) => {
@@ -4807,6 +4841,139 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('ownerPasswordInput').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') doLogin();
     });
+  }
+
+  // 3-4-bosqich: renderProfileForm() ichidagi "Xavfsizlik" bo'limi uchun
+  // event handlerlar — egasi (admin emas, o'zi) o'z parolini almashtiradi
+  // yoki butunlay o'chiradi. Parol o'zgarganda/o'chirilganda server barcha
+  // sess_ sessiyalarni bekor qiladi — shu sababli usingOwnerSession bo'lsa,
+  // muvaffaqiyatli almashtirishdan so'ng mahalliy sessiya ham tozalanib,
+  // qayta login ekraniga qaytariladi. Parolni o'chirish tugmasi faqat
+  // Telegram orqali kirilganda (tg mavjud bo'lganda) ko'rsatiladi — aks
+  // holda egasi (usingOwnerSession, Telegramsiz brauzer sessiyasi) parolni
+  // o'chirib, hech qanday kirish usulisiz qolib ketishi mumkin edi.
+  function attachOwnerPasswordSecurityHandlers() {
+    const toggleChangeBtn = document.getElementById('togglePwChangeBtn');
+    const changeForm = document.getElementById('pwChangeForm');
+    if (toggleChangeBtn && changeForm) {
+      toggleChangeBtn.addEventListener('click', () => changeForm.classList.toggle('hidden'));
+    }
+
+    const changeCancelBtn = document.getElementById('pwChangeCancelBtn');
+    if (changeCancelBtn) {
+      changeCancelBtn.addEventListener('click', () => {
+        document.getElementById('pwCurrentInput').value = '';
+        document.getElementById('pwNewInput').value = '';
+        document.getElementById('pwNewRepeatInput').value = '';
+        const msgEl = document.getElementById('pwChangeMsg');
+        msgEl.textContent = '';
+        msgEl.className = 'xabar';
+        changeForm.classList.add('hidden');
+      });
+    }
+
+    const changeSaveBtn = document.getElementById('pwChangeSaveBtn');
+    if (changeSaveBtn) {
+      changeSaveBtn.addEventListener('click', async () => {
+        const currentPassword = document.getElementById('pwCurrentInput').value;
+        const newPassword = document.getElementById('pwNewInput').value;
+        const newPasswordRepeat = document.getElementById('pwNewRepeatInput').value;
+        const msgEl = document.getElementById('pwChangeMsg');
+        if (!currentPassword || !newPassword) {
+          msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        if (newPassword.length < 6) {
+          msgEl.textContent = 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        if (newPassword !== newPasswordRepeat) {
+          msgEl.textContent = 'Yangi parollar mos kelmadi.';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        changeSaveBtn.disabled = true;
+        msgEl.textContent = 'Saqlanmoqda...';
+        msgEl.className = 'xabar';
+        const res = await apiPost('/api/owner-change-password', { initData, currentPassword, newPassword });
+        changeSaveBtn.disabled = false;
+        if (res.networkError) {
+          msgEl.textContent = res.reason;
+          msgEl.className = 'xabar err';
+          return;
+        }
+        if (!res.ok) {
+          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        if (usingOwnerSession) {
+          // Server bu sessiyani ham bekor qildi — qayta login qildiramiz
+          localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
+          initData = null;
+          renderOwnerLoginScreen('Parol muvaffaqiyatli o\'zgartirildi. Yangi parol bilan qayta kiring.');
+          return;
+        }
+        msgEl.textContent = 'Parol muvaffaqiyatli o\'zgartirildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('pwCurrentInput').value = '';
+        document.getElementById('pwNewInput').value = '';
+        document.getElementById('pwNewRepeatInput').value = '';
+      });
+    }
+
+    const toggleRemoveBtn = document.getElementById('togglePwRemoveBtn');
+    const removeForm = document.getElementById('pwRemoveForm');
+    if (toggleRemoveBtn && removeForm) {
+      toggleRemoveBtn.addEventListener('click', () => removeForm.classList.toggle('hidden'));
+    }
+
+    const removeCancelBtn = document.getElementById('pwRemoveCancelBtn');
+    if (removeCancelBtn) {
+      removeCancelBtn.addEventListener('click', () => {
+        document.getElementById('pwRemoveCurrentInput').value = '';
+        const msgEl = document.getElementById('pwRemoveMsg');
+        msgEl.textContent = '';
+        msgEl.className = 'xabar';
+        removeForm.classList.add('hidden');
+      });
+    }
+
+    const removeConfirmBtn = document.getElementById('pwRemoveConfirmBtn');
+    if (removeConfirmBtn) {
+      removeConfirmBtn.addEventListener('click', async () => {
+        const currentPassword = document.getElementById('pwRemoveCurrentInput').value;
+        const msgEl = document.getElementById('pwRemoveMsg');
+        if (!currentPassword) {
+          msgEl.textContent = 'Joriy parolni kiriting.';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        removeConfirmBtn.disabled = true;
+        msgEl.textContent = 'Bajarilmoqda...';
+        msgEl.className = 'xabar';
+        const res = await apiPost('/api/owner-remove-password', { initData, currentPassword });
+        removeConfirmBtn.disabled = false;
+        if (res.networkError) {
+          msgEl.textContent = res.reason;
+          msgEl.className = 'xabar err';
+          return;
+        }
+        if (!res.ok) {
+          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        // Parol o'chirilgach faqat Telegram orqali kirish qoladi — gate
+        // eslatmasi ham tozalanadi, shunda keyingi safar parol so'ralmaydi.
+        const gateKey = ownerTelegramGateKey();
+        if (gateKey) localStorage.removeItem(gateKey);
+        ownerHasTelegramLogin = false;
+        location.reload();
+      });
+    }
   }
 
   // Login/parol orqali kirilgan sessiyani tugatadi (owner profil ekranidagi "Chiqish" tugmasi)
