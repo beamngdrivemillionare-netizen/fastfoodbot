@@ -1410,6 +1410,10 @@
      pastda, "+" tugmasi (mahsulot tanlanganda -/soni/+ ga almashadi). */
   .cat-row { display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: 4px; margin-top: 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
   .cat-row::-webkit-scrollbar { display: none; }
+  /* 27-bosqich: faqat mijoz menyusidagi bo'lim-tab (#customerCatRow)
+     tepada mahkamlanadi — cashierStatusChips kabi boshqa .cat-row
+     ishlatuvchi joylarga bu ta'sir qilmasligi uchun ID bilan cheklandi. */
+  #customerCatRow { position: sticky; top: 0; z-index: 5; background: var(--surface-0); padding-top: 8px; padding-bottom: 12px; }
   .cat-opt {
     flex: 0 0 auto; padding: 0 16px; min-height: 40px; border-radius: var(--radius-pill); font-size: var(--fs-sm); font-weight: 600;
     background: var(--surface-1); color: var(--text-secondary); cursor: pointer; white-space: nowrap;
