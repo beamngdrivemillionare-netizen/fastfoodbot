@@ -1097,12 +1097,56 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // 4 ta skeleton-kartochkani 2x2 grid ichida qaytaradi — 8-bosqichda
-  // haqiqiy grid-konteyner shu bilan boshlanadi, keyin natija bilan
-  // almashtiriladi.
+  // 4 ta skeleton-kartochkani 2x2 grid ichida qaytaradi — sahifa birinchi
+  // chizilganda shu ko'rinadi, keyin loadKoKpiGrid() natija bilan almashtiradi.
   function koKpiGridSkeletonHtml() {
     const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', "O'rtacha chek"];
-    return `<div class="ko-kpi-grid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
+    return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
+  }
+
+  // Buyurtmalar soni uchun delta foizda emas, xom sondagi farq sifatida
+  // ko'rsatiladi (mockupda "+18 ta"), chunki kichik sonlarda foiz
+  // o'qilishi qiyin va real ma'no bermaydi.
+  function koFormatCountDelta(todayVal, yesterdayVal) {
+    const t = Number(todayVal || 0);
+    const y = Number(yesterdayVal || 0);
+    const diff = t - y;
+    if (diff === 0) return null;
+    const tone = diff > 0 ? 'up' : 'down';
+    return { tone, text: (diff > 0 ? '+' : '') + diff + ' ta' };
+  }
+
+  // 8-bosqich: 4 ta KPI-kartochkani /api/dashboard-summary natijasidan
+  // yasab, 2x2 grid ichida qaytaradi.
+  function koKpiGridHtml(summary) {
+    const cards = [
+      koKpiCardHtml('wallet', 'Bugungi savdo',
+        koFormatCompact(summary.todaySales),
+        koFormatDelta(summary.todaySales, summary.yesterdaySales)),
+      koKpiCardHtml('trending-up', 'Sof foyda',
+        koFormatCompact(summary.todayNetProfit),
+        koFormatDelta(summary.todayNetProfit, summary.yesterdayNetProfit)),
+      koKpiCardHtml('clipboard', 'Buyurtmalar',
+        koFormatCompact(summary.todayOrderCount),
+        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount)),
+      koKpiCardHtml('card', "O'rtacha chek",
+        koFormatCompact(summary.todayAvgCheck),
+        koFormatDelta(summary.todayAvgCheck, summary.yesterdayAvgCheck))
+    ];
+    return `<div class="ko-kpi-grid" id="koKpiGrid">${cards.join('')}</div>`;
+  }
+
+  async function loadKoKpiGrid(profile) {
+    const el = document.getElementById('koKpiGrid');
+    if (!el) return;
+    const res = await apiPost('/api/dashboard-summary', { initData });
+    const el2 = document.getElementById('koKpiGrid');
+    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!res.ok) {
+      el2.outerHTML = `<div class="ko-kpi-grid" id="koKpiGrid"><div class="bosh">KPI ma'lumotlari yuklanmadi.</div></div>`;
+      return;
+    }
+    el2.outerHTML = koKpiGridHtml(res.summary);
   }
 
   function renderProfileView(profile) {
@@ -1113,6 +1157,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
         <div class="owner-tab-panel ${ownerActiveTab === 'bosh' ? 'active' : ''}" data-tab="bosh">
           ${koHomeHeaderHtml(0)}
+          ${koKpiGridSkeletonHtml()}
           ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
           <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
           <div class="kartochka">
@@ -1258,6 +1303,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', () => setOwnerActiveTab(btn.getAttribute('data-owner-tab')));
     });
     loadOwnerDashboardStats(profile);
+    loadKoKpiGrid(profile);
     wireKoHomeHeader();
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
