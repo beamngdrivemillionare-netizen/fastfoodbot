@@ -228,6 +228,41 @@ const EXPENSE_CATEGORIES = {
   boshqa: 'Boshqa'
 };
 
+// ====== Menyu bo'limlari / kategoriyalari — F-bo'lim (36-40-bosqich) ======
+// Har bir egasi endi o'zining tuzilmali bo'limlar ro'yxatiga ega:
+// owner.categories = [{id, name, order}, ...]. Taom (`menu` item)ning
+// `category` maydoni hamon oddiy matn (nom) sifatida saqlanadi — shu bilan
+// eski kod (menyuni ko'rsatish, guruhlash) o'zgarishsiz ishlayveradi, faqat
+// endi bu nomlar "erkin matn" emas, shu ro'yxatdan tanlanadi.
+//
+// Eski ma'lumotlarda (birinchi marta shu funksiyaga murojaat qilinganda)
+// owner.categories hali yo'q — shu holda owner.menu ichidagi mavjud
+// category qiymatlaridan (takrorlanmas holda, birinchi uchragan tartibda)
+// avtomatik ro'yxat yasaladi (migratsiya). Shundan keyin owner.categories
+// doim massiv deb hisoblanishi mumkin.
+function ensureOwnerCategories(owner) {
+  if (!Array.isArray(owner.categories)) {
+    const seen = new Set();
+    const migrated = [];
+    (owner.menu || []).forEach(item => {
+      const name = String(item.category || '').trim();
+      const key = name.toLowerCase();
+      if (name && !seen.has(key)) {
+        seen.add(key);
+        migrated.push({ id: crypto.randomBytes(4).toString('hex'), name, order: migrated.length });
+      }
+    });
+    owner.categories = migrated;
+  }
+  return owner.categories;
+}
+
+// Tartib (order) bo'yicha saralangan holda qaytaradi — ro'yxatni ko'rsatish/
+// yuborishdan oldin har doim shu orqali o'qish kerak.
+function sortedOwnerCategories(owner) {
+  return ensureOwnerCategories(owner).slice().sort((a, b) => a.order - b.order);
+}
+
 // ====== Sklad birliklari va buyurtma turlari (module darajasida — bir nechta joyda ishlatiladi) ======
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
 const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
@@ -1892,7 +1927,127 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId);
       if (!ctx) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q' });
 
-      return sendJSON(res, 200, { ok: true, menu: ctx.owner.menu || [], role: ctx.role });
+      return sendJSON(res, 200, { ok: true, menu: ctx.owner.menu || [], categories: sortedOwnerCategories(ctx.owner), role: ctx.role });
+    });
+    return;
+  }
+
+  // ==================== F. Bo'lim (kategoriya) boshqaruvi (36-40-bosqich) ====================
+  // Bo'limlar (menyu kategoriyalari) — egasi endi ularni tuzilmali ro'yxat
+  // sifatida boshqaradi (qo'shish/o'chirish/tartiblash), o'sha ro'yxatdan esa
+  // taom qo'shish/tahrirlash formasida (select) va mijoz/kassir menyusidagi
+  // bo'lim tartibida (qarang: sortedOwnerCategories) foydalaniladi.
+
+  // ---- API: bo'limlar ro'yxatini olish (egasi yoki uning xodimlari) ----
+  if (req.method === 'POST' && req.url === '/api/category-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q' });
+
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(ctx.owner) });
+    });
+    return;
+  }
+
+  // ---- API: yangi bo'lim qo'shish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/category-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi bo\'limlarni boshqara oladi' });
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Bo\'lim nomini kiriting.' });
+
+      const categories = ensureOwnerCategories(owner);
+      const exists = categories.some(c => c.name.toLowerCase() === nameTrim.toLowerCase());
+      if (exists) return sendJSON(res, 200, { ok: false, reason: 'Bunday bo\'lim allaqachon mavjud.' });
+
+      const maxOrder = categories.reduce((max, c) => Math.max(max, c.order), -1);
+      const category = { id: crypto.randomBytes(4).toString('hex'), name: nameTrim, order: maxOrder + 1 };
+      categories.push(category);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, category, categories: sortedOwnerCategories(owner) });
+    });
+    return;
+  }
+
+  // ---- API: bo'limni o'chirish (faqat egasi) ----
+  // ESLATMA: shu bo'limdan foydalanayotgan taomlar avtomatik boshqa bo'limga
+  // ko'chirilmaydi — ularning `category` maydoni o'zgarishsiz qoladi, lekin
+  // endi ro'yxatda bo'lmagani uchun mijoz/kassir menyusida "Boshqa" bo'limi
+  // ostida chiqadi (qarang: public/app.js — groupMenuItems).
+  if (req.method === 'POST' && req.url === '/api/category-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      ensureOwnerCategories(owner);
+      owner.categories = owner.categories.filter(c => c.id !== id);
+      // qolganlarini 0 dan boshlab qayta raqamlaymiz — bo'shliq qolmasin
+      owner.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(owner) });
+    });
+    return;
+  }
+
+  // ---- API: bo'limlar tartibini o'zgartirish (faqat egasi) ----
+  // Frontend to'liq tartiblangan id ro'yxatini yuboradi (masalan, ikkita
+  // qo'shni bo'limni ↑/↓ tugmalari bilan almashtirgandan keyin butun
+  // ro'yxatni qayta joylashtirib). Kelmagan (frontendda ko'rinmayotgan)
+  // id'lar bo'lsa ham xato bermaymiz — ular oxiriga, o'zaro nisbiy
+  // tartibini saqlagan holda qo'shiladi.
+  if (req.method === 'POST' && req.url === '/api/category-reorder') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderedIds } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+      if (!Array.isArray(orderedIds)) return sendJSON(res, 200, { ok: false, reason: 'Tartib ro\'yxati noto\'g\'ri.' });
+
+      const categories = ensureOwnerCategories(owner);
+      const byId = new Map(categories.map(c => [c.id, c]));
+      let nextOrder = 0;
+      orderedIds.forEach(id => {
+        const c = byId.get(String(id));
+        if (c) { c.order = nextOrder++; byId.delete(String(id)); }
+      });
+      // ro'yxatda ko'rsatilmagan qolganlari (agar bo'lsa) — eski nisbiy
+      // tartibini saqlab, oxiriga qo'shiladi.
+      categories.slice().sort((a, b) => a.order - b.order)
+        .filter(c => byId.has(c.id))
+        .forEach(c => { c.order = nextOrder++; });
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(owner) });
     });
     return;
   }
@@ -2338,7 +2493,7 @@ const server = http.createServer((req, res) => {
 
       const menu = (owner.menu || []).filter(m => m.available !== false);
       const promotions = (owner.promotions || []).filter(p => p.active);
-      return sendJSON(res, 200, { ok: true, menu, promotions });
+      return sendJSON(res, 200, { ok: true, menu, promotions, categories: sortedOwnerCategories(owner) });
     });
     return;
   }
