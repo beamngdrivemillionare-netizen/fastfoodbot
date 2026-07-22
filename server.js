@@ -1856,6 +1856,12 @@ const server = http.createServer((req, res) => {
 
       // Retsept asosida skladdan mahsulot avtomatik yechiladi
       if (!owner.stock) owner.stock = [];
+
+      const stockCheck = checkStockAvailability(owner, orderItems, menu);
+      if (!stockCheck.ok) {
+        return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
+      }
+
       for (const it of orderItems) {
         const menuItem = menu.find(m => m.id === it.id);
         const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
@@ -2015,6 +2021,35 @@ const server = http.createServer((req, res) => {
     }
   }
 
+  // Buyurtmadagi barcha taomlar uchun retseptga ko'ra yetarli sklad (ombor) mahsuloti
+  // bor-yo'qligini tekshiradi — hech narsani o'zgartirmaydi, faqat "yetadimi" degan
+  // javob qaytaradi. Bir xil ingredient bir nechta taomda ishlatilsa, talab qilingan
+  // miqdorlar jamlanadi (masalan, 2 xil taom bir xil pomidorni ishlatsa).
+  // Qaytadi: { ok: true } yoki { ok: false, reason, stockName }
+  function checkStockAvailability(owner, orderItems, menu) {
+    const needed = new Map(); // stockId -> jami kerak bo'lgan miqdor
+    for (const it of orderItems) {
+      const menuItem = menu.find(m => m.id === it.id);
+      const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+      for (const ing of recipe) {
+        const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+        needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+      }
+    }
+    for (const [stockId, requiredQty] of needed) {
+      const stockItem = findStockItem(owner, stockId);
+      if (!stockItem) continue; // sklad kartochkasi yo'q bo'lsa, eski xatti-harakatni saqlab qolamiz (o'tkazib yuboriladi)
+      if (stockItem.qty < requiredQty) {
+        return {
+          ok: false,
+          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+          stockName: stockItem.name
+        };
+      }
+    }
+    return { ok: true };
+  }
+
   // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
   // Ruxsat etilgan holat o'tishlari: "yangi" -> "tayyorlanmoqda" -> "tayyor".
   // Bosqich tashlab ketib bo'lmaydi (masalan, "yangi"dan to'g'ridan-to'g'ri "tayyor"ga).
@@ -2084,6 +2119,12 @@ const server = http.createServer((req, res) => {
 
       // Retsept asosida skladdan mahsulot avtomatik yechiladi (taom tayyorlansa ingredient kamayadi)
       if (!ctx.owner.stock) ctx.owner.stock = [];
+
+      const stockCheck = checkStockAvailability(ctx.owner, orderItems, menu);
+      if (!stockCheck.ok) {
+        return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
+      }
+
       for (const it of orderItems) {
         const menuItem = menu.find(m => m.id === it.id);
         const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
