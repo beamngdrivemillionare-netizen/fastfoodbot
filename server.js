@@ -191,7 +191,8 @@ const STAFF_ROLES = {
   kassir: 'Kassir',
   oshpaz: 'Oshpaz',
   sklad: 'Sklad mas\'uli',
-  dostavka: 'Kuryer'
+  dostavka: 'Kuryer',
+  manager: 'Menejer'
 };
 
 // ====== Filiallar (G. Filiallar tizimi) — har bir egasi bir nechta filial ocha oladi ======
@@ -4015,7 +4016,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
+  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (egasi, yoki ruxsat berilgan bo'lsa menejer) ----
   if (req.method === 'POST' && req.url === '/api/courier-report') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4025,8 +4026,13 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !isOwnerAccessValid(ctx.owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      const owner = ctx.owner;
+      if (ctx.role !== 'egasi') {
+        if (!ctxHasRole(ctx, 'manager')) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat egasi yoki menejerga ko\'rinadi' });
+        if (!owner.managerCourierMoneyVisible) return sendJSON(res, 200, { ok: false, reason: 'Egasi hali bu bo\'limni menejerga ochmagan.' });
+      }
 
       const fromDate = resolvePeriodStart(period);
       const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
@@ -4058,7 +4064,7 @@ const server = http.createServer((req, res) => {
         .filter(m => m.type === 'kuryer_kassaga_qaytarish')
         .slice(0, 20);
 
-      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements });
+      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements, managerCourierMoneyVisible: !!owner.managerCourierMoneyVisible });
     });
     return;
   }
@@ -4088,6 +4094,27 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: menejerga kuryer puli ko'rinishini yoqish/o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/set-manager-courier-visibility') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, visible } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+
+      owner.managerCourierMoneyVisible = !!visible;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, managerCourierMoneyVisible: owner.managerCourierMoneyVisible });
+    });
+    return;
+  }
+
   // ---- API: kuryerdan naqd pulni "oldim" deb belgilash (faqat egasi) ----
   // Kuryer "dostavka orqali" to'lovda mijozdan naqd pulni o'zi qo'lida
   // ushlab turadi. Egasi shu pulni jismonan kuryerdan olganda shu API
@@ -4104,8 +4131,13 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !isOwnerAccessValid(ctx.owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
+      const owner = ctx.owner;
+      if (ctx.role !== 'egasi') {
+        if (!ctxHasRole(ctx, 'manager')) return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat egasi yoki menejer bajara oladi' });
+        if (!owner.managerCourierMoneyVisible) return sendJSON(res, 200, { ok: false, reason: 'Egasi hali bu bo\'limni menejerga ochmagan.' });
+      }
 
       if (!courierId) return sendJSON(res, 200, { ok: false, reason: 'Kuryer tanlanmagan.' });
 
