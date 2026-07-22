@@ -4383,6 +4383,52 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: egasi (admin emas, o'zi) o'z parolini o'zgartiradi ----
+  // Login o'zgarmaydi — faqat parol. Joriy parol tasdiqlanadi, so'ng
+  // /api/set-owner-credentials'dagi bilan bir xil uzunlik validatsiyasi
+  // qo'llaniladi. Xavfsizlik uchun barcha eski sessiyalar (sess_ tokenlar)
+  // bekor qilinadi — shu qatordagi so'rov o'zi ham sess_ token orqali kirgan
+  // bo'lsa, keyingi so'rovlar uchun qayta login qilishi kerak bo'ladi.
+  if (req.method === 'POST' && req.url === '/api/owner-change-password') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, currentPassword, newPassword } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q yoki muddati tugagan' });
+
+      if (!owner.login || !owner.passwordHash) {
+        return sendJSON(res, 200, { ok: false, reason: 'Sizga hali login/parol biriktirilmagan. Administrator bilan bog\'laning.' });
+      }
+      if (!verifyPassword(currentPassword, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
+      }
+
+      // set-owner-credentials'dagi bilan bir xil parol validatsiyasi
+      const newPasswordStr = String(newPassword || '');
+      if (newPasswordStr.length < 6) {
+        return sendJSON(res, 200, { ok: false, reason: 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.' });
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, owner.id);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      target.passwordHash = hashPassword(newPasswordStr);
+      // Parol o'zgarganda, oldingi barcha sessiyalar bekor qilinadi (xavfsizlik uchun)
+      target.sessionToken = null;
+      target.sessionExpiresAt = null;
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- API: oshxona egasi login+parol bilan kiradi (Telegram tashqarisidan, masalan oddiy brauzerdan) ----
   // Muvaffaqiyatli bo'lsa "sess_<token>" beriladi — frontend buni initData o'rniga ishlatadi.
   if (req.method === 'POST' && req.url === '/api/owner-login') {
