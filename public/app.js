@@ -2153,11 +2153,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!cashierState.menu.length) return `<div class="bosh">Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang.</div>`;
     return cashierState.menu.map(m => {
       const qty = cashierState.cart[m.id] || 0;
+      const thumbHtml = m.imageUrl
+        ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
+        : `<div class="menu-item-thumb-empty"></div>`;
       return `
         <div class="menu-item">
-          <div>
-            <div class="m-name">${escapeHtml(m.name)}</div>
-            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+          <div class="menu-item-info">
+            ${thumbHtml}
+            <div>
+              <div class="m-name">${escapeHtml(m.name)}</div>
+              <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+            </div>
           </div>
           <div class="qty-controls">
             <button data-qty-minus="${escapeHtml(m.id)}">-</button>
