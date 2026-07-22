@@ -758,7 +758,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
           <img id="menuImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
           <input type="hidden" id="menuImageInput">
-          <button class="btn" id="addMenuBtn">Qo'shish</button>
+
+          <label class="field-label" style="margin-top:10px;">Turi</label>
+          <select id="menuTypeInput">
+            <option value="recipe">Tayyorlanadigan (retsept keyinroq belgilanadi)</option>
+            <option value="direct">To'g'ridan skladdan (masalan: shishada suv)</option>
+          </select>
+          <div id="menuDirectStockWrap" class="hidden" style="margin-top:8px;">
+            <label class="field-label">Sklad mahsuloti</label>
+            <select id="menuDirectStockInput"><option value="">Yuklanmoqda...</option></select>
+          </div>
+
+          <button class="btn" id="addMenuBtn" style="margin-top:10px;">Qo'shish</button>
           <div class="xabar" id="menuMsg"></div>
         </div>
         <div class="kartochka">
@@ -911,21 +922,37 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    // 13-bosqich: "Turi" tanlovi — "To'g'ridan skladdan" tanlansa, markaziy
+    // skladdagi mahsulotlar ro'yxati (bir marta) yuklanib, select to'ldiriladi.
+    document.getElementById('menuTypeInput').addEventListener('change', (e) => {
+      const wrap = document.getElementById('menuDirectStockWrap');
+      const isDirect = e.target.value === 'direct';
+      wrap.classList.toggle('hidden', !isDirect);
+      if (isDirect) loadMenuDirectStockOptions();
+    });
+
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
       const name = document.getElementById('menuNameInput').value.trim();
       const price = document.getElementById('menuPriceInput').value.trim();
       const category = document.getElementById('menuCategoryInput').value.trim();
       const description = document.getElementById('menuDescriptionInput').value.trim();
       const imageUrl = document.getElementById('menuImageInput').value.trim();
+      const menuType = document.getElementById('menuTypeInput').value;
+      const directStockId = menuType === 'direct' ? document.getElementById('menuDirectStockInput').value : '';
       const msgEl = document.getElementById('menuMsg');
       if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
         msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
         msgEl.className = 'xabar err';
         return;
       }
+      if (menuType === 'direct' && !directStockId) {
+        msgEl.textContent = 'Sklad mahsulotini tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl });
+      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl, directStockId });
       if (res.ok) {
         msgEl.textContent = 'Qo\'shildi.';
         msgEl.className = 'xabar ok';
@@ -936,6 +963,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('menuImageInput').value = '';
         document.getElementById('menuImageFileInput').value = '';
         document.getElementById('menuImagePreview').style.display = 'none';
+        document.getElementById('menuTypeInput').value = 'recipe';
+        document.getElementById('menuDirectStockWrap').classList.add('hidden');
         loadMenuAndRender();
       } else {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -3961,6 +3990,25 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // ---- Egasi: taom uchun retsept (ingredientlar) tahrirlash oynasi ----
   let recipeEditorMenuId = null;
   let recipeEditorStock = [];
+
+  // 13-bosqich: "Menyuga taom qo'shish" formasidagi "To'g'ridan skladdan"
+  // selectini markaziy sklad ro'yxati bilan to'ldiradi. Faqat "direct" turi
+  // tanlanganda (birinchi marta) chaqiriladi — har safar qayta yuklamaslik
+  // uchun oddiy keshlash shart emas, chunki bu kamdan-kam bosiladigan tugma.
+  async function loadMenuDirectStockOptions() {
+    const select = document.getElementById('menuDirectStockInput');
+    if (!select) return;
+    select.innerHTML = '<option value="">Yuklanmoqda...</option>';
+    const res = await apiPost('/api/stock-list', { initData });
+    if (!select.isConnected) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    const stock = (res.ok && Array.isArray(res.stock)) ? res.stock : [];
+    if (!stock.length) {
+      select.innerHTML = '<option value="">Avval skladga mahsulot qo\'shing</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">— Tanlang —</option>' +
+      stock.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('');
+  }
 
   async function openRecipeEditor(menuItem) {
     recipeEditorMenuId = menuItem.id;
