@@ -554,6 +554,20 @@ function customerDisplayName(userId, tgUser) {
   return displayName(tgUser);
 }
 
+// 1-bosqich: xodimlar hisobotlarida (reyting, amallar jurnali) F.I.Sh
+// (to'liq ism-familiya) ko'rsatish uchun. Xodim /api/profile-register orqali
+// (mijozlar bilan bir xil umumiy ro'yxatdan o'tish oqimi — profiles.json)
+// ism-familiyasini kiritgan bo'lsa, o'sha F.I.Sh qaytariladi; aks holda
+// @username'ga, u ham bo'lmasa Telegram ID'siga qaytiladi.
+function staffDisplayName(staff) {
+  if (!staff) return null;
+  const profile = findProfile(staff.id);
+  if (profile && profile.firstName) {
+    return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
+  }
+  return staff.username ? '@' + staff.username : `ID: ${staff.id}`;
+}
+
 // Telegram xabarlari HTML parse_mode bilan yuborilgani uchun, foydalanuvchi kiritgan matnni xavfsiz qilib chiqaramiz
 function escapeHtmlServer(str) {
   return String(str).replace(/[&<>"']/g, c => ({
@@ -4572,7 +4586,7 @@ const server = http.createServer((req, res) => {
         const isOwnerEntry = String(e.userId) === String(owner.id);
         const staff = staffById.get(String(e.userId));
         return Object.assign({}, e, {
-          displayName: isOwnerEntry ? 'Egasi' : (staff && staff.username ? '@' + staff.username : `ID: ${e.userId}`),
+          displayName: isOwnerEntry ? 'Egasi' : (staff ? staffDisplayName(staff) : `ID: ${e.userId}`),
           roleLabel: isOwnerEntry ? 'Egasi' : (STAFF_ROLES[e.role] || e.role)
         });
       });
@@ -4606,6 +4620,7 @@ const server = http.createServer((req, res) => {
         return {
           id: staff.id,
           username: staff.username || null,
+          fullName: staffDisplayName(staff),
           role: staff.role,
           roles: normalizeStaffRoles(staff),
           roleLabel: rolesLabel(normalizeStaffRoles(staff)),
