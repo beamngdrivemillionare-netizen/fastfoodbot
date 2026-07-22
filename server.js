@@ -3809,10 +3809,12 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: KitchenOS bosh sahifa uchun kunlik xulosa (4-bosqich) —
-  // bugungi savdo / sof foyda / buyurtmalar / o'rtacha chek va shularni
-  // kechagi kunga solishtirish uchun kechagi qiymatlar (faqat egasi).
-  // Foizni hisoblash frontend tomonda (7-8-bosqich) qilinadi — bu yerda
-  // faqat xom raqamlar qaytariladi. ----
+  // bugungi savdo / sof foyda / buyurtmalar / kuryer yetkazishlari va
+  // shularni kechagi kunga solishtirish uchun kechagi qiymatlar (faqat
+  // egasi). Foizni hisoblash frontend tomonda (7-8-bosqich) qilinadi — bu
+  // yerda faqat xom raqamlar qaytariladi. (6-bosqich: "o'rtacha chek" maydoni
+  // olib tashlandi — Dashboard kartochkasi 3-bosqichda "Kuryer hisoboti"ga
+  // almashtirilgani uchun endi hech qayerda ishlatilmas edi.) ----
   if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3864,8 +3866,6 @@ const server = http.createServer((req, res) => {
         yesterdayNetProfit: yesterdayIncome - yesterdayExpense,
         todayOrderCount: today.orderCount,
         yesterdayOrderCount: yesterdayOrders.length,
-        todayAvgCheck: today.orderCount ? Math.round(today.income / today.orderCount) : 0,
-        yesterdayAvgCheck: yesterdayOrders.length ? Math.round(yesterdayIncome / yesterdayOrders.length) : 0,
         todayCourierDeliveries,
         yesterdayCourierDeliveries
       };
