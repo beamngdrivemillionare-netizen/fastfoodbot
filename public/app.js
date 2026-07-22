@@ -4701,7 +4701,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function renderCustomerEntry() {
     clearAppHeader();
     resetBrandColor();
-    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    ekran(customerWelcomeLoadingHtml(readCachedBrand()));
     const res = await apiPost('/api/customer-restaurants-list', { initData });
     if (res.networkError) {
       renderNetworkErrorScreen(res.reason, renderCustomerEntry);
@@ -4816,12 +4816,30 @@ const tg = window.Telegram && window.Telegram.WebApp;
     location.reload();
   }
 
+  const LAST_BRAND_STORAGE_KEY = 'kitchenOsLastBrand';
+  function readCachedBrand() {
+    try {
+      const raw = localStorage.getItem(LAST_BRAND_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function writeCachedBrand(name, logoUrl) {
+    if (!name && !logoUrl) return;
+    try { localStorage.setItem(LAST_BRAND_STORAGE_KEY, JSON.stringify({ name, logoUrl })); } catch (e) { /* joy yetmasa e'tiborsiz qoldiramiz */ }
+  }
+
   async function bootstrapApp() {
-    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    // Ilova oldin ochilgan bo'lsa, o'sha oshxonaning nomi/logotipi shu qurilmada
+    // eslab qolingan (localStorage) — shuning uchun /api/verify javob berishini
+    // kutmasdan ham darhol tanish "Xush kelibsiz" ekranini ko'rsatish mumkin.
+    ekran(customerWelcomeLoadingHtml(readCachedBrand()));
     const data = await apiPost('/api/verify', { initData });
     if (data.networkError) {
       renderNetworkErrorScreen(data.reason, bootstrapApp);
       return;
+    }
+    if (data.ok && data.ownerRestaurantName) {
+      writeCachedBrand(data.ownerRestaurantName, data.ownerLogoUrl);
     }
     if (!data.ok) {
       if (usingOwnerSession) {
