@@ -2037,7 +2037,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
 
-  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '', tab: 'yaratish' };
+  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '', tab: 'yaratish', lastOrderRequestId: null };
 
   function cashierCartTotal() {
     return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
@@ -2203,6 +2203,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function sendCashierOrder(restaurantName, onBack) {
     const msgEl = document.getElementById('orderMsg');
+    const sendBtn = document.getElementById('sendOrderBtn');
     const items = Object.entries(cashierState.cart)
       .filter(([, qty]) => qty > 0)
       .map(([id, qty]) => ({ id, qty }));
@@ -2218,6 +2219,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
+    // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
+    // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
+    if (sendBtn) sendBtn.disabled = true;
+    // Bitta chek-aut urinishi uchun bitta requestId — server shu orqali
+    // takroriy so'rovni aniqlab, bir xil natijani qaytaradi
+    if (!cashierState.lastOrderRequestId) {
+      cashierState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
     msgEl.textContent = 'Yuborilmoqda...';
     msgEl.className = 'xabar';
     const res = await apiPost('/api/create-order', {
@@ -2225,11 +2235,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       items,
       orderType: cashierState.orderType,
       tableNumber: cashierState.tableNumber,
-      paymentType: cashierState.paymentType
+      paymentType: cashierState.paymentType,
+      requestId: cashierState.lastOrderRequestId
     });
 
     if (res.ok) {
       cashierState.cart = {};
+      cashierState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
       msgEl.textContent = '';
       renderCashierScreen(restaurantName, onBack);
       const topMsg = document.createElement('div');
@@ -2237,6 +2249,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${res.total} so'm)`;
       document.querySelector('.panel').prepend(topMsg);
     } else {
+      if (sendBtn) sendBtn.disabled = false; // xato bo'lsa — qayta urinib ko'rish uchun tugma yoqiladi
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
       msgEl.className = 'xabar err';
     }
@@ -3795,7 +3808,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     tab: 'menyu',
     category: 'hammasi',
     promoId: '',
-    usePoints: false
+    usePoints: false,
+    lastOrderRequestId: null
   };
 
   function customerCartTotal() {
@@ -4183,6 +4197,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function sendCustomerOrder(overlay) {
     const msgEl = document.getElementById('cOrderMsg');
+    const sendBtn = overlay ? overlay.querySelector('#cSendOrderBtn') : document.getElementById('cSendOrderBtn');
     const items = Object.entries(customerState.cart)
       .filter(([, qty]) => qty > 0)
       .map(([id, qty]) => ({ id, qty }));
@@ -4203,6 +4218,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
+    // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
+    // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
+    if (sendBtn) sendBtn.disabled = true;
+    // Bitta chek-aut urinishi uchun bitta requestId — server shu orqali
+    // takroriy so'rovni aniqlab, bir xil natijani qaytaradi
+    if (!customerState.lastOrderRequestId) {
+      customerState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
     msgEl.textContent = 'Yuborilmoqda...';
     msgEl.className = 'xabar';
     const res = await apiPost('/api/customer-order', {
@@ -4215,7 +4239,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       promoId: customerState.promoId || null,
       usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
       location: customerState.orderType === 'dostavka' ? customerState.location : null,
-      addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : ''
+      addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : '',
+      requestId: customerState.lastOrderRequestId
     });
 
     if (res.ok) {
@@ -4224,6 +4249,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.bonusPoints = res.bonusBalance;
       customerState.location = null;
       customerState.addressNote = '';
+      customerState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
       if (overlay) overlay.remove();
       if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
       else renderCustomerMenuTab();
@@ -4242,6 +4268,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       document.querySelector('.panel').prepend(topMsg);
     } else {
+      if (sendBtn) sendBtn.disabled = false; // xato bo'lsa — qayta urinib ko'rish uchun tugma yoqiladi
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
       msgEl.className = 'xabar err';
     }
