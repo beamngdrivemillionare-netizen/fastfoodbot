@@ -3829,8 +3829,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return report.map((s, i) => `
       <div class="owner-item">
         <div>
-          <div class="owner-id">${i + 1}. ${s.username ? '@' + escapeHtml(s.username) : 'ID: ' + escapeHtml(s.id)}${s.isTop ? ' ' + icon('trophy', 'icon-xs icon-warning') : ''}</div>
-          <div class="owner-username">${escapeHtml(s.roleLabel)}</div>
+          <div class="owner-id">${i + 1}. ${escapeHtml(s.fullName || (s.username ? '@' + s.username : 'ID: ' + s.id))}${s.isTop ? ' ' + icon('trophy', 'icon-xs icon-warning') : ''}</div>
+          <div class="owner-username">${escapeHtml(s.roleLabel)}${(s.fullName && s.username) ? ` · @${escapeHtml(s.username)}` : ''}</div>
           <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
         </div>
         <div class="rating-badge">${s.score}<div class="rating-unit">ball</div></div>
