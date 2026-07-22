@@ -1144,7 +1144,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
-  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Dostavkachi' };
+  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer' };
+  function rolesLabelClient(roles) {
+    return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
+  }
   // Bir nechta vakolatli xodim uchun rol tanlash tugmalarida ishlatiladi (qarang: renderStaffRolePicker)
   const ROLE_ICONS = { kassir: 'wallet', oshpaz: 'chef-hat', sklad: 'box', dostavka: 'scooter' };
 
@@ -2469,7 +2472,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   let lastOrdersSnapshot = null;
 
   // 19-bosqich: kassir uchun "Buyurtmalar holati" ekranida chip-filtr —
-  // faqat kassir roli uchun (oshpaz/dostavkachi ekranlariga tegmaydi),
+  // faqat kassir roli uchun (oshpaz/kuryer ekranlariga tegmaydi),
   // mavjud .cat-row/.cat-opt chip komponentidan (24-bosqichdagi mijoz
   // menyu filtri bilan bir xil) qayta foydalanadi.
   let cashierStatusFilter = 'hammasi';
@@ -2518,7 +2521,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     } else if (order.status === 'tayyorlanmoqda') {
       actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
     } else if (role === 'egasi' && order.orderType === 'dostavka' && order.deliveredBy) {
-      // Dostavkachi xato bosib yuborgan bo'lishi mumkin — egasi shu belgini bekor qila oladi
+      // Kuryer xato bosib yuborgan bo'lishi mumkin — egasi shu belgini bekor qila oladi
       actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
     }
     const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
@@ -2632,7 +2635,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     startOrdersPolling('oshpaz');
   }
 
-  // ---- Dostavkachi: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
+  // ---- Kuryer: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
   function deliveryCardHtml(order) {
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
     return `
@@ -2696,7 +2699,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ordersPollTimer = setInterval(refreshDeliveryBoard, 4000);
   }
 
-  // onBack ixtiyoriy: dostavkachi xodim sifatida kirilganda berilmaydi;
+  // onBack ixtiyoriy: kuryer xodim sifatida kirilganda berilmaydi;
   // egasi menyu-griddan ("Yetkazib berish") kirganda beriladi (12-bosqich).
   function renderDeliveryScreen(restaurantName, onBack) {
     // 13-bosqich: bitta vazifali rol — restoran nomi header'da (11-bosqich)
@@ -3103,7 +3106,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="kartochka" style="margin-top:10px;">
         <h2>Kassa va dostavka (alohida)</h2>
         <div class="profile-row"><b>Kassadagi pul</b> (stolga/olib ketish): ${cfFormatSum(bucket.kassaIncome)}</div>
-        <div class="profile-row"><b>Dostavkachi qo'lidagi pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
+        <div class="profile-row"><b>Kuryer qo'lidagi pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
       </div>
       <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
       ${cfCategoryBreakdownHtml(bucket.byCategory)}
@@ -3144,7 +3147,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         <div class="salom" style="font-size:20px;">Moliya</div>
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">${icon('scooter', 'icon-xs')} Dostavkachilar hisoboti</button>
+        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">${icon('scooter', 'icon-xs')} Kuryerlar hisoboti</button>
         <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
         <div class="tab-row">
           <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
@@ -3530,13 +3533,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
             <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
             <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Kuryer</label>
           </div>
           <select id="staffBranchInput">
             <option value="">— Markaziy (filialsiz) —</option>
           </select>
           <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
           <div class="xabar" id="staffMsg"></div>
+          <div class="staff-hint" style="margin-top:14px; border-top:1px solid var(--border-color); padding-top:12px;">
+            Yoki xodimning ID/username'ini bilmasangiz — yuqorida lavozim(lar)ni belgilab, bir martalik havola yarating. Xodim shu havolani bosib botni ochsa, avtomatik shu lavozim(lar) bilan qo'shiladi.
+          </div>
+          <button class="btn ikkinchi" id="createStaffInviteBtn" style="margin-top:8px;">${icon('link', 'icon-xs')} Bir martalik havola yaratish</button>
+          <div id="staffInviteLinkWrap"></div>
+          <div class="xabar" id="staffInviteMsg"></div>
         </div>
         <div class="kartochka">
           <h2>Xodimlar ro'yxati</h2>
@@ -3595,6 +3604,44 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
+    });
+
+    document.getElementById('createStaffInviteBtn').addEventListener('click', async () => {
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
+      const branchId = document.getElementById('staffBranchInput').value;
+      const msgEl = document.getElementById('staffInviteMsg');
+      const wrap = document.getElementById('staffInviteLinkWrap');
+      if (!roles.length) {
+        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Yaratilmoqda...';
+      msgEl.className = 'xabar';
+      wrap.innerHTML = '';
+      const res = await apiPost('/api/create-staff-invite', { initData, roles, branchId });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span>${escapeHtml(res.link)}</span>
+          <button id="copyStaffInviteLinkBtn">Nusxalash</button>
+        </div>
+        <div class="customer-link-hint">Havola bir marta ishlatiladi va 24 soatdan keyin muddati tugaydi (${escapeHtml(rolesLabelClient(res.roles))}).</div>
+      `;
+      document.getElementById('copyStaffInviteLinkBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          msgEl.textContent = 'Havola nusxalandi.';
+          msgEl.className = 'xabar ok';
+        }).catch(() => {
+          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
+          msgEl.className = 'xabar err';
+        });
+      });
     });
 
     document.getElementById('staffList').addEventListener('click', async (e) => {
@@ -3656,11 +3703,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
   }
 
-  // ---- Egasi: Dostavkachilar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
+  // ---- Egasi: Kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
   let courierReportState = { period: 'today' };
 
   function courierReportRowsHtml(report) {
-    if (!report.length) return `<div class="bosh">Dostavkachilar hali qo'shilmagan.</div>`;
+    if (!report.length) return `<div class="bosh">Kuryerlar hali qo'shilmagan.</div>`;
     return report.map(c => `
       <div class="owner-item">
         <div>
@@ -3677,7 +3724,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function renderCourierReportScreen(profile, onBack) {
     ekran(`
       <div class="panel">
-        <div class="salom" style="font-size:20px;">Dostavkachilar hisoboti</div>
+        <div class="salom" style="font-size:20px;">Kuryerlar hisoboti</div>
         <button class="btn ikkinchi" id="crBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <div class="tab-row">
           <div class="tab-opt ${courierReportState.period === 'today' ? 'selected' : ''}" data-cr-period="today">Bugun</div>
@@ -3692,7 +3739,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="xabar" id="crCommissionMsg"></div>
         </div>
         <div class="kartochka">
-          <h2>Dostavkachilar</h2>
+          <h2>Kuryerlar</h2>
           <div id="crList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
       </div>
@@ -4262,7 +4309,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
         </button>
         <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
-        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - dostavkachi oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
       </div>
       <div class="type-row" id="cPaymentTypeRow">
         ${Object.entries(PAYMENT_TYPE_LABELS).map(([k, label]) => `
