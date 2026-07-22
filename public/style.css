@@ -1231,6 +1231,8 @@
   .order-action-btn:hover { opacity: 0.88; }
   .order-action-btn.start { background: var(--warning); }
   .order-action-btn.ready { background: var(--success); }
+  .order-action-btn.ikkinchi { background: transparent; border: 1px solid var(--border-color-strong); color: var(--text-primary); }
+  .order-action-btn.ikkinchi:hover { background: var(--surface-1); }
 
   /* ---- Oshxona (oshpaz) va kuryer (dostavkachi) taxtalari uchun
      kattalashtirilgan, "bitta qarashda" o'qiladigan ko'rinish (20-bosqich):
