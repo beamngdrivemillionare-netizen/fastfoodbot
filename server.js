@@ -2348,6 +2348,46 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: egasi xato bosilgan "Yetkazildi" belgisini bekor qiladi ----
+  // (masalan, dostavkachi boshqa buyurtmani bosib yuborgan yoki hali yetkazmasdan
+  // tugmani bosib yuborgan holatlarni tuzatish uchun). Faqat "egasi" roliga ruxsat
+  // berilgan — dostavkachining o'ziga bu huquq berilmagan, aks holda u o'z hisobotini
+  // (yetkazgan buyurtmalar sonini) o'zi o'zgartira olardi.
+  if (req.method === 'POST' && req.url === '/api/undo-deliver-order') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId } = payload;
+      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasRole(ctx, 'egasi')) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi bu amalni bajara oladi' });
+      }
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (!order.deliveredBy) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma "Yetkazildi" deb belgilanmagan.' });
+      }
+
+      const previousDeliveredBy = order.deliveredBy;
+      order.deliveredBy = null;
+      order.deliveredAt = null;
+      logStaffAction(ctx.owner, {
+        userId, role: ctx.role, action: 'yetkazish_bekor',
+        orderId: order.id,
+        note: `"Yetkazildi" belgisi bekor qilindi (avval: ${previousDeliveredBy})`
+      });
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
   // ---- API: sklad ro'yxatini olish (egasi, sklad mas'uli) ----
   if (req.method === 'POST' && req.url === '/api/stock-list') {
     readBody(req, (err, payload) => {
