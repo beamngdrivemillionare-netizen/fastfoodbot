@@ -1113,8 +1113,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function wireKoHomeHeader(profile) {
     const menuBtn = document.getElementById('koHeaderMenuBtn');
     const bellBtn = document.getElementById('koHeaderBellBtn');
-    // TODO (14-bosqich): hamburger yon-menyusini ochish
-    if (menuBtn) menuBtn.addEventListener('click', () => console.log('KitchenOS: menyu tugmasi (14-bosqichda ulanadi)'));
+    if (menuBtn) menuBtn.addEventListener('click', () => openKoSidebar(profile));
     if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderOwnerHomeScreen(profile)));
   }
 
@@ -1453,10 +1452,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return `<div class="ko-menu-grid">${KO_MENU_ITEMS.map(koMenuItemHtml).join('')}</div>`;
   }
 
-  // 12-bosqich: har bir grid tugmasini mavjud ekranga ulaydi.
-  // Aniq mos ekrani bor to'rttasi rejadagidek ulanadi: Oshxona, Ombor,
-  // Xodimlar (nazorat ekrani), Moliya, Yetkazib berish, AI Tavsiyalar.
-  // Qolgan to'rttasi uchun qaror:
+  // 12-bosqich (14-bosqichda kengaytirildi): har bir grid tugmasi va hamburger
+  // yon-menyusi bandi bir xil manzillarga borishi kerak, shu sababli
+  // navigatsiya funksiyalari shu yerda BIR MARTA belgilanadi va ikkalasi
+  // ham shu obyektni qayta ishlatadi.
+  // Aniq mos ekrani bor bandlar rejadagidek ulanadi: Oshxona, Ombor,
+  // Xodimlar (nazorat ekrani), Moliya, Yetkazib berish, AI Tavsiyalar,
+  // Bildirishnomalar, Profil, Yangi buyurtma (kassir ekrani, "← Orqaga" bilan).
+  // Qolganlar uchun qaror:
   //  - Savdo: alohida "savdo" ekrani yo'q — eng yaqin mos ekran Moliya bilan
   //    bir xil (renderCashflowScreen), chunki savdo dinamikasi grafigi va
   //    davr tanlash (Bugun/Hafta/Oy) allaqachon o'sha yerda.
@@ -1467,12 +1470,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
   //    scroll qilinadi (yangi ekran ochilmaydi).
   //  - Sozlamalar: do'kon profilini tahrirlash formasi (renderProfileForm)
   //    — mavjud "Profilni tahrirlash" tugmasi bilan bir xil maqsad.
-  function wireKoMenuGrid(profile) {
-    const grid = document.querySelector('.ko-menu-grid');
-    if (!grid) return;
+  function koNavHandlers(profile) {
     const goBack = () => renderOwnerHomeScreen(profile);
-    const handlers = {
+    return {
       savdo: () => renderCashflowScreen(profile, goBack),
+      yangiBuyurtma: () => {
+        cashierState.tab = 'yaratish';
+        renderCashierScreen(profile.name, goBack);
+      },
       oshxona: () => renderKitchenScreen(profile.name, goBack),
       ombor: () => renderStockScreen(profile.name, 'egasi', goBack),
       xodimlar: () => renderStaffControlScreen(profile, goBack),
@@ -1484,11 +1489,99 @@ const tg = window.Telegram && window.Telegram.WebApp;
       },
       hisobotlar: () => renderZReportScreen(profile, goBack),
       aiTavsiyalar: () => renderAiScreen(profile, goBack),
+      bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
+      profil: () => renderOwnerProfileScreen(profile, goBack),
       sozlamalar: () => renderProfileForm(profile)
     };
+  }
+
+  function wireKoMenuGrid(profile) {
+    const grid = document.querySelector('.ko-menu-grid');
+    if (!grid) return;
+    const handlers = koNavHandlers(profile);
     grid.querySelectorAll('[data-menu-key]').forEach(btn => {
       const fn = handlers[btn.getAttribute('data-menu-key')];
       if (fn) btn.addEventListener('click', fn);
+    });
+  }
+
+  // =========================================================================
+  // 14-bosqich: hamburger yon-menyu (sidebar). koMenuGridHtml() bilan bir xil
+  // manzillarga o'tadi (koNavHandlers orqali), ustiga "Bosh sahifa" va
+  // "Yangi buyurtma" bandlari qo'shilgan — chunki sidebar istalgan ekrandan
+  // ochilishi mumkin bo'lgan to'liq navigatsiya deb mo'ljallangan, faqat
+  // Bosh sahifadagi katakchalar ro'yxati emas.
+  //
+  // #app'ning O'ZIDAN TASHQARIDA (document.body farzandi sifatida)
+  // qo'shiladi — shu sababli ekran(html) #app ichini qayta chizsa ham
+  // (masalan foydalanuvchi biror bandni bosib boshqa ekranga o'tsa) sidebar
+  // avval closeKoSidebar() bilan olib tashlanadi, keyin navigatsiya sodir
+  // bo'ladi — osilib qolgan overlay bo'lmaydi.
+  // =========================================================================
+  const KO_SIDEBAR_ITEMS = [
+    { key: 'bosh', icon: 'home', label: 'Bosh sahifa' },
+    { key: 'yangiBuyurtma', icon: 'plus', label: 'Yangi buyurtma' },
+    { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
+    { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
+    { key: 'ombor', icon: 'box', label: 'Ombor' },
+    { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
+    { key: 'moliya', icon: 'wallet', label: 'Moliya' },
+    { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
+    { key: 'filiallar', icon: 'store', label: 'Filiallar' },
+    { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
+    { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
+    { key: 'profil', icon: 'user', label: 'Profil' },
+    { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
+  ];
+
+  function koSidebarItemHtml(item) {
+    return `
+      <button type="button" class="ko-sidebar-item" data-sidebar-key="${item.key}">
+        <span class="ko-sidebar-item-icon">${icon(item.icon)}</span>
+        <span>${escapeHtml(item.label)}</span>
+      </button>
+    `;
+  }
+
+  function koSidebarHtml(profile) {
+    return `
+      <div class="ko-sidebar-overlay" id="koSidebarOverlay">
+        <div class="ko-sidebar" id="koSidebar" role="dialog" aria-label="Menyu">
+          <div class="ko-sidebar-header">
+            <div class="ko-sidebar-header-logo">${icon('chef-hat', 'icon-md')}</div>
+            <div class="ko-sidebar-header-titles">
+              <div class="ko-sidebar-header-title">${escapeHtml(profile.name || '')}</div>
+              <div class="ko-sidebar-header-subtitle">Oshxona Menejeri</div>
+            </div>
+            <button type="button" class="ko-sidebar-close-btn" id="koSidebarCloseBtn" aria-label="Yopish">${icon('x')}</button>
+          </div>
+          <nav class="ko-sidebar-nav">${KO_SIDEBAR_ITEMS.map(koSidebarItemHtml).join('')}</nav>
+        </div>
+      </div>
+    `;
+  }
+
+  function closeKoSidebar() {
+    const overlay = document.getElementById('koSidebarOverlay');
+    if (overlay) overlay.remove();
+  }
+
+  function openKoSidebar(profile) {
+    if (document.getElementById('koSidebarOverlay')) return; // allaqachon ochiq
+    document.body.insertAdjacentHTML('beforeend', koSidebarHtml(profile));
+    const overlay = document.getElementById('koSidebarOverlay');
+    const handlers = koNavHandlers(profile);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeKoSidebar(); });
+    document.getElementById('koSidebarCloseBtn').addEventListener('click', closeKoSidebar);
+    overlay.querySelectorAll('[data-sidebar-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-sidebar-key');
+        closeKoSidebar();
+        if (key === 'bosh') { renderOwnerHomeScreen(profile); return; }
+        const fn = handlers[key];
+        if (fn) fn();
+      });
     });
   }
 
