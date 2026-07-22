@@ -2436,7 +2436,7 @@ const server = http.createServer((req, res) => {
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const qty = parseInt(it.qty, 10);
         if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
-        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty });
+        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
       }
       const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -2463,6 +2463,24 @@ const server = http.createServer((req, res) => {
 
       for (const it of orderItems) {
         const menuItem = menu.find(m => m.id === it.id);
+        // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
+        // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi,
+        // retsept ingredientlari tekshirilmaydi (chunki bunday taomda recipe yo'q).
+        if (menuItem && menuItem.directStockId) {
+          const stockItem = findStockItem(owner, menuItem.directStockId);
+          if (stockItem) {
+            const consumeQty = it.qty;
+            stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+            addStockMovement(owner, {
+              stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+              qty: consumeQty, unit: stockItem.unit,
+              note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
+              userId
+            });
+            checkLowStockAlert(owner, stockItem, userId);
+          }
+          continue;
+        }
         const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
         for (const ing of recipe) {
           const stockItem = findStockItem(owner, ing.stockId);
@@ -2631,6 +2649,14 @@ const server = http.createServer((req, res) => {
     const needed = new Map(); // stockId -> jami kerak bo'lgan miqdor
     for (const it of orderItems) {
       const menuItem = menu.find(m => m.id === it.id);
+      // 16-bosqich: retsept o'rniga directStockId bilan bog'langan taom
+      // bo'lsa - bitta sklad birligi taom donasiga to'g'ri keladi (1:1),
+      // shuning uchun kerakli miqdor to'g'ridan it.qty ga teng.
+      if (menuItem && menuItem.directStockId) {
+        const consumeQty = it.qty;
+        needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
+        continue;
+      }
       const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
       for (const ing of recipe) {
         const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
@@ -2660,6 +2686,17 @@ const server = http.createServer((req, res) => {
     tayyor: []
   };
 
+  // 15-bosqich: buyurtmadagi BARCHA taomlar skladdan to'g'ridan sotiladigan
+  // bo'lsa (retseptsiz, directStockId orqali) - oshpaz tayyorlashi shart emas,
+  // shuning uchun bunday buyurtmalar uchun "tayyorlanmoqda" bosqichi kerak emas.
+  // Buyurtmaning har bir qatorida directStockId saqlanadi (qarang: /api/create-order
+  // va mijoz buyurtmasi endpointi) - shu yerda faqat o'sha belgiga qaraladi.
+  function orderNeedsKitchen(order) {
+    const items = (order && order.items) || [];
+    if (!items.length) return true;
+    return items.some(it => !it.directStockId);
+  }
+
   // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi.
   // `order` — joriy buyurtma obyekti (uning hozirgi status'idan qaysi keyingi
   // status'larga o'tish mumkinligini aniqlash uchun kerak).
@@ -2671,7 +2708,12 @@ const server = http.createServer((req, res) => {
 
     // boshqa rollar uchun faqat ketma-ket bosqichlarga o'tishga ruxsat bor
     const currentStatus = order ? order.status : 'yangi';
-    const allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
+    let allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
+    // 15-bosqich: retseptsiz/directStockId buyurtmalarda "yangi" dan to'g'ridan
+    // "tayyor"ga o'tish ham ruxsat etiladi ("tayyorlanmoqda" bosqichi shart emas).
+    if (currentStatus === 'yangi' && !orderNeedsKitchen(order)) {
+      allowedNext = allowedNext.concat('tayyor');
+    }
     if (!allowedNext.includes(newStatus)) return false;
 
     if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
@@ -2720,7 +2762,7 @@ const server = http.createServer((req, res) => {
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const qty = parseInt(it.qty, 10);
         if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
-        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty });
+        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
       }
       const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -2734,6 +2776,23 @@ const server = http.createServer((req, res) => {
 
       for (const it of orderItems) {
         const menuItem = menu.find(m => m.id === it.id);
+        // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
+        // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi.
+        if (menuItem && menuItem.directStockId) {
+          const stockItem = findStockItem(ctx.owner, menuItem.directStockId);
+          if (stockItem) {
+            const consumeQty = it.qty;
+            stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+            addStockMovement(ctx.owner, {
+              stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+              qty: consumeQty, unit: stockItem.unit,
+              note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
+              userId
+            });
+            checkLowStockAlert(ctx.owner, stockItem, userId);
+          }
+          continue;
+        }
         const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
         for (const ing of recipe) {
           const stockItem = findStockItem(ctx.owner, ing.stockId);
