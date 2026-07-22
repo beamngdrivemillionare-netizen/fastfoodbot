@@ -483,6 +483,57 @@
     animation: skeleton-shine 1.4s ease infinite;
   }
 
+  /* =========================================================================
+     11-bosqich: KitchenOS bosh sahifa asosiy menyu-grid — 2 qator x 5 ustun,
+     10 ta icon+label tugma. Tugmalarni mavjud ekranlarga ulash (click
+     handler'lar) 12-bosqichda qo'shiladi — bu yerda faqat ko'rinish.
+     ========================================================================= */
+  .ko-menu-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--sp-3) var(--sp-2);
+    margin-top: var(--sp-5);
+  }
+  .ko-menu-item {
+    background: var(--surface-0);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    padding: var(--sp-3) var(--sp-1);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    min-width: 0;
+  }
+  .ko-menu-item-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-pill);
+    background: var(--kpi-icon-bg);
+    color: var(--brand-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ko-menu-item-icon .icon { width: 20px; height: 20px; }
+  .ko-menu-item-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-align: center;
+    line-height: 1.2;
+    max-width: 100%;
+    overflow-wrap: break-word;
+  }
+  @media (max-width: 380px) {
+    .ko-menu-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+
   /* ---- Admin panel ---- */
   .panel {
     width: 100%;
