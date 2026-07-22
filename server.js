@@ -657,44 +657,8 @@ function clearAwaitingCustom() {
   try { fs.unlinkSync(AWAITING_FILE); } catch (e) {}
 }
 
-// ====== Ro'yxatdan o'tish suhbati holati — kim hozir "ism" / "familiya" /
-// "raqam" bosqichida turibdi (bir nechta foydalanuvchi bir vaqtda ro'yxatdan
-// o'tishi mumkin bo'lgani uchun userId bo'yicha lug'at sifatida saqlanadi) ======
-const REG_STATE_FILE = path.join(DATA_DIR, 'reg-state.json');
-
-function loadRegStates() {
-  try {
-    const raw = fs.readFileSync(REG_STATE_FILE, 'utf8');
-    const obj = JSON.parse(raw);
-    return (obj && typeof obj === 'object') ? obj : {};
-  } catch (e) {
-    return {};
-  }
-}
-
-function saveRegStates(obj) {
-  fs.writeFileSync(REG_STATE_FILE, JSON.stringify(obj, null, 2), 'utf8');
-}
-
-function getRegState(userId) {
-  const states = loadRegStates();
-  return states[String(userId)] || null;
-}
-
-function setRegState(userId, state) {
-  const states = loadRegStates();
-  states[String(userId)] = state;
-  saveRegStates(states);
-}
-
-function clearRegState(userId) {
-  const states = loadRegStates();
-  delete states[String(userId)];
-  saveRegStates(states);
-}
-
-// Juda oddiy telefon raqam tekshiruvi (foydalanuvchi tugma o'rniga qo'lda yozsa) —
-// bo'shliq/tire/qavslarni olib tashlab, +xxxxxxxxxxx yoki xxxxxxxxxxx ko'rinishini tekshiradi
+// Juda oddiy telefon raqam tekshiruvi — bo'shliq/tire/qavslarni olib tashlab,
+// +xxxxxxxxxxx yoki xxxxxxxxxxx ko'rinishini tekshiradi (qarang: /api/profile-register)
 function isPlausiblePhone(str) {
   const cleaned = String(str).replace(/[\s\-()]/g, '');
   return /^\+?\d{7,15}$/.test(cleaned);
@@ -795,74 +759,6 @@ async function handleStartCommand(chatId, from, text) {
   await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
 }
 
-// ====== Ro'yxatdan o'tish (ism, familiya, telefon raqam) ======
-// Har bir shaxsiy chatdagi foydalanuvchi (mijoz, xodim, egasi — istisnosiz)
-// botdan birinchi marta foydalanishdan oldin o'zini ism, familiya va telefon
-// raqami bilan tanishtirishi kerak. Mijoz buyurtma berishdan oldin bu bosqichni
-// o'tmagan bo'lsa, /api/customer-order uni rad etadi (qarang: isRegisteredUser).
-async function completeRegistration(chatId, from, state, phone) {
-  const profiles = loadProfiles();
-  const idx = profiles.findIndex(p => String(p.id) === String(from.id));
-  const profile = {
-    id: String(from.id),
-    username: from.username || null,
-    firstName: state.firstName,
-    lastName: state.lastName,
-    phone: String(phone).trim(),
-    registeredAt: new Date().toISOString()
-  };
-  if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
-  saveProfiles(profiles);
-  clearRegState(from.id);
-
-  await sendMessage(chatId,
-    `✅ Rahmat, ${escapeHtmlServer(state.firstName)} ${escapeHtmlServer(state.lastName)}! Ro'yxatdan muvaffaqiyatli o'tdingiz.`,
-    { remove_keyboard: true });
-
-  const pendingText = (state.pendingText && state.pendingText.startsWith('/start')) ? state.pendingText : '/start';
-  await handleStartCommand(chatId, from, pendingText);
-}
-
-// Ro'yxatdan o'tish bosqichlaridagi (ism/familiya/raqam) matnli xabarlarni qayta ishlaydi.
-// true qaytarsa — xabar shu yerda "yutib olindi", chaqiruvchi joyda boshqa hech narsa qilinmasin.
-async function handleRegistrationStep(chatId, from, text, state) {
-  if (state.step === 'ism') {
-    const ism = text.trim();
-    if (!ism || ism.startsWith('/') || ism.length > 60) {
-      await sendMessage(chatId, 'Iltimos, ismingizni to\'g\'ri kiriting (masalan: Aziz).');
-      return true;
-    }
-    setRegState(from.id, { step: 'familiya', pendingText: state.pendingText, firstName: ism });
-    await sendMessage(chatId, 'Familiyangizni kiriting:');
-    return true;
-  }
-
-  if (state.step === 'familiya') {
-    const familiya = text.trim();
-    if (!familiya || familiya.startsWith('/') || familiya.length > 60) {
-      await sendMessage(chatId, 'Iltimos, familiyangizni to\'g\'ri kiriting.');
-      return true;
-    }
-    setRegState(from.id, { step: 'raqam', pendingText: state.pendingText, firstName: state.firstName, lastName: familiya });
-    await sendMessage(chatId,
-      'Endi telefon raqamingizni yuboring — pastdagi tugma orqali yuborishingiz mumkin, yoki qo\'lda yozing (masalan: +998901234567):',
-      { keyboard: [[{ text: '📱 Raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true });
-    return true;
-  }
-
-  if (state.step === 'raqam') {
-    const raqam = text.trim();
-    if (!isPlausiblePhone(raqam)) {
-      await sendMessage(chatId, 'Telefon raqam noto\'g\'ri formatda. Pastdagi tugma orqali yuboring yoki masalan +998901234567 ko\'rinishida yozing.');
-      return true;
-    }
-    await completeRegistration(chatId, from, state, raqam);
-    return true;
-  }
-
-  return false;
-}
-
 // ====== Telegram yangilanishlarini (webhook) qayta ishlash ======
 async function handleTelegramUpdate(update) {
   if (update.message && update.message.text) {
@@ -870,16 +766,6 @@ async function handleTelegramUpdate(update) {
     const text = msg.text.trim();
     const from = msg.from;
     const chatId = msg.chat.id;
-
-    // ---- Ro'yxatdan o'tish suhbati davom etayotgan bo'lsa (ism/familiya/raqam
-    // bosqichlarida), keyingi xabarni shu oqim qabul qiladi ----
-    if (msg.chat.type === 'private') {
-      const regState = getRegState(from.id);
-      if (regState) {
-        const handled = await handleRegistrationStep(chatId, from, text, regState);
-        if (handled) return;
-      }
-    }
 
     // ---- Guruhda /biriktir: oshxona egasi shu guruhni dostavka admin guruhi sifatida bog'laydi ----
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
@@ -950,36 +836,8 @@ async function handleTelegramUpdate(update) {
     }
 
     if (text.startsWith('/start')) {
-      // Admin'dan boshqa har bir foydalanuvchi (mijoz, xodim, egasi) botdan birinchi
-      // marta foydalanishdan oldin ism, familiya va telefon raqami bilan tanishtirishi
-      // shart. Ro'yxatdan o'tmagan bo'lsa, /start'ning asl matni saqlab qo'yiladi va
-      // ro'yxatdan o'tish tugagach xuddi shu havola/taklif bilan davom ettiriladi.
-      if (!isAdminId(from.id) && !isRegisteredUser(from.id)) {
-        setRegState(from.id, { step: 'ism', pendingText: text });
-        await sendMessage(chatId,
-          '👋 Xush kelibsiz! Botdan foydalanishdan oldin avval o\'zingizni tanishtiring.\n\nIsmingizni kiriting:');
-        return;
-      }
       await handleStartCommand(chatId, from, text);
       return;
-    }
-    return;
-  }
-
-  // ---- Mijoz/xodim ro'yxatdan o'tish bosqichida "📱 Raqamni yuborish" tugmasini
-  // bosib, o'z kontaktini (telefon raqamini) yuborganda ----
-  if (update.message && update.message.contact && update.message.chat && update.message.chat.type === 'private') {
-    const msg = update.message;
-    const from = msg.from;
-    const chatId = msg.chat.id;
-    const state = getRegState(from.id);
-    if (state && state.step === 'raqam') {
-      // Faqat o'zining raqamini yuborsa qabul qilamiz (boshqa birovning kontaktini emas)
-      if (msg.contact.user_id && String(msg.contact.user_id) !== String(from.id)) {
-        await sendMessage(chatId, 'Iltimos, faqat o\'zingizning telefon raqamingizni yuboring.');
-        return;
-      }
-      await completeRegistration(chatId, from, state, msg.contact.phone_number);
     }
     return;
   }
@@ -1378,6 +1236,49 @@ const server = http.createServer((req, res) => {
         personRegistered: admin || isRegisteredUser(userId),
         reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
       });
+    });
+    return;
+  }
+
+  // ---- API: Mini App ichidan ism, familiya, telefon raqam bilan ro'yxatdan o'tish ----
+  // (mijoz, xodim, egasi — barchasi uchun umumiy, botning shaxsiy chatiga
+  // chiqishga hojat qoldirmaydi; qarang: findProfile/isRegisteredUser)
+  if (req.method === 'POST' && req.url === '/api/profile-register') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, firstName, lastName, phone } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const ism = String(firstName || '').trim();
+      const familiya = String(lastName || '').trim();
+      const raqam = String(phone || '').trim();
+
+      if (!ism || ism.length > 60) {
+        return sendJSON(res, 200, { ok: false, reason: 'Ismingizni to\'g\'ri kiriting.' });
+      }
+      if (!familiya || familiya.length > 60) {
+        return sendJSON(res, 200, { ok: false, reason: 'Familiyangizni to\'g\'ri kiriting.' });
+      }
+      if (!isPlausiblePhone(raqam)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqam noto\'g\'ri formatda (masalan: +998901234567).' });
+      }
+
+      const userId = String(check.user && check.user.id);
+      const profiles = loadProfiles();
+      const idx = profiles.findIndex(p => String(p.id) === userId);
+      const profile = {
+        id: userId,
+        username: (check.user && check.user.username) || null,
+        firstName: ism,
+        lastName: familiya,
+        phone: raqam,
+        registeredAt: new Date().toISOString()
+      };
+      if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
+      saveProfiles(profiles);
+
+      return sendJSON(res, 200, { ok: true });
     });
     return;
   }
@@ -2115,7 +2016,7 @@ const server = http.createServer((req, res) => {
       if (!isRegisteredUser(userId)) {
         return sendJSON(res, 200, {
           ok: false,
-          reason: `Buyurtma berishdan oldin botda ro'yxatdan o'ting: botning shaxsiy chatini oching va /start yozib, ism-familiya va telefon raqamingizni yuboring (@${BOT_USERNAME}).`
+          reason: 'Buyurtma berishdan oldin ism, familiya va telefon raqamingizni kiritib ro\'yxatdan o\'ting.'
         });
       }
 
