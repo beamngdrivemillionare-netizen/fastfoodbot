@@ -1164,6 +1164,10 @@ const server = http.createServer((req, res) => {
         ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : null,
         ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : null,
         hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
+        // Egasi uchun admin login/parol o'rnatib qo'ygan bo'lsa — Telegram orqali
+        // kirganda ham (initData avtomatik bo'lsa-da) bir martalik parol so'raladi
+        // (qarang: frontend'dagi owner password-gate va /api/owner-confirm-password).
+        hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
         reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
       });
     });
@@ -3816,6 +3820,34 @@ const server = http.createServer((req, res) => {
       owner.sessionExpiresAt = null;
       saveOwners(owners);
 
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: Telegram orqali kirgan egasi uchun bir martalik parol tasdig'i ----
+  // (Telegram initData o'zi kimligini tasdiqlaydi, lekin admin login/parol
+  // o'rnatib qo'ygan bo'lsa, qurilmada eslab qolinmaguncha parol so'raladi —
+  // qarang: frontend'dagi renderOwnerTelegramPasswordGate.)
+  if (req.method === 'POST' && req.url === '/api/owner-confirm-password') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, password } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q yoki muddati tugagan' });
+
+      if (!owner.login || !owner.passwordHash) {
+        // Admin bu egasiga login/parol o'rnatmagan — tekshirishning hojati yo'q
+        return sendJSON(res, 200, { ok: true, skipped: true });
+      }
+      if (!verifyPassword(password, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Parol noto\'g\'ri.' });
+      }
       return sendJSON(res, 200, { ok: true });
     });
     return;
