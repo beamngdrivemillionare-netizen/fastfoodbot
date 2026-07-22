@@ -343,55 +343,109 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  function renderAdminPanel(owners) {
-    clearAppHeader();
-    const ownersHtml = owners.length
-      ? owners.map(o => `
-          <div class="owner-item">
-            <div>
-              <div class="owner-id">${escapeHtml(o.id)}</div>
-              ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
-              ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username">Profil to'ldirilmagan</div>`}
-              <div class="owner-expiry">${escapeHtml(expiryText(o))}</div>
-              ${subscriptionProgressHtml(o)}
-              <div class="owner-price" data-edit-price="${escapeHtml(o.id)}" style="cursor:pointer; text-decoration:underline dotted;">
-                Obuna narxi: ${o.price ? escapeHtml(String(o.price)) + ' so\'m/oy' : 'kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
-              </div>
-            </div>
-            <div class="owner-actions">
-              <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}" style="cursor:pointer;">
-                ${o.paid ? `To'langan ${icon('check', 'icon-xs icon-success')}` : `To'lanmagan ${icon('x', 'icon-xs icon-danger')}`}
-              </span>
-              <button data-remove-id="${escapeHtml(o.id)}">O'chirish</button>
-            </div>
+  function ownerSearchKey(o) {
+    return [(o.profile && o.profile.name) || '', o.username || '', o.id]
+      .join(' ')
+      .toLowerCase();
+  }
+
+  function ownerItemHtml(o) {
+    return `
+      <div class="owner-item" data-search-key="${escapeHtml(ownerSearchKey(o))}">
+        <div class="owner-avatar">${escapeHtml((((o.profile && o.profile.name) || o.username || String(o.id) || '#').trim().charAt(0) || '#').toUpperCase())}</div>
+        <div class="owner-item-main">
+          <div class="owner-item-top">
+            <span class="owner-id">${escapeHtml(o.id)}</span>
+            <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}">
+              ${o.paid ? icon('check', 'icon-xs') + " To'langan" : icon('x', 'icon-xs') + ' Qarzdor'}
+            </span>
           </div>
-        `).join('')
-      : `<div class="bosh">Hozircha do'kon egalari yo'q.</div>`;
+          ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
+          ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
+          <div class="owner-expiry">${icon('clock', 'icon-xs icon-muted')} ${escapeHtml(expiryText(o))}</div>
+          ${subscriptionProgressHtml(o)}
+          <div class="owner-price" data-edit-price="${escapeHtml(o.id)}">
+            ${icon('card', 'icon-xs icon-muted')} ${o.price ? escapeHtml(String(o.price)) + " so'm/oy" : 'Narx kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
+          </div>
+        </div>
+        <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
+      </div>
+    `;
+  }
+
+  function renderAdminPanel(owners) {
+    setAppHeader(null, 'KitchenOS', 'Admin');
+    const nowMs = Date.now();
+    const totalCount = owners.length;
+    const activeCount = owners.filter(o => !o.expiresAt || new Date(o.expiresAt).getTime() > nowMs).length;
+    const expiringSoonCount = owners.filter(o => {
+      if (!o.expiresAt) return false;
+      const ms = new Date(o.expiresAt).getTime() - nowMs;
+      return ms > 0 && ms <= 3 * 86400000;
+    }).length;
+    const unpaidCount = owners.filter(o => !o.paid).length;
+
+    const statsHtml = `
+      <div class="ko-kpi-grid admin-stats-grid">
+        ${koKpiCardHtml('users', 'Jami egalar', String(totalCount), null)}
+        ${koKpiCardHtml('check-circle', 'Faol', String(activeCount), null)}
+        ${koKpiCardHtml('clock', 'Muddati yaqin', String(expiringSoonCount), null)}
+        ${koKpiCardHtml('wallet', "Qarzdor", String(unpaidCount), null)}
+      </div>
+    `;
+
+    const ownersHtml = owners.length
+      ? owners.map(ownerItemHtml).join('')
+      : `
+        <div class="admin-empty-state">
+          ${icon('users', 'icon-lg icon-muted')}
+          <div class="bosh">Hozircha do'kon egalari yo'q.</div>
+        </div>
+      `;
 
     ekran(`
       <div class="panel">
         <div class="salom">Salom, admin</div>
+        <div class="bosh admin-subtitle">Do'kon egalarini shu yerdan boshqarasiz — havola yarating, qo'lda qo'shing yoki mavjudlarini tahrirlang.</div>
+
+        ${statsHtml}
+
         <div class="kartochka">
-          <h2>Bir martalik taklif havolasi</h2>
+          <h2>${icon('link', 'icon-xs')} Bir martalik taklif havolasi</h2>
           <div class="bosh">Havolani do'kon egasiga yuboring. U botni ochganda so'rovi sizga keladi — Telegramda tugma bosib, necha kunga ruxsat berishni tanlaysiz.</div>
-          <button class="btn" id="createInviteBtn" style="margin-top:10px;">Havola yaratish</button>
+          <button class="btn" id="createInviteBtn" style="margin-top:10px;">${icon('plus', 'icon-xs')}<span>Havola yaratish</span></button>
           <div id="inviteBoxWrap"></div>
           <div class="xabar" id="inviteMsg"></div>
         </div>
+
         <div class="kartochka">
-          <h2>Do'kon egasini ID orqali qo'shish</h2>
-          <input type="text" id="ownerInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-          <input type="text" id="ownerDaysInput" placeholder="Necha kunga (bo'sh qoldirsangiz — doimiy)" inputmode="numeric">
-          <input type="text" id="ownerPriceInput" placeholder="Obuna narxi, so'm/oy (ixtiyoriy)" inputmode="numeric">
-          <label style="display:flex; align-items:center; gap:8px; font-size:14px; margin-bottom:10px;">
-            <input type="checkbox" id="ownerPaidInput" style="width:auto; margin:0;"> To'lov qabul qilindi
+          <h2>${icon('user', 'icon-xs')} Do'kon egasini ID orqali qo'shish</h2>
+          <label class="field-label">Telegram ID, @username yoki havola</label>
+          <input type="text" id="ownerInput" placeholder="Masalan: 123456789 yoki @username">
+          <label class="field-label">Muddat (kun)</label>
+          <input type="text" id="ownerDaysInput" placeholder="Bo'sh qoldirsangiz — doimiy" inputmode="numeric">
+          <label class="field-label">Obuna narxi</label>
+          <input type="text" id="ownerPriceInput" placeholder="So'm/oy (ixtiyoriy)" inputmode="numeric">
+          <label class="check-label" for="ownerPaidInput">
+            <input type="checkbox" id="ownerPaidInput"> To'lov qabul qilindi
           </label>
-          <button class="btn" id="addOwnerBtn">Do'kon egasi qo'shish</button>
+          <button class="btn" id="addOwnerBtn">${icon('plus', 'icon-xs')}<span>Do'kon egasi qo'shish</span></button>
           <div class="xabar" id="addMsg"></div>
         </div>
+
         <div class="kartochka">
-          <h2>Ruxsat berilgan do'kon egalari</h2>
+          <div class="admin-list-header">
+            <h2>${icon('users', 'icon-xs')} Ruxsat berilgan do'kon egalari</h2>
+            <span class="admin-list-count">${totalCount}</span>
+          </div>
+          ${owners.length > 3 ? `
+            <div class="admin-search-wrap">
+              ${icon('search', 'icon-xs icon-muted admin-search-icon')}
+              <input type="text" id="ownerSearchInput" placeholder="ID, username yoki nom bo'yicha qidirish" autocomplete="off">
+            </div>
+          ` : ''}
           <div class="owner-list" id="ownerList">${ownersHtml}</div>
+          <div class="bosh admin-no-results hidden" id="ownerNoResults">Hech narsa topilmadi.</div>
         </div>
       </div>
       <div class="overlay hidden" id="confirmOverlay">
@@ -405,6 +459,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
       </div>
     `);
+
+    const searchInput = document.getElementById('ownerSearchInput');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        const q = searchInput.value.trim().toLowerCase();
+        const items = document.querySelectorAll('#ownerList .owner-item');
+        let visibleCount = 0;
+        items.forEach(item => {
+          const match = !q || (item.getAttribute('data-search-key') || '').includes(q);
+          item.classList.toggle('hidden', !match);
+          if (match) visibleCount++;
+        });
+        const noResults = document.getElementById('ownerNoResults');
+        if (noResults) noResults.classList.toggle('hidden', !(q && visibleCount === 0));
+      });
+    }
 
     document.getElementById('createInviteBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('inviteMsg');
@@ -422,7 +492,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       wrap.innerHTML = `
         <div class="link-box">
           <span id="inviteLinkText">${escapeHtml(res.link)}</span>
-          <button id="copyInviteBtn">Nusxalash</button>
+          <button id="copyInviteBtn">${icon('link', 'icon-xs')}<span>Nusxalash</span></button>
         </div>
       `;
       document.getElementById('copyInviteBtn').addEventListener('click', () => {
@@ -492,25 +562,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
 
     document.getElementById('ownerList').addEventListener('click', async (e) => {
-      const removeId = e.target.getAttribute('data-remove-id');
-      if (removeId) {
-        e.target.disabled = true;
-        await apiPost('/api/remove-owner', { initData, id: removeId });
+      const removeBtn = e.target.closest('[data-remove-id]');
+      if (removeBtn) {
+        removeBtn.disabled = true;
+        await apiPost('/api/remove-owner', { initData, id: removeBtn.getAttribute('data-remove-id') });
         loadOwnersAndRender();
         return;
       }
 
-      const toggleId = e.target.getAttribute('data-toggle-paid');
-      if (toggleId) {
-        const current = e.target.getAttribute('data-paid') === '1';
-        await apiPost('/api/update-owner-billing', { initData, id: toggleId, paid: !current });
+      const toggleEl = e.target.closest('[data-toggle-paid]');
+      if (toggleEl) {
+        const current = toggleEl.getAttribute('data-paid') === '1';
+        await apiPost('/api/update-owner-billing', { initData, id: toggleEl.getAttribute('data-toggle-paid'), paid: !current });
         loadOwnersAndRender();
         return;
       }
 
-      const editId = e.target.getAttribute('data-edit-price');
-      if (editId && !e.target.querySelector('input')) {
-        e.target.innerHTML = `
+      const editEl = e.target.closest('[data-edit-price]');
+      if (editEl && !editEl.querySelector('input')) {
+        const editId = editEl.getAttribute('data-edit-price');
+        editEl.innerHTML = `
           <input type="text" inputmode="numeric" placeholder="Yangi narx" style="margin:0; padding:6px 8px; font-size:13px;" data-price-field="${escapeHtml(editId)}">
           <button data-save-price="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
         `;
