@@ -1421,6 +1421,8 @@
     color: var(--brand-on-primary);
   }
   .cat-heading { font-size: var(--fs-h1); font-weight: 700; margin: var(--sp-4) 0 var(--sp-1); }
+  .menu-section:first-of-type .cat-heading { margin-top: var(--sp-1); }
+  .menu-section + .menu-section { margin-top: var(--sp-2); }
   .catalog-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
