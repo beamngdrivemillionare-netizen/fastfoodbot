@@ -386,8 +386,10 @@ function escapeHtmlServer(str) {
   }[c]));
 }
 
-// Dostavka buyurtmasi haqida oshxonaning biriktirilgan dostavka guruhiga xabar yuboradi
-// ("Qabul qilish" / "Tayyor" tugmalari bilan — bosilganda mijozga avtomatik xabar boradi)
+// Buyurtma haqida oshxonaning biriktirilgan (dostavka) admin guruhiga xabar yuboradi
+// ("Qabul qilish" / "Tayyor" tugmalari bilan — bosilganda mijozga avtomatik xabar boradi).
+// Sarlavha buyurtma turiga qarab moslashadi (Dostavka/Stolga/Olib ketish) — chunki endi
+// guruhga barcha buyurtma turlari yuboriladi, faqat dostavka emas.
 function notifyDeliveryGroup(owner, order, creatorLabel) {
   if (!owner.deliveryGroupId) return;
   const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
@@ -396,7 +398,10 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
     mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
     order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
   ].filter(Boolean).join('\n');
-  const text = `🚚 <b>Yangi dostavka buyurtmasi</b>${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
+  const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
+  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : (order.orderType === 'stol' ? '🍽' : '🥡');
+  const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
+  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
     (addressLines ? `\n\n${addressLines}` : '');
   sendMessage(owner.deliveryGroupId, text, {
     inline_keyboard: [[
@@ -588,8 +593,8 @@ async function handleTelegramUpdate(update) {
       owner.deliveryGroupTitle = msg.chat.title || null;
       saveOwners(owners);
       await sendMessage(chatId,
-        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun dostavka admin guruhi sifatida biriktirildi.\n` +
-        `Endi mijozlar dostavka buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.`);
+        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun admin guruhi sifatida biriktirildi.\n` +
+        `Endi mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.`);
       return;
     }
 
@@ -601,7 +606,7 @@ async function handleTelegramUpdate(update) {
         owner.deliveryGroupId = null;
         owner.deliveryGroupTitle = null;
         saveOwners(owners);
-        await sendMessage(chatId, 'Bu guruh dostavka guruhi sifatidan olib tashlandi.');
+        await sendMessage(chatId, 'Bu guruh admin guruhi sifatidan olib tashlandi.');
       }
       return;
     }
@@ -828,7 +833,10 @@ async function handleTelegramUpdate(update) {
           if (!wasAccepted) {
             await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi.');
           }
-          await sendMessage(order.customerId, '🏁 Buyurtmangiz tayyor, dostavkachi yo\'lda!');
+          const readyMsg = order.orderType === 'dostavka'
+            ? '🏁 Buyurtmangiz tayyor, dostavkachi yo\'lda!'
+            : '🏁 Buyurtmangiz tayyor!';
+          await sendMessage(order.customerId, readyMsg);
         }
         await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
         return;
@@ -885,9 +893,7 @@ async function handleTelegramUpdate(update) {
         for (const targetId of new Set(notifyTargets.map(String))) {
           sendMessage(targetId, notifyText);
         }
-        if (order.orderType === 'dostavka') {
-          notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
-        }
+        notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
 
         if (order.customerId) {
           const okText = order.paymentConfirmMethod === 'naqd_kassa'
@@ -1964,9 +1970,7 @@ const server = http.createServer((req, res) => {
         for (const targetId of new Set(notifyTargets)) {
           sendMessage(targetId, notifyText);
         }
-        if (orderType === 'dostavka') {
-          notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
-        }
+        notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
       }
 
       return sendJSON(res, 200, {
@@ -2106,9 +2110,7 @@ const server = http.createServer((req, res) => {
       for (const targetId of new Set(notifyTargets)) {
         sendMessage(targetId, notifyText);
       }
-      if (orderType === 'dostavka') {
-        notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
-      }
+      notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
 
       return sendJSON(res, 200, { ok: true, orderId: order.id, total });
     });
