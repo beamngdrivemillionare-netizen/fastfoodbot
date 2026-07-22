@@ -4269,12 +4269,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  function customerCategoryHeadingHtml() {
-    if (!customerState.menu.length) return '';
-    const label = customerState.category === 'hammasi' ? 'Hammasi' : customerState.category;
-    return `<div class="cat-heading">${escapeHtml(label)}</div>`;
-  }
-
   function customerItemCardHtml(m) {
     const qty = customerState.cart[m.id] || 0;
     const isFav = customerState.favorites.includes(m.id);
@@ -4304,12 +4298,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  // 23-bosqich: filtr o'rniga GURUHLASH — barcha kategoriyalar ketma-ket
+  // bo'lim sifatida chiqadi, hech qaysi biri yashirilmaydi.
   function customerMenuListHtml() {
-    const filtered = customerState.category === 'hammasi'
-      ? customerState.menu
-      : customerState.menu.filter(m => m.category === customerState.category);
-    if (!filtered.length) return `<div class="bosh">Bu kategoriyada taom yo'q.</div>`;
-    return filtered.map(customerItemCardHtml).join('');
+    if (!customerState.menu.length) return `<div class="bosh">Menyu hali bo'sh.</div>`;
+    const order = [];
+    const groups = {};
+    customerState.menu.forEach(m => {
+      const cat = m.category || 'Boshqa';
+      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
+      groups[cat].push(m);
+    });
+    return order.map(cat => `
+      <div class="menu-section">
+        <div class="cat-heading">${escapeHtml(cat)}</div>
+        <div class="catalog-grid">${groups[cat].map(customerItemCardHtml).join('')}</div>
+      </div>
+    `).join('');
   }
 
   function customerPromoBannerHtml() {
@@ -4402,8 +4407,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${customerTabRowHtml()}
         ${customerPromoBannerHtml()}
         ${customerCategoriesHtml()}
-        ${customerCategoryHeadingHtml()}
-        <div id="customerMenuList" class="catalog-grid" style="margin-top:8px;">${customerMenuListHtml()}</div>
+        <div id="customerMenuList" style="margin-top:8px;">${customerMenuListHtml()}</div>
       </div>
       ${cartFabBarHtml()}
     `);
