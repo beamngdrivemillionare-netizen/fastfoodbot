@@ -4054,7 +4054,11 @@ const server = http.createServer((req, res) => {
       });
       report.sort((a, b) => b.orderCount - a.orderCount);
 
-      return sendJSON(res, 200, { ok: true, report, commissionPercent });
+      const recentMovements = (owner.cashMovements || [])
+        .filter(m => m.type === 'kuryer_kassaga_qaytarish')
+        .slice(0, 20);
+
+      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements });
     });
     return;
   }
@@ -4116,6 +4120,26 @@ const server = http.createServer((req, res) => {
           count++;
         }
       }
+
+      // Har bir "kassaga qaytarish" amalini alohida jurnalga yozib boramiz —
+      // kim, qachon, qaysi kuryerdan, qancha pul qaytarganini keyin ko'rish uchun.
+      if (count > 0) {
+        if (!Array.isArray(owner.cashMovements)) owner.cashMovements = [];
+        const courierStaff = (owner.staff || []).find(s => String(s.id) === String(courierId));
+        owner.cashMovements.unshift({
+          id: crypto.randomBytes(6).toString('hex'),
+          type: 'kuryer_kassaga_qaytarish',
+          courierId: String(courierId),
+          courierUsername: (courierStaff && courierStaff.username) || null,
+          amount: collected,
+          orderCount: count,
+          confirmedBy: userId,
+          createdAt: new Date().toISOString()
+        });
+        // Jurnal cheksiz o'smasligi uchun oxirgi 200 tasini saqlaymiz
+        if (owner.cashMovements.length > 200) owner.cashMovements.length = 200;
+      }
+
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, collected, count });
