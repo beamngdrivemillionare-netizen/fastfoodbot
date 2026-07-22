@@ -4429,6 +4429,45 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: egasi (admin emas, o'zi) login+parolini butunlay o'chiradi ----
+  // Shundan keyin faqat Telegram orqali kirish qoladi (xuddi admin
+  // /api/remove-owner-credentials orqali o'chirganidagi kabi natija),
+  // lekin bu yerda amalni egasining o'zi, joriy parolini tasdiqlab bajaradi.
+  if (req.method === 'POST' && req.url === '/api/owner-remove-password') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, currentPassword } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q yoki muddati tugagan' });
+
+      if (!owner.login || !owner.passwordHash) {
+        // Login/parol allaqachon yo'q — o'chiradigan narsa yo'q
+        return sendJSON(res, 200, { ok: true, alreadyRemoved: true });
+      }
+      if (!verifyPassword(currentPassword, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, owner.id);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      target.login = null;
+      target.passwordHash = null;
+      target.sessionToken = null;
+      target.sessionExpiresAt = null;
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- API: oshxona egasi login+parol bilan kiradi (Telegram tashqarisidan, masalan oddiy brauzerdan) ----
   // Muvaffaqiyatli bo'lsa "sess_<token>" beriladi — frontend buni initData o'rniga ishlatadi.
   if (req.method === 'POST' && req.url === '/api/owner-login') {
