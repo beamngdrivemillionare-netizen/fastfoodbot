@@ -2310,7 +2310,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       // "Boshlash" bosilmagan, shuning uchun kassir uni to'g'ridan-to'g'ri "Tayyor" qila olmaydi.
     } else if (order.status === 'tayyorlanmoqda') {
       actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+    } else if (role === 'egasi' && order.orderType === 'dostavka' && order.deliveredBy) {
+      // Dostavkachi xato bosib yuborgan bo'lishi mumkin — egasi shu belgini bekor qila oladi
+      actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
     }
+    const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
+      ? `<div class="order-time">✅ Yetkazib berilgan (${timeAgo(order.deliveredAt)})</div>`
+      : '';
 
     return `
       <div class="order-card">
@@ -2322,6 +2328,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
         </div>
         <div class="order-items">${itemsHtml}</div>
+        ${deliveredNote}
         <div class="order-bottom">
           <span class="order-total">${order.total} so'm</span>
           ${actionBtn}
@@ -2354,6 +2361,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
         }
         lastOrdersSnapshot = null; // majburiy qayta chizish
+        await refreshOrdersBoard(role);
+      });
+    });
+    board.querySelectorAll('[data-undo-deliver-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Bu buyurtmaning "Yetkazildi" belgisini bekor qilmoqchimisiz?')) return;
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-undo-deliver-id');
+        const res = await apiPost('/api/undo-deliver-order', { initData, orderId });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+        }
+        lastOrdersSnapshot = null;
         await refreshOrdersBoard(role);
       });
     });
