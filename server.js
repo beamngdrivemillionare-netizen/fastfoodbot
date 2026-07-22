@@ -426,9 +426,10 @@ function sendMessage(chatId, text, replyMarkup) {
   return telegramApi('sendMessage', params).catch(() => {});
 }
 
-function answerCallbackQuery(callbackId, text) {
+function answerCallbackQuery(callbackId, text, showAlert) {
   const params = { callback_query_id: callbackId };
   if (text) params.text = text;
+  if (showAlert) params.show_alert = 'true';
   return telegramApi('answerCallbackQuery', params).catch(() => {});
 }
 
@@ -895,6 +896,17 @@ async function handleTelegramUpdate(update) {
         order.deliveryGroupStage = 'qabul_qilindi';
         order.deliveryAcceptedBy = from.id;
         order.deliveryAcceptedAt = new Date().toISOString();
+        // Guruhdagi "Qabul qilish" bosilganda buyurtmaning asosiy status'i ham
+        // yangilanadi ("tayyorlanmoqda"), aks holda u Mini App bosqichlaridan
+        // uzilib qoladi (masalan, keyinroq "tayyor" belgilanganda dostavkachiga
+        // ko'rinmay qoladi — chunki dostavkachi ro'yxati order.status'ga qarab
+        // filtrlanadi, deliveryGroupStage'ga emas).
+        if (order.status === 'yangi') {
+          order.status = 'tayyorlanmoqda';
+          order.updatedAt = new Date().toISOString();
+          order.updatedBy = String(from.id);
+          if (!order.startedAt) order.startedAt = order.updatedAt;
+        }
         saveOwners(owners);
 
         if (chatId && messageId) {
@@ -914,10 +926,23 @@ async function handleTelegramUpdate(update) {
           await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
           return;
         }
-        const wasAccepted = order.deliveryGroupStage === 'qabul_qilindi';
+        // "Tayyor" tugmasi faqat "Qabul qilish" bosilgandan keyin ishlashi kerak —
+        // aks holda ketma-ketlik buzilib, buyurtma hech kim qabul qilmasdan
+        // tayyor deb belgilanib qolar edi.
+        if (order.deliveryGroupStage !== 'qabul_qilindi') {
+          await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
+          return;
+        }
         order.deliveryGroupStage = 'tayyor';
         order.deliveryReadyBy = from.id;
         order.deliveryReadyAt = new Date().toISOString();
+        // Asosiy status ham "tayyor"ga o'tkaziladi — shu maydon orqali
+        // dostavkachilarga buyurtmalar ro'yxati (/api/orders-list) filtrlanadi,
+        // shu jumladan guruhga yangi qo'shilgan dostavkachi uchun ham.
+        order.status = 'tayyor';
+        order.updatedAt = new Date().toISOString();
+        order.updatedBy = String(from.id);
+        if (!order.readyAt) order.readyAt = order.updatedAt;
         saveOwners(owners);
 
         if (chatId && messageId) {
@@ -925,13 +950,25 @@ async function handleTelegramUpdate(update) {
             `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
         }
         if (order.customerId) {
-          if (!wasAccepted) {
-            await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi.');
-          }
           const readyMsg = order.orderType === 'dostavka'
             ? '🏁 Buyurtmangiz tayyor, dostavkachi yo\'lda!'
             : '🏁 Buyurtmangiz tayyor!';
           await sendMessage(order.customerId, readyMsg);
+        }
+        // Kassir(lar)ga va (dostavka bo'lsa) dostavkachi(lar)ga ham
+        // Mini App'dagi "Tayyor" tugmasidagi kabi avtomatik bildirishnoma
+        // yuboriladi, xabarni o'zi yuborgan xodimdan tashqari.
+        {
+          const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+          const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
+          const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${order.total}`;
+          const staffList = owner.staff || [];
+          const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
+          const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
+          for (const targetId of new Set(targetIds.map(String))) {
+            if (targetId === String(from.id)) continue;
+            sendMessage(targetId, readyText);
+          }
         }
         await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
         return;
