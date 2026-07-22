@@ -323,10 +323,9 @@
      7-bosqich: KitchenOS bosh sahifa KPI-kartochkalari.
      4 ta kartochka (Bugungi savdo / Sof foyda / Buyurtmalar / O'rtacha chek)
      uchun umumiy shakl — icon, katta raqam, va foiz-delta (rang emas,
-     brendga bog'liq --kpi-delta-up/--kpi-delta-down orqali). Joylashtirish
-     (2x2 grid) va /api/dashboard-summary'ga ulash 8-bosqichda qilinadi —
-     bu yerda faqat kartochkaning o'zi va uning skeleton holati bor, shu
-     bilan 8-bosqich faqat grid-konteyner va ma'lumot yuklashni qo'shadi.
+     brendga bog'liq --kpi-delta-up/--kpi-delta-down orqali). 2x2 grid
+     joylashuvi shu .ko-kpi-grid bilan, /api/dashboard-summary'ga ulash esa
+     app.js'dagi loadKoKpiGrid() orqali qilingan (8-bosqich).
      ========================================================================= */
   .ko-kpi-grid {
     display: grid;
