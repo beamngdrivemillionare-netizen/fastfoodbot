@@ -671,7 +671,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="section-label">${icon('link', 'icon-xs')} Dostavka</div>
         <div class="kartochka">
           <h2>Dostavka admin guruhi</h2>
-          <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+          <div class="bosh">Mijoz istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
           <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
           <div class="customer-link-hint">
             Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
@@ -1789,7 +1789,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
       if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
-      statusEl.textContent = '— Hali dostavka guruhi biriktirilmagan.';
+      statusEl.textContent = '— Hali admin guruhi biriktirilmagan.';
       if (removeBtn) removeBtn.classList.add('hidden');
     }
   }
