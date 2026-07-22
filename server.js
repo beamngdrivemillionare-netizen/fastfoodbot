@@ -486,10 +486,30 @@ function telegramApi(method, params) {
   });
 }
 
+// 12-bosqich: Ilgari sendMessage() Telegramdan qaytgan har qanday xatolikni
+// (masalan "Forbidden: bot was blocked by the user" yoki "chat not found" —
+// bular xodim botga hali /start bosmagan yoki uni block qilgan bo'lsa yuz
+// beradi) BUTUNLAY yashirib yuborar edi (`.catch(() => {})`, natijani ham
+// tekshirmasdan). Shu sababli "oshpazga buyurtma tushmayapti" kabi holatlarni
+// aniqlash imkonsiz edi — xabar yuborilmagani hech qayerda ko'rinmasdi.
+// Endi: Telegram `ok:false` qaytarsa ham, tarmoq xatosi bo'lsa ham — sabab
+// konsolga (server logiga) chiqariladi. Chaqiruvchi funksiyalar xatti-harakati
+// o'zgarmaydi (hamon reject qilmaydi, oldingidek natija bilan davom etadi) —
+// faqat endi sabab KO'RINADIGAN bo'ldi. To'liq, ilova ichida ko'rinadigan
+// xatolik jurnali 17-bosqichda qo'shiladi.
 function sendMessage(chatId, text, replyMarkup) {
   const params = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-  return telegramApi('sendMessage', params).catch(() => {});
+  return telegramApi('sendMessage', params).then(result => {
+    if (!result || !result.ok) {
+      const reason = (result && result.description) || 'noma\'lum xatolik';
+      console.error(`[sendMessage xato] chat_id=${chatId}: ${reason}`);
+    }
+    return result;
+  }).catch(err => {
+    console.error(`[sendMessage tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+    return null;
+  });
 }
 
 function answerCallbackQuery(callbackId, text, showAlert) {
