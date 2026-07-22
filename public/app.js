@@ -1024,13 +1024,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  function wireKoHomeHeader() {
+  function wireKoHomeHeader(profile) {
     const menuBtn = document.getElementById('koHeaderMenuBtn');
     const bellBtn = document.getElementById('koHeaderBellBtn');
     // TODO (14-bosqich): hamburger yon-menyusini ochish
     if (menuBtn) menuBtn.addEventListener('click', () => console.log('KitchenOS: menyu tugmasi (14-bosqichda ulanadi)'));
-    // TODO (15-bosqich): Bildirishnomalar ekraniga o'tish
-    if (bellBtn) bellBtn.addEventListener('click', () => console.log('KitchenOS: bell tugmasi (15-bosqichda ulanadi)'));
+    if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderProfileView(profile)));
   }
 
   // =========================================================================
@@ -1074,20 +1073,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Aniq mos ekrani bor ikkitasi ulanadi: Bosh sahifa (joriy ekranning o'zi)
-  // va Savdo (12-bosqichdagi qaror bilan bir xil: renderCashflowScreen).
-  // Qolgan uchtasi (Yangi buyurtma, Bildirishnomalar, Profil) uchun hali
-  // maqsad ekran belgilanmagan — 15-bosqichda Bildirishnomalar/Profil,
-  // "Yangi buyurtma" esa alohida qaror talab qiladi (renderCashierScreen
-  // orqaga qaytish imkoniyatisiz, egasi uchun to'g'ridan-to'g'ri mos emas).
+  // Aniq mos ekrani bor to'rttasi ulanadi: Bosh sahifa (joriy ekranning
+  // o'zi), Savdo (12-bosqichdagi qaror bilan bir xil: renderCashflowScreen),
+  // Bildirishnomalar va Profil (15-bosqichda qurilgan yangi ekranlar).
+  // Qolgan bittasi (Yangi buyurtma) uchun hali maqsad ekran belgilanmagan —
+  // renderCashierScreen orqaga qaytish imkoniyatisiz, egasi uchun
+  // to'g'ridan-to'g'ri mos emas, alohida qaror talab qiladi.
   function wireKoBottomNav(profile) {
     const nav = document.getElementById('koBottomNav');
     if (!nav) return;
+    const goBack = () => renderProfileView(profile);
     nav.querySelectorAll('[data-ko-nav]').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.getAttribute('data-ko-nav');
         if (key === 'bosh') return;
-        if (key === 'savdo') { renderCashflowScreen(profile, () => renderProfileView(profile)); return; }
+        if (key === 'savdo') { renderCashflowScreen(profile, goBack); return; }
+        if (key === 'bildirishnomalar') { renderNotificationsScreen(profile, goBack); return; }
+        if (key === 'profil') { renderOwnerProfileScreen(profile, goBack); return; }
         console.log(`KitchenOS: pastki nav "${key}" (hali ulanmagan)`);
       });
     });
@@ -1424,6 +1426,84 @@ const tg = window.Telegram && window.Telegram.WebApp;
     wireKoAlertsList(profile, res.alerts);
   }
 
+  // =========================================================================
+  // 15-bosqich: "Bildirishnomalar" — to'liq ekranli ro'yxat. Alohida
+  // bildirishnoma-ma'lumotlar bazasi hali yo'q, shu sababli 13-bosqichdagi
+  // /api/dashboard-alerts'ning o'zi qayta ishlatiladi (bir xil ma'lumot,
+  // header'dagi bell va bu ekran bir xil manbadan keladi — 18-bosqichda
+  // badge soni ham shu yerdan olinadi). Har bir band bosilganda
+  // koAlertScreenRoute() orqali tegishli ekranga o'tadi (12/13-bosqichdagi
+  // bilan bir xil xaritalash).
+  // =========================================================================
+  function koNotificationsListHtml(alerts) {
+    return (alerts && alerts.length)
+      ? alerts.map((a, i) => koAlertItemHtml(a, i)).join('')
+      : `<div class="ko-alert-empty">${icon('check-circle', 'icon-xs')} Hozircha bildirishnoma yo'q.</div>`;
+  }
+
+  function renderNotificationsScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Bildirishnomalar</div>
+        <button class="btn ikkinchi" id="notifBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="notifList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('notifBackBtn').addEventListener('click', () => onBack && onBack());
+    loadNotificationsList(profile);
+  }
+
+  async function loadNotificationsList(profile) {
+    const el = document.getElementById('notifList');
+    if (!el) return;
+    const res = await apiPost('/api/dashboard-alerts', { initData });
+    const el2 = document.getElementById('notifList');
+    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!res.ok) {
+      el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
+      return;
+    }
+    el2.innerHTML = koNotificationsListHtml(res.alerts);
+    el2.querySelectorAll('[data-alert-index]').forEach(row => {
+      const alert = res.alerts[Number(row.getAttribute('data-alert-index'))];
+      const route = alert && koAlertScreenRoute(profile, alert.screen);
+      if (route) row.addEventListener('click', route);
+    });
+  }
+
+  // =========================================================================
+  // 15-bosqich: "Profil" ekrani — "Do'kon ma'lumotlari" bo'limi "bosh"
+  // tabidan shu yerga ko'chirildi (endi u yerda ikki marta ko'rsatilmaydi).
+  //
+  // MA'LUM CHEKLOV: "Profilni tahrirlash" tugmasi mavjud renderProfileForm()
+  // ekranini ochadi — u saqlagach doim renderProfileView(profile) (Bosh
+  // sahifa)ga qaytaradi, Profil ekraniga emas, chunki forma ichidagi
+  // navigatsiya shunday yozilgan (bu joyning o'zgarishi emas). 16-bosqichda
+  // butun ekran arxitekturasi birlashtirilganda shuni ham to'g'rilash mumkin.
+  // =========================================================================
+  function renderOwnerProfileScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Profil</div>
+        <button class="btn ikkinchi" id="profileBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
+        <div class="kartochka">
+          <div class="profile-view">
+            ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
+            <div class="info">
+              <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
+              <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
+              ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
+            </div>
+          </div>
+          <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('profileBackBtn').addEventListener('click', () => onBack && onBack());
+    document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -1437,18 +1517,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${koMenuGridHtml()}
           ${koAlertsListSkeletonHtml()}
           ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
-          <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
-          <div class="kartochka">
-            <div class="profile-view">
-              ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
-              <div class="info">
-                <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
-                <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
-                ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
-              </div>
-            </div>
-            <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
-          </div>
           <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
           <div class="kartochka">
             <h2>Filial qo'shish</h2>
@@ -1583,9 +1651,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadKoStatusBanner(profile);
     wireKoMenuGrid(profile);
     loadKoAlertsList(profile);
-    wireKoHomeHeader();
+    wireKoHomeHeader(profile);
     wireKoBottomNav(profile);
-    document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
       renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
     });
