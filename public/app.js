@@ -1217,6 +1217,38 @@ const tg = window.Telegram && window.Telegram.WebApp;
     wireKoStatusBanner(profile);
   }
 
+  // =========================================================================
+  // 11-bosqich: KitchenOS bosh sahifa asosiy menyu-grid — 2 qator x 5 ustun,
+  // 10 ta icon+label tugma. Bu yerda faqat komponentning o'zi: har bir
+  // tugma data-menu-key bilan belgilanadi, lekin ularni mavjud ekranlarga
+  // ulash (bosilganda nima ochilishi) 12-bosqichda qilinadi.
+  // =========================================================================
+  const KO_MENU_ITEMS = [
+    { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
+    { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
+    { key: 'ombor', icon: 'box', label: 'Ombor' },
+    { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
+    { key: 'moliya', icon: 'wallet', label: 'Moliya' },
+    { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
+    { key: 'filiallar', icon: 'store', label: 'Filiallar' },
+    { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
+    { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
+  ];
+
+  function koMenuItemHtml(item) {
+    return `
+      <button type="button" class="ko-menu-item" data-menu-key="${item.key}">
+        <span class="ko-menu-item-icon">${icon(item.icon)}</span>
+        <span class="ko-menu-item-label">${escapeHtml(item.label)}</span>
+      </button>
+    `;
+  }
+
+  function koMenuGridHtml() {
+    return `<div class="ko-menu-grid">${KO_MENU_ITEMS.map(koMenuItemHtml).join('')}</div>`;
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -1227,6 +1259,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${koHomeHeaderHtml(0)}
           ${koKpiGridSkeletonHtml()}
           ${koStatusBannerSkeletonHtml()}
+          ${koMenuGridHtml()}
           ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
           <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
           <div class="kartochka">
