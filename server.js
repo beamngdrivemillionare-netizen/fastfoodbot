@@ -2016,12 +2016,30 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
-  // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi
-  function canSetOrderStatus(ctx, newStatus) {
+  // Ruxsat etilgan holat o'tishlari: "yangi" -> "tayyorlanmoqda" -> "tayyor".
+  // Bosqich tashlab ketib bo'lmaydi (masalan, "yangi"dan to'g'ridan-to'g'ri "tayyor"ga).
+  const ORDER_STATUS_TRANSITIONS = {
+    yangi: ['tayyorlanmoqda'],
+    tayyorlanmoqda: ['tayyor'],
+    tayyor: []
+  };
+
+  // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi.
+  // `order` — joriy buyurtma obyekti (uning hozirgi status'idan qaysi keyingi
+  // status'larga o'tish mumkinligini aniqlash uchun kerak).
+  function canSetOrderStatus(ctx, order, newStatus) {
     if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
-    if (ctxHasRole(ctx, 'egasi')) return true; // egasi istalgan holatga o'tkaza oladi (tuzatish uchun)
+
+    // egasi tuzatish uchun istalgan holatga o'tkaza oladi (bosqichlarni chetlab o'tishi mumkin)
+    if (ctxHasRole(ctx, 'egasi')) return true;
+
+    // boshqa rollar uchun faqat ketma-ket bosqichlarga o'tishga ruxsat bor
+    const currentStatus = order ? order.status : 'yangi';
+    const allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
+    if (!allowedNext.includes(newStatus)) return false;
+
     if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
-    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true; // kassir ham "Tayyor" tugmasini bosa oladi
+    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true; // kassir ham "Tayyor" tugmasini bosa oladi (faqat "tayyorlanmoqda"dan keyin)
     return false;
   }
 
@@ -2164,14 +2182,14 @@ const server = http.createServer((req, res) => {
       if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
         return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri holat.' });
       }
-      if (!canSetOrderStatus(ctx, status)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Sizga bu holatni belgilashga ruxsat yo\'q.' });
-      }
 
       const order = (ctx.owner.orders || []).find(o => o.id === orderId);
       if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
       if (order.status === status) {
         return sendJSON(res, 200, { ok: true, order }); // allaqachon shu holatda
+      }
+      if (!canSetOrderStatus(ctx, order, status)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).' });
       }
 
       order.status = status;
