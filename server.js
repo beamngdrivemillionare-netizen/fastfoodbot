@@ -3844,6 +3844,19 @@ const server = http.createServer((req, res) => {
         return d >= yesterdayStart && d < todayStart;
       }).reduce((s, e) => s + (e.amount || 0), 0);
 
+      // 3-bosqich: Dashboarddagi "Kuryer hisoboti" KPI kartochkasi uchun —
+      // bugun va kecha KURYER TOMONIDAN YETKAZIB BERILGAN dostavka
+      // buyurtmalari soni. To'liq (har bir kuryer bo'yicha) hisobot allaqachon
+      // /api/courier-report'da bor — bu yerda faqat kartochkaga bitta
+      // umumlashtirilgan son kerak.
+      const todayCourierDeliveries = (owner.orders || []).filter(o =>
+        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart).length;
+      const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
+        if (o.orderType !== 'dostavka' || !o.deliveredBy) return false;
+        const d = new Date(o.deliveredAt || o.createdAt);
+        return d >= yesterdayStart && d < todayStart;
+      }).length;
+
       const summary = {
         todaySales: today.income,
         yesterdaySales: yesterdayIncome,
@@ -3852,7 +3865,9 @@ const server = http.createServer((req, res) => {
         todayOrderCount: today.orderCount,
         yesterdayOrderCount: yesterdayOrders.length,
         todayAvgCheck: today.orderCount ? Math.round(today.income / today.orderCount) : 0,
-        yesterdayAvgCheck: yesterdayOrders.length ? Math.round(yesterdayIncome / yesterdayOrders.length) : 0
+        yesterdayAvgCheck: yesterdayOrders.length ? Math.round(yesterdayIncome / yesterdayOrders.length) : 0,
+        todayCourierDeliveries,
+        yesterdayCourierDeliveries
       };
 
       return sendJSON(res, 200, { ok: true, summary });
