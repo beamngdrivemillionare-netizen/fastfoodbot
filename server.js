@@ -28,6 +28,10 @@ const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
 const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
 const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
+// profiles.json — har bir bot foydalanuvchisining (mijoz, xodim, egasi — hammasi
+// uchun umumiy, oshxonaga bog'liq emas) ism/familiya/telefon ma'lumotlari.
+// Qarang: "Ro'yxatdan o'tish" bo'limi (handleTelegramUpdate ichida).
+const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
 // ========================================================
 
 function verifyTelegramInitData(initData, botToken) {
@@ -148,6 +152,16 @@ function saveInvites(invites) { saveJSONArray(INVITES_FILE, invites); }
 
 function loadRequests() { return loadJSONArray(REQUESTS_FILE); }
 function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
+
+// ====== Shaxsiy profil (ism, familiya, telefon) — har bir bot foydalanuvchisi
+// (mijoz, xodim, egasi) uchun umumiy, bitta martalik ro'yxatdan o'tish ======
+function loadProfiles() { return loadJSONArray(PROFILES_FILE); }
+function saveProfiles(list) { saveJSONArray(PROFILES_FILE, list); }
+function findProfile(userId) { return loadProfiles().find(p => String(p.id) === String(userId)); }
+function isRegisteredUser(userId) {
+  const p = findProfile(userId);
+  return !!(p && p.registeredAt);
+}
 
 function isAdminId(userId) {
   return String(userId) === String(ADMIN_ID);
@@ -643,6 +657,49 @@ function clearAwaitingCustom() {
   try { fs.unlinkSync(AWAITING_FILE); } catch (e) {}
 }
 
+// ====== Ro'yxatdan o'tish suhbati holati — kim hozir "ism" / "familiya" /
+// "raqam" bosqichida turibdi (bir nechta foydalanuvchi bir vaqtda ro'yxatdan
+// o'tishi mumkin bo'lgani uchun userId bo'yicha lug'at sifatida saqlanadi) ======
+const REG_STATE_FILE = path.join(DATA_DIR, 'reg-state.json');
+
+function loadRegStates() {
+  try {
+    const raw = fs.readFileSync(REG_STATE_FILE, 'utf8');
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveRegStates(obj) {
+  fs.writeFileSync(REG_STATE_FILE, JSON.stringify(obj, null, 2), 'utf8');
+}
+
+function getRegState(userId) {
+  const states = loadRegStates();
+  return states[String(userId)] || null;
+}
+
+function setRegState(userId, state) {
+  const states = loadRegStates();
+  states[String(userId)] = state;
+  saveRegStates(states);
+}
+
+function clearRegState(userId) {
+  const states = loadRegStates();
+  delete states[String(userId)];
+  saveRegStates(states);
+}
+
+// Juda oddiy telefon raqam tekshiruvi (foydalanuvchi tugma o'rniga qo'lda yozsa) —
+// bo'shliq/tire/qavslarni olib tashlab, +xxxxxxxxxxx yoki xxxxxxxxxxx ko'rinishini tekshiradi
+function isPlausiblePhone(str) {
+  const cleaned = String(str).replace(/[\s\-()]/g, '');
+  return /^\+?\d{7,15}$/.test(cleaned);
+}
+
 // Bitta so'rovni belgilangan kun soni (yoki doimiy, days=null) bilan tasdiqlash — tugma va matn orqali kirish uchun umumiy funksiya
 function approveRequest(reqInfo, days) {
   const expiresAt = days === null ? null : new Date(Date.now() + days * 86400000).toISOString();
@@ -669,6 +726,143 @@ function approveRequest(reqInfo, days) {
   return label;
 }
 
+// /start buyrug'ining asosiy mantiqi (taklif havolasi, mijoz menyu havolasi va h.k.) —
+// alohida funksiyaga ajratildi, chunki ro'yxatdan o'tish tugagandan keyin ham
+// xuddi shu logikani (asl /start matni bilan) qayta ishga tushirish kerak bo'ladi.
+async function handleStartCommand(chatId, from, text) {
+  const parts = text.split(' ');
+  const payload = parts.length > 1 ? parts[1].trim() : '';
+
+  if (!payload) {
+    await sendMessage(chatId, isAdminId(from.id)
+      ? 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.'
+      : 'Salom! Ushbu botdan foydalanish uchun sizga taklif havolasi kerak.');
+    return;
+  }
+
+  // Mijoz uchun oshxona menyusi havolasi: /start menu_<ownerId>
+  if (payload.startsWith('menu_')) {
+    const ownerId = payload.replace(/^menu_/, '').trim();
+    const owners = pruneExpiredOwners();
+    const owner = findOwner(owners, ownerId);
+    if (!owner || !isOwnerAccessValid(owner)) {
+      await sendMessage(chatId, 'Kechirasiz, bu oshxona menyusi hozircha mavjud emas.');
+      return;
+    }
+    if (!PUBLIC_URL) {
+      await sendMessage(chatId, 'Menyu havolasi hozircha sozlanmagan. Iltimos, oshxona bilan bog\'laning.');
+      return;
+    }
+    const restaurantName = (owner.profile && owner.profile.name) || 'Oshxona';
+    const menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
+    await sendMessage(chatId, `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`, {
+      inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]]
+    });
+    return;
+  }
+
+  const token = payload.replace(/^inv_/, '');
+  const invite = findInvite(token);
+
+  if (isAdminId(from.id)) {
+    await sendMessage(chatId, 'Siz allaqachon administratorsiz.');
+    return;
+  }
+
+  if (!invite || invite.used) {
+    await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, admindan yangi havola so\'rang.');
+    return;
+  }
+
+  const owners = pruneExpiredOwners();
+  const existing = findOwner(owners, from.id);
+  if (existing && isOwnerAccessValid(existing)) {
+    markInviteUsed(token, from.id);
+    await sendMessage(chatId, 'Sizda allaqachon kirish huquqi mavjud. Mini App tugmasi orqali oching.');
+    return;
+  }
+
+  markInviteUsed(token, from.id);
+  const reqId = createRequest(from, token);
+
+  await sendMessage(chatId, 'So\'rovingiz adminga yuborildi. Iltimos, tasdiqlanishini kuting.');
+
+  const infoText = `🆕 <b>Yangi do'kon egasi so'rovi</b>\n` +
+    `Ism: ${displayName(from)}\n` +
+    (from.username ? `Username: @${from.username}\n` : '') +
+    `ID: <code>${from.id}</code>\n\n` +
+    `Necha kunga ruxsat berasiz?`;
+  await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
+}
+
+// ====== Ro'yxatdan o'tish (ism, familiya, telefon raqam) ======
+// Har bir shaxsiy chatdagi foydalanuvchi (mijoz, xodim, egasi — istisnosiz)
+// botdan birinchi marta foydalanishdan oldin o'zini ism, familiya va telefon
+// raqami bilan tanishtirishi kerak. Mijoz buyurtma berishdan oldin bu bosqichni
+// o'tmagan bo'lsa, /api/customer-order uni rad etadi (qarang: isRegisteredUser).
+async function completeRegistration(chatId, from, state, phone) {
+  const profiles = loadProfiles();
+  const idx = profiles.findIndex(p => String(p.id) === String(from.id));
+  const profile = {
+    id: String(from.id),
+    username: from.username || null,
+    firstName: state.firstName,
+    lastName: state.lastName,
+    phone: String(phone).trim(),
+    registeredAt: new Date().toISOString()
+  };
+  if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
+  saveProfiles(profiles);
+  clearRegState(from.id);
+
+  await sendMessage(chatId,
+    `✅ Rahmat, ${escapeHtmlServer(state.firstName)} ${escapeHtmlServer(state.lastName)}! Ro'yxatdan muvaffaqiyatli o'tdingiz.`,
+    { remove_keyboard: true });
+
+  const pendingText = (state.pendingText && state.pendingText.startsWith('/start')) ? state.pendingText : '/start';
+  await handleStartCommand(chatId, from, pendingText);
+}
+
+// Ro'yxatdan o'tish bosqichlaridagi (ism/familiya/raqam) matnli xabarlarni qayta ishlaydi.
+// true qaytarsa — xabar shu yerda "yutib olindi", chaqiruvchi joyda boshqa hech narsa qilinmasin.
+async function handleRegistrationStep(chatId, from, text, state) {
+  if (state.step === 'ism') {
+    const ism = text.trim();
+    if (!ism || ism.startsWith('/') || ism.length > 60) {
+      await sendMessage(chatId, 'Iltimos, ismingizni to\'g\'ri kiriting (masalan: Aziz).');
+      return true;
+    }
+    setRegState(from.id, { step: 'familiya', pendingText: state.pendingText, firstName: ism });
+    await sendMessage(chatId, 'Familiyangizni kiriting:');
+    return true;
+  }
+
+  if (state.step === 'familiya') {
+    const familiya = text.trim();
+    if (!familiya || familiya.startsWith('/') || familiya.length > 60) {
+      await sendMessage(chatId, 'Iltimos, familiyangizni to\'g\'ri kiriting.');
+      return true;
+    }
+    setRegState(from.id, { step: 'raqam', pendingText: state.pendingText, firstName: state.firstName, lastName: familiya });
+    await sendMessage(chatId,
+      'Endi telefon raqamingizni yuboring — pastdagi tugma orqali yuborishingiz mumkin, yoki qo\'lda yozing (masalan: +998901234567):',
+      { keyboard: [[{ text: '📱 Raqamni yuborish', request_contact: true }]], resize_keyboard: true, one_time_keyboard: true });
+    return true;
+  }
+
+  if (state.step === 'raqam') {
+    const raqam = text.trim();
+    if (!isPlausiblePhone(raqam)) {
+      await sendMessage(chatId, 'Telefon raqam noto\'g\'ri formatda. Pastdagi tugma orqali yuboring yoki masalan +998901234567 ko\'rinishida yozing.');
+      return true;
+    }
+    await completeRegistration(chatId, from, state, raqam);
+    return true;
+  }
+
+  return false;
+}
+
 // ====== Telegram yangilanishlarini (webhook) qayta ishlash ======
 async function handleTelegramUpdate(update) {
   if (update.message && update.message.text) {
@@ -676,6 +870,16 @@ async function handleTelegramUpdate(update) {
     const text = msg.text.trim();
     const from = msg.from;
     const chatId = msg.chat.id;
+
+    // ---- Ro'yxatdan o'tish suhbati davom etayotgan bo'lsa (ism/familiya/raqam
+    // bosqichlarida), keyingi xabarni shu oqim qabul qiladi ----
+    if (msg.chat.type === 'private') {
+      const regState = getRegState(from.id);
+      if (regState) {
+        const handled = await handleRegistrationStep(chatId, from, text, regState);
+        if (handled) return;
+      }
+    }
 
     // ---- Guruhda /biriktir: oshxona egasi shu guruhni dostavka admin guruhi sifatida bog'laydi ----
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
@@ -746,70 +950,36 @@ async function handleTelegramUpdate(update) {
     }
 
     if (text.startsWith('/start')) {
-      const parts = text.split(' ');
-      const payload = parts.length > 1 ? parts[1].trim() : '';
-
-      if (!payload) {
-        await sendMessage(chatId, isAdminId(from.id)
-          ? 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.'
-          : 'Salom! Ushbu botdan foydalanish uchun sizga taklif havolasi kerak.');
+      // Admin'dan boshqa har bir foydalanuvchi (mijoz, xodim, egasi) botdan birinchi
+      // marta foydalanishdan oldin ism, familiya va telefon raqami bilan tanishtirishi
+      // shart. Ro'yxatdan o'tmagan bo'lsa, /start'ning asl matni saqlab qo'yiladi va
+      // ro'yxatdan o'tish tugagach xuddi shu havola/taklif bilan davom ettiriladi.
+      if (!isAdminId(from.id) && !isRegisteredUser(from.id)) {
+        setRegState(from.id, { step: 'ism', pendingText: text });
+        await sendMessage(chatId,
+          '👋 Xush kelibsiz! Botdan foydalanishdan oldin avval o\'zingizni tanishtiring.\n\nIsmingizni kiriting:');
         return;
       }
-
-      // Mijoz uchun oshxona menyusi havolasi: /start menu_<ownerId>
-      if (payload.startsWith('menu_')) {
-        const ownerId = payload.replace(/^menu_/, '').trim();
-        const owners = pruneExpiredOwners();
-        const owner = findOwner(owners, ownerId);
-        if (!owner || !isOwnerAccessValid(owner)) {
-          await sendMessage(chatId, 'Kechirasiz, bu oshxona menyusi hozircha mavjud emas.');
-          return;
-        }
-        if (!PUBLIC_URL) {
-          await sendMessage(chatId, 'Menyu havolasi hozircha sozlanmagan. Iltimos, oshxona bilan bog\'laning.');
-          return;
-        }
-        const restaurantName = (owner.profile && owner.profile.name) || 'Oshxona';
-        const menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
-        await sendMessage(chatId, `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`, {
-          inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]]
-        });
-        return;
-      }
-
-      const token = payload.replace(/^inv_/, '');
-      const invite = findInvite(token);
-
-      if (isAdminId(from.id)) {
-        await sendMessage(chatId, 'Siz allaqachon administratorsiz.');
-        return;
-      }
-
-      if (!invite || invite.used) {
-        await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, admindan yangi havola so\'rang.');
-        return;
-      }
-
-      const owners = pruneExpiredOwners();
-      const existing = findOwner(owners, from.id);
-      if (existing && isOwnerAccessValid(existing)) {
-        markInviteUsed(token, from.id);
-        await sendMessage(chatId, 'Sizda allaqachon kirish huquqi mavjud. Mini App tugmasi orqali oching.');
-        return;
-      }
-
-      markInviteUsed(token, from.id);
-      const reqId = createRequest(from, token);
-
-      await sendMessage(chatId, 'So\'rovingiz adminga yuborildi. Iltimos, tasdiqlanishini kuting.');
-
-      const infoText = `🆕 <b>Yangi do'kon egasi so'rovi</b>\n` +
-        `Ism: ${displayName(from)}\n` +
-        (from.username ? `Username: @${from.username}\n` : '') +
-        `ID: <code>${from.id}</code>\n\n` +
-        `Necha kunga ruxsat berasiz?`;
-      await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
+      await handleStartCommand(chatId, from, text);
       return;
+    }
+    return;
+  }
+
+  // ---- Mijoz/xodim ro'yxatdan o'tish bosqichida "📱 Raqamni yuborish" tugmasini
+  // bosib, o'z kontaktini (telefon raqamini) yuborganda ----
+  if (update.message && update.message.contact && update.message.chat && update.message.chat.type === 'private') {
+    const msg = update.message;
+    const from = msg.from;
+    const chatId = msg.chat.id;
+    const state = getRegState(from.id);
+    if (state && state.step === 'raqam') {
+      // Faqat o'zining raqamini yuborsa qabul qilamiz (boshqa birovning kontaktini emas)
+      if (msg.contact.user_id && String(msg.contact.user_id) !== String(from.id)) {
+        await sendMessage(chatId, 'Iltimos, faqat o\'zingizning telefon raqamingizni yuboring.');
+        return;
+      }
+      await completeRegistration(chatId, from, state, msg.contact.phone_number);
     }
     return;
   }
@@ -1205,6 +1375,7 @@ const server = http.createServer((req, res) => {
         // kirganda ham (initData avtomatik bo'lsa-da) bir martalik parol so'raladi
         // (qarang: frontend'dagi owner password-gate va /api/owner-confirm-password).
         hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
+        personRegistered: admin || isRegisteredUser(userId),
         reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
       });
     });
@@ -1852,6 +2023,7 @@ const server = http.createServer((req, res) => {
           brandColor: (owner.profile && owner.profile.brandColor) || null
         },
         customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints },
+        personRegistered: isRegisteredUser(userId),
         bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
       });
     });
@@ -1936,6 +2108,16 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+
+      // Mijoz hali ism, familiya va telefon raqami bilan botga tanishtirilmagan bo'lsa,
+      // buyurtma qabul qilinmaydi — avval botning shaxsiy chatida /start orqali
+      // ro'yxatdan o'tishi kerak (qarang: handleTelegramUpdate'dagi ro'yxatdan o'tish oqimi).
+      if (!isRegisteredUser(userId)) {
+        return sendJSON(res, 200, {
+          ok: false,
+          reason: `Buyurtma berishdan oldin botda ro'yxatdan o'ting: botning shaxsiy chatini oching va /start yozib, ism-familiya va telefon raqamingizni yuboring (@${BOT_USERNAME}).`
+        });
+      }
 
       // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
       // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
