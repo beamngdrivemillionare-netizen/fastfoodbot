@@ -534,6 +534,74 @@
     .ko-menu-grid { grid-template-columns: repeat(4, 1fr); }
   }
 
+  /* =========================================================================
+     13-bosqich: KitchenOS bosh sahifa "Muhim ogohlantirishlar" ro'yxati —
+     har bir qator: rangli icon (level bo'yicha) + matn + son-badge (ixtiyoriy)
+     + chevron. Bosilganda tegishli ekranga o'tadi (app.js'dagi
+     koAlertScreenRoute() orqali).
+     ========================================================================= */
+  .ko-alerts-card { padding: var(--sp-3) var(--sp-4); }
+  .ko-alerts-card .section-label { margin-bottom: var(--sp-2); }
+  .ko-alert-item {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) 0;
+    border-top: 1px solid var(--border-color);
+    cursor: pointer;
+  }
+  .ko-alert-item:first-of-type { border-top: none; }
+  .ko-alert-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-pill);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ko-alert-icon .icon { width: 16px; height: 16px; }
+  .ko-alert-icon.error { background: var(--danger-bg); color: var(--danger); }
+  .ko-alert-icon.warning { background: var(--warning-bg); color: var(--warning); }
+  .ko-alert-icon.info { background: var(--info-bg); color: var(--info); }
+  .ko-alert-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: var(--fs-body);
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+  .ko-alert-count-badge {
+    background: var(--danger);
+    color: #fff;
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: var(--radius-pill);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ko-alert-chevron {
+    color: var(--text-muted);
+    font-size: 18px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .ko-alert-empty {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: var(--sp-3) 0;
+    color: var(--success);
+    font-size: var(--fs-body);
+    font-weight: 500;
+  }
+  .ko-alerts-card[data-loading="1"] .ko-alert-item.skeleton-row { cursor: default; }
+
   /* ---- Admin panel ---- */
   .panel {
     width: 100%;
