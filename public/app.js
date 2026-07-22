@@ -2710,6 +2710,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // ---- Kuryer: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
   function deliveryCardHtml(order) {
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
+    // 20-bosqich: yetkazib bo'lingan buyurtmaning holati (status) hali ham
+    // "tayyor" bo'lib qoladi (faqat deliveredBy/deliveredAt qo'yiladi) —
+    // shuning uchun bu yerda ko'rinadigan yorliq shu belgiga qarab
+    // "Tayyor" o'rniga "Yetkazildi" deb yoziladi, tugma esa endi bosilmaydigan
+    // holatga o'tadi (qayta bosilib xato chiqarmasligi uchun).
+    const isDelivered = !!order.deliveredBy;
     return `
       <div class="order-card">
         <div class="order-top">
@@ -2717,20 +2723,27 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="order-type">Dostavka</div>
             <div class="order-time">${timeAgo(order.createdAt)}</div>
           </div>
-          <span class="status-badge tayyor">${ORDER_STATUS_LABELS.tayyor}</span>
+          <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
         </div>
         <div class="order-items">${itemsHtml}</div>
         <div class="order-bottom">
           <span class="order-total">${order.total} so'm (${PAYMENT_TYPE_LABELS[order.paymentType] || order.paymentType})</span>
-          <button class="order-action-btn ready" data-deliver-order-id="${escapeHtml(order.id)}">Yetkazildi</button>
+          ${isDelivered
+            ? `<span class="order-time">✅ Yetkazib berildi (${timeAgo(order.deliveredAt)})</span>`
+            : `<button class="order-action-btn ready" data-deliver-order-id="${escapeHtml(order.id)}">Yetkazildi</button>`}
         </div>
       </div>
     `;
   }
 
   function deliveryBoardHtml(orders) {
-    if (!orders || !orders.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
-    return orders.map(o => deliveryCardHtml(o)).join('');
+    // 20-bosqich: bu taxta FAQAT dostavka turidagi va "tayyor" holatidagi
+    // buyurtmalarni ko'rsatishi kerak — avval bu yerda hech qanday filtr
+    // yo'q edi, shuning uchun stol/olib ketish buyurtmalari ham xato
+    // ravishda "Dostavka"/"Tayyor" deb chiqib, tugmasi doim yoniq ko'rinardi.
+    const relevant = (orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor');
+    if (!relevant.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
+    return relevant.map(o => deliveryCardHtml(o)).join('');
   }
 
   function attachDeliveryBoardHandlers() {
