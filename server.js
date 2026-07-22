@@ -1898,10 +1898,20 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: menyuga taom qo'shish (faqat egasi) ----
+  // C-bo'lim (11-18-bosqich): "Skladdan to'g'ridan sotuvga chiqadigan mahsulot".
+  // Odatdagi taom retsept (recipe: [{stockId, qty}, ...]) orqali bir nechta
+  // ingredientdan tayyorlanadi. Ba'zi "taomlar" esa aslida sklad mahsulotining
+  // o'zi to'g'ridan-to'g'ri sotiladi (masalan shishada suv, banka ichimlik) —
+  // bunday holda alohida retsept tuzishning hojati yo'q, taom bevosita bitta
+  // sklad mahsulotiga bog'lanadi (menuItem.directStockId, faqat MARKAZIY
+  // skladdagi mahsulotga — xuddi recipe.stockId kabi, filial skladiga emas,
+  // chunki buyurtma vaqtida sklad ham shu tarzda faqat markaziydan kamayadi:
+  // qarang pastdagi /api/create-order). Ikkalasi bir vaqtda bo'lishi mumkin
+  // emas: yo retsept, yo directStockId (yoki hech qaysisi — oddiy taom).
   if (req.method === 'POST' && req.url === '/api/menu-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, name, price, category, description, imageUrl } = payload;
+      const { initData, name, price, category, description, imageUrl, directStockId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -1919,6 +1929,19 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
       }
 
+      // 12-bosqich: directStockId ixtiyoriy — berilsa, markaziy skladda
+      // shunday mahsulot borligini tekshiramiz. Yangi taomda recipe hali
+      // yo'q (u alohida /api/menu-set-recipe orqali qo'shiladi), shuning
+      // uchun bu yerda retsept bilan to'qnashuv bo'lishi mumkin emas —
+      // to'qnashuvning oldini olish /api/menu-set-recipe tomonida qilinadi
+      // (o'sha yerda directStockId allaqachon borligini tekshiradi).
+      let directStockIdVal = null;
+      if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
+        const stockItem = findStockItem(owner, directStockId);
+        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti (markaziy skladda) topilmadi.' });
+        directStockIdVal = directStockId;
+      }
+
       if (!owner.menu) owner.menu = [];
       const item = {
         id: crypto.randomBytes(4).toString('hex'),
@@ -1928,6 +1951,7 @@ const server = http.createServer((req, res) => {
         description: String(description || '').trim() || null,
         imageUrl: imageTrim || null,
         available: true,
+        directStockId: directStockIdVal,
         addedAt: new Date().toISOString()
       };
       owner.menu.push(item);
@@ -3191,6 +3215,13 @@ const server = http.createServer((req, res) => {
       const menuItem = (owner.menu || []).find(m => m.id === menuId);
       if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
       if (!Array.isArray(recipe)) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri retsept formati.' });
+      // 12-bosqich: "to'g'ridan skladdan" turdagi taomga (directStockId
+      // belgilangan) alohida retsept qo'shib bo'lmaydi — ikkalasi bir vaqtda
+      // bo'lishi mumkin emas. Retseptni tozalash (bo'sh massiv yuborish) esa
+      // ruxsat etiladi.
+      if (menuItem.directStockId && recipe.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu taom "to\'g\'ridan skladdan" turida — unga alohida retsept qo\'shib bo\'lmaydi.' });
+      }
 
       const cleanRecipe = [];
       for (const r of recipe) {
