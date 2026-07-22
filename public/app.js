@@ -6,6 +6,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const OWNER_SESSION_STORAGE_KEY = 'kitchenOsOwnerSession';
   let initData = (tg && tg.initData) || localStorage.getItem(OWNER_SESSION_STORAGE_KEY) || null;
   let usingOwnerSession = !tg && !!initData;
+  let ownerHasTelegramLogin = false;
 
   function ekran(html) {
     appEl.innerHTML = html;
@@ -796,10 +797,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="xabar" id="deliveryGroupMsg"></div>
         </div>
 
-        ${usingOwnerSession ? `
+        ${(usingOwnerSession || ownerHasTelegramLogin) ? `
         <div class="section-label">${icon('user', 'icon-xs')} Hisob</div>
         <div class="kartochka">
-          <div class="bosh">Siz login/parol orqali kirgansiz.</div>
+          <div class="bosh">${usingOwnerSession ? 'Siz login/parol orqali kirgansiz.' : 'Bu qurilmada parol eslab qolingan.'}</div>
           <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
         </div>
         ` : ''}
@@ -809,6 +810,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (usingOwnerSession) {
       const logoutBtn = document.getElementById('ownerLogoutBtn');
       if (logoutBtn) logoutBtn.addEventListener('click', ownerLogout);
+    } else if (ownerHasTelegramLogin) {
+      const logoutBtn = document.getElementById('ownerLogoutBtn');
+      if (logoutBtn) logoutBtn.addEventListener('click', ownerTelegramGateLogout);
     }
 
     attachBrandSwatchHandlers((hex) => {
@@ -4607,10 +4611,86 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (data.isAdmin) {
       loadOwnersAndRender();
     } else if (data.isOwner) {
-      loadOwnProfileAndRender();
+      maybeGateOwnerWithPassword(data);
     } else if (data.role) {
       renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor);
     } else {
       renderCustomerEntry();
     }
+  }
+
+  // ---- Telegram orqali kirgan egasi uchun bir martalik parol darvozasi ----
+  // Admin shu egasiga login/parol o'rnatgan bo'lsa (data.hasOwnerLogin), birinchi
+  // marta parol so'raladi. To'g'ri kiritilsa, shu qurilmada (localStorage'da)
+  // eslab qolinadi — Telegram ilovasi yopilib qayta ochilsa ham qayta so'ralmaydi,
+  // faqat foydalanuvchi "Chiqish" tugmasini bossa yoki brauzer ma'lumotlari
+  // tozalansa, keyingi safar yana parol so'raladi.
+  function ownerTelegramGateKey() {
+    const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+    return tgUserId ? `kitchenOsOwnerPwOk:${tgUserId}` : null;
+  }
+
+  function maybeGateOwnerWithPassword(data) {
+    ownerHasTelegramLogin = !!data.hasOwnerLogin;
+    if (!data.hasOwnerLogin) { loadOwnProfileAndRender(); return; }
+    const gateKey = ownerTelegramGateKey();
+    if (gateKey && localStorage.getItem(gateKey) === '1') { loadOwnProfileAndRender(); return; }
+    renderOwnerTelegramPasswordGate(gateKey);
+  }
+
+  function renderOwnerTelegramPasswordGate(gateKey, errorText) {
+    clearAppHeader();
+    resetBrandColor();
+    ekran(`
+      <div class="panel">
+        <div class="salom">Parolni kiriting</div>
+        <div class="bosh">Xavfsizlik uchun administrator o'rnatgan parolni kiriting. Bu faqat shu qurilmada bir marta so'raladi.</div>
+        <div class="kartochka">
+          <label class="field-label">Parol</label>
+          <input type="password" id="ownerGatePasswordInput" autocomplete="current-password" placeholder="Parol">
+          <button class="btn" id="ownerGateBtn" style="margin-top:10px;">${icon('user', 'icon-xs')}<span>Tasdiqlash</span></button>
+          <div class="xabar ${errorText ? 'err' : ''}" id="ownerGateMsg">${errorText ? escapeHtml(errorText) : ''}</div>
+        </div>
+      </div>
+    `);
+
+    const doConfirm = async () => {
+      const password = document.getElementById('ownerGatePasswordInput').value;
+      const msgEl = document.getElementById('ownerGateMsg');
+      const btn = document.getElementById('ownerGateBtn');
+      if (!password) {
+        msgEl.textContent = 'Parolni kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      btn.disabled = true;
+      msgEl.textContent = 'Tekshirilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/owner-confirm-password', { initData, password });
+      btn.disabled = false;
+      if (res.networkError) {
+        msgEl.textContent = res.reason;
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Parol noto\'g\'ri.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (gateKey) localStorage.setItem(gateKey, '1');
+      loadOwnProfileAndRender();
+    };
+
+    document.getElementById('ownerGateBtn').addEventListener('click', doConfirm);
+    document.getElementById('ownerGatePasswordInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doConfirm();
+    });
+  }
+
+  // Telegram-gate eslatmasini shu qurilmadan o'chiradi — keyingi ochishda yana parol so'raladi
+  function ownerTelegramGateLogout() {
+    const gateKey = ownerTelegramGateKey();
+    if (gateKey) localStorage.removeItem(gateKey);
+    location.reload();
   }
