@@ -220,6 +220,11 @@ const EXPENSE_CATEGORIES = {
   maosh: 'Maosh',
   kommunal: 'Kommunal',
   mahsulot: 'Mahsulot xaridi',
+  // 7-10-bosqich: sklad-add orqali AVTOMATIK yoziladigan xarajatlar shu
+  // kategoriyada — "Mahsulot xaridi"dan ataylab alohida, chunki u qo'lda
+  // (/api/expense-add) kiritilgan xarajatlar uchun, buni esa foydalanuvchi
+  // qo'lda tanlamaydi, faqat /api/stock-add o'zi yozadi.
+  sklad_xarid: 'Sklad xaridlari',
   boshqa: 'Boshqa'
 };
 
@@ -2968,10 +2973,14 @@ const server = http.createServer((req, res) => {
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
         return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
       }
-      let priceNum = 0;
-      if (price !== undefined && price !== null && price !== '') {
-        priceNum = Number(price);
-        if (!Number.isFinite(priceNum) || priceNum < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+      // 6-bosqich: narx endi MAJBURIY — bo'sh/0 bo'lsa xatolik qaytariladi,
+      // chunki har bir kirim uchun avtomatik xarajat yozuvi shu narxdan hisoblanadi.
+      if (price === undefined || price === null || price === '') {
+        return sendJSON(res, 200, { ok: false, reason: 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.' });
+      }
+      const priceNum = Number(price);
+      if (!Number.isFinite(priceNum) || priceNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
       }
       let minQtyNum = null;
       if (minQty !== undefined && minQty !== null && minQty !== '') {
@@ -3006,6 +3015,24 @@ const server = http.createServer((req, res) => {
       });
       checkLowStockAlert(ctx.owner, item, userId, branchId);
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
+
+      // 7-8-bosqich: sklad kirimi uchun avtomatik xarajat yozuvi — narx endi
+      // majburiy bo'lgani uchun har bir kirim to'g'ridan-to'g'ri moliyaga
+      // (owner.expenses) "sklad_xarid" kategoriyasi bilan tushadi. note
+      // maydonida qaysi mahsulot/miqdor ekani ko'rsatiladi (masalan "Un — 10 kg").
+      if (!ctx.owner.expenses) ctx.owner.expenses = [];
+      ctx.owner.expenses.unshift({
+        id: crypto.randomBytes(4).toString('hex'),
+        amount: Math.round(qtyNum * priceNum * 100) / 100,
+        category: 'sklad_xarid',
+        note: `${item.name} — ${qtyNum} ${unit}`,
+        createdAt: new Date().toISOString(),
+        createdBy: userId,
+        source: 'stock',
+        stockId: item.id
+      });
+      if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, item });
@@ -3014,6 +3041,13 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: sklad mahsulotini butunlay o'chirish (faqat egasi) ----
+  // 9-bosqich (hujjat): mahsulotni sklad ro'yxatidan o'chirish avvalgi
+  // /api/stock-add chaqiruvlarida yozilgan "sklad_xarid" xarajatlarini
+  // ORQAGA QAYTARMAYDI/o'chirmaydi — bu ataylab shunday, chunki xarid haqiqatan
+  // ham amalga oshgan (pul sarflangan), mahsulot esa keyinchalik ro'yxatdan
+  // olib tashlanishi (masalan boshqa nom bilan qayta kiritish uchun) buni
+  // o'zgartirmaydi. Xato kiritilgan xarajatni tuzatish kerak bo'lsa, buni
+  // Moliya ekranidan qo'lda (/api/expense-remove) qilish kerak.
   if (req.method === 'POST' && req.url === '/api/stock-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3069,6 +3103,11 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: markaziy skladdan filialga mahsulot o'tkazish (transfer) — faqat egasi ----
+  // 9-bosqich (hujjat): transfer yangi xarid emas — mahsulot allaqachon
+  // markaziy skladga /api/stock-add orqali kirganda "sklad_xarid" xarajati
+  // yozilgan bo'ladi. Shu sababli bu yerda YANGI xarajat yozuvi QO'SHILMAYDI —
+  // aks holda bir xil xarid ikki marta hisoblangan bo'lardi (markaziy sklad +
+  // filial). Transfer faqat miqdorni bir joydan ikkinchisiga ko'chiradi.
   if (req.method === 'POST' && req.url === '/api/stock-transfer') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
