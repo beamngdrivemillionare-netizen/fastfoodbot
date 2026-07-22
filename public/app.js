@@ -1096,6 +1096,48 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // =========================================================================
+  // 18-bosqich: bell-badge (header'da) va "Bildirishnomalar" band-badge
+  // (pastki navda) sonini serverdan dinamik yangilaydi. Alohida
+  // bildirishnoma-ma'lumotlar bazasi hali yo'q (15-bosqichdagi izohga
+  // qarang), shu sababli /api/dashboard-alerts natijasining uzunligi
+  // (alerts.length) badge soni sifatida ishlatiladi — bu manba
+  // loadKoAlertsList() orqali baribir har safar bosh sahifa ochilganda
+  // yuklanadi, shuning uchun bu yerda alohida so'rov yubormay, o'sha
+  // natijadan foydalanamiz (pastga qarang). Butun header/nav qayta render
+  // qilinmaydi — faqat badge <span> qo'shiladi/yangilanadi/olib tashlanadi,
+  // shu bilan allaqachon ulangan click-handler'lar (wireKoHomeHeader,
+  // wireKoBottomNav) buzilmaydi.
+  // =========================================================================
+  function updateKoNotifBadges(count) {
+    const bellBtn = document.getElementById('koHeaderBellBtn');
+    if (bellBtn) {
+      const existing = bellBtn.querySelector('.ko-home-header-bell-badge');
+      if (count > 0) {
+        if (existing) existing.textContent = String(count);
+        else bellBtn.insertAdjacentHTML('beforeend', `<span class="ko-home-header-bell-badge">${count}</span>`);
+      } else if (existing) {
+        existing.remove();
+      }
+    }
+    const navBtn = document.querySelector('.ko-bottom-nav-item[data-ko-nav="bildirishnomalar"]');
+    if (navBtn) {
+      const existing = navBtn.querySelector('.ko-bottom-nav-badge');
+      if (count > 0) {
+        if (existing) {
+          existing.textContent = String(count);
+        } else {
+          const labelEl = navBtn.querySelector('span:last-child');
+          const badgeHtml = `<span class="ko-bottom-nav-badge">${count}</span>`;
+          if (labelEl) labelEl.insertAdjacentHTML('beforebegin', badgeHtml);
+          else navBtn.insertAdjacentHTML('beforeend', badgeHtml);
+        }
+      } else if (existing) {
+        existing.remove();
+      }
+    }
+  }
+
+  // =========================================================================
   // 7-bosqich: KitchenOS bosh sahifa KPI-kartochkasi (icon + katta raqam +
   // foiz-delta). Bu yerda faqat komponentning o'zi va uning skeleton holati
   // bor — 4 tasini 2x2 grid'ga joylashtirib /api/dashboard-summary'ga ulash
@@ -1420,10 +1462,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
     if (!res.ok) {
       el2.outerHTML = `<div class="ko-alerts-card kartochka" id="koAlertsList"><div class="section-label">Muhim ogohlantirishlar</div><div class="bosh">Yuklanmadi.</div></div>`;
+      // Xatolik holatida badge sonini eskicha (yuklanmagan) holatda
+      // qoldiramiz — noto'g'ri "0" ko'rsatib, bor ogohlantirishni
+      // yashirib qo'ymaslik uchun bu yerda updateKoNotifBadges chaqirilmaydi.
       return;
     }
     el2.outerHTML = koAlertsListHtml(res.alerts);
     wireKoAlertsList(profile, res.alerts);
+    updateKoNotifBadges(res.alerts.length);
   }
 
   // =========================================================================
@@ -1531,6 +1577,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     // ekranlarda ishlatiladi) shu ekranda ko'rsatilmaydi, o'rniga faqat
     // koHomeHeaderHtml() qoladi.
     clearAppHeader();
+    // 18-bosqich: bu yerdagi "0" — dastlabki (ma'lumot hali kelmagan) holat,
+    // pastdagi loadKoAlertsList() natijasi kelgach updateKoNotifBadges()
+    // orqali haqiqiy songa almashtiriladi (shu sababli boshida hech qanday
+    // badge ko'rinmaydi, keyin kerak bo'lsa paydo bo'ladi).
     ekran(`
       <div class="panel has-ko-bottom-nav ko-home-panel">
         ${koHomeHeaderHtml(0, profile.name)}
