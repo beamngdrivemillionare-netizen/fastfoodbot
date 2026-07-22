@@ -93,7 +93,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // o'ng chetida doimiy rol-belgisi (masalan "Kassir", "Egasi") ko'rsatiladi,
   // shu bilan foydalanuvchi ilova ichida qayerda bo'lishidan qat'iy nazar
   // o'zining rolini har doim ko'rib turadi.
-  function setAppHeader(logoUrl, name, roleLabel) {
+  // onRoleSwitch — ixtiyoriy to'rtinchi parametr: berilsa (bir nechta
+  // vakolatli xodim uchun), rol belgisi yonida "🔁" tugmasi chiqadi, bosilsa
+  // shu funksiya chaqiriladi (qarang: staffRoleSwitchHandler).
+  function setAppHeader(logoUrl, name, roleLabel, onRoleSwitch) {
     if (!name) { clearAppHeader(); return; }
     appHeaderEl.innerHTML = `
       ${logoUrl
@@ -101,8 +104,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         : `<div class="app-header-logo-fallback">${icon('restaurant', 'icon-xs')}</div>`}
       <div class="app-header-name">${escapeHtml(name)}</div>
       ${roleLabel ? `<span class="app-header-role-badge">${escapeHtml(roleLabel)}</span>` : ''}
+      ${onRoleSwitch ? `<button type="button" class="app-header-role-switch-btn" id="appHeaderRoleSwitchBtn" title="Rol almashtirish">${icon('refresh', 'icon-xs')}</button>` : ''}
     `;
     appHeaderEl.classList.remove('hidden');
+    if (onRoleSwitch) {
+      const btn = document.getElementById('appHeaderRoleSwitchBtn');
+      if (btn) btn.addEventListener('click', onRoleSwitch);
+    }
   }
   function clearAppHeader() {
     appHeaderEl.classList.add('hidden');
@@ -1137,10 +1145,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
   const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Dostavkachi' };
+  // Bir nechta vakolatli xodim uchun rol tanlash tugmalarida ishlatiladi (qarang: renderStaffRolePicker)
+  const ROLE_ICONS = { kassir: 'wallet', oshpaz: 'chef-hat', sklad: 'box', dostavka: 'scooter' };
 
   function staffRoles(s) {
     if (Array.isArray(s.roles) && s.roles.length) return s.roles;
     return s.role ? [s.role] : [];
+  }
+
+  // Bir nechta vakolatli xodim TANLAGAN rol shu qurilmada (localStorage) eslab
+  // qolinadi — Mini App qayta ochilganda har safar so'ralmaydi, faqat xodim
+  // header'dagi "🔁 Rol almashtirish" tugmasini bossa (yoki admin uning
+  // vakolatlaridan birini olib tashlasa) qayta so'raladi.
+  function staffChosenRoleKey() {
+    const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+    return tgUserId ? `kitchenOsStaffRole:${tgUserId}` : null;
   }
 
   function staffListHtml(staff) {
@@ -2127,9 +2146,50 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
-  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl, brandColor) {
+  // YANGI: bir nechta vakolatli xodim uchun "qaysi bo'limda ishlaysiz?" ekrani -
+  // oshxona logotipi va "Xush kelibsiz!" yozuvi bilan (oddiy "Tekshirilmoqda..."
+  // o'rniga - shu ekran endi shuning o'rnini bosadi, chunki bu vaqtga kelib
+  // /api/verify allaqachon javob qaytargan, oshxona ma'lumotlari ma'lum).
+  function renderStaffRolePicker(data) {
+    clearAppHeader();
+    applyBrandColor(data.ownerBrandColor);
+    const restaurantName = data.ownerRestaurantName || 'Oshxona';
+    const logoHtml = data.ownerLogoUrl
+      ? `<img src="${escapeHtml(data.ownerLogoUrl)}" alt="" style="width:72px; height:72px; border-radius:50%; object-fit:cover; margin:0 auto 14px; display:block;">`
+      : `<div style="width:72px; height:72px; margin:0 auto 14px; border-radius:50%; background:var(--brand-primary-light); display:flex; align-items:center; justify-content:center;">${icon('restaurant', 'icon-lg')}</div>`;
+    ekran(`
+      <div class="panel" style="text-align:center;">
+        ${logoHtml}
+        <div class="salom">Xush kelibsiz!</div>
+        <div class="bosh" style="text-align:center;">
+          <b>${escapeHtml(restaurantName)}</b> jamoasidasiz. Sizga bir nechta vakolat berilgan — qaysi bo'limda ishlaysiz?
+        </div>
+        <div class="kartochka" style="text-align:left; margin-top:14px;">
+          ${data.roles.map(r => `
+            <button type="button" class="btn ikkinchi role-pick-btn" data-role="${escapeHtml(r)}" style="width:100%; margin-bottom:8px; justify-content:flex-start; gap:10px;">
+              ${icon(ROLE_ICONS[r] || 'user', 'icon-xs')}<span>${escapeHtml(ROLE_LABELS[r] || r)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `);
+    document.querySelectorAll('.role-pick-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const chosenRole = btn.getAttribute('data-role');
+        const key = staffChosenRoleKey();
+        if (key) localStorage.setItem(key, chosenRole);
+        renderStaffScreen(chosenRole, ROLE_LABELS[chosenRole] || chosenRole, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+      });
+    });
+  }
+
+  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl, brandColor, roles) {
     applyBrandColor(brandColor);
-    setAppHeader(logoUrl, restaurantName, roleLabel);
+    // Bir nechta vakolati bo'lgan xodimga header'da "🔁 Rol almashtirish"
+    // tugmasi ko'rsatiladi - bosilsa, tanlovi shu qurilmadan o'chiriladi va
+    // ilova qaytadan "qaysi bo'limda ishlaysiz?" ekranini so'raydi.
+    const multiRole = Array.isArray(roles) && roles.length > 1;
+    setAppHeader(logoUrl, restaurantName, roleLabel, multiRole ? staffRoleSwitchHandler : null);
     if (role === 'kassir') {
       renderCashierScreen(restaurantName);
       return;
@@ -2163,6 +2223,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
       </div>
     `);
+  }
+
+  // "🔁" tugmasi bosilganda: shu qurilmadagi tanlovni tozalab, /api/verify'ni
+  // qaytadan chaqiradi (bootstrapApp) — shu bilan rol ro'yxati ham yangilanadi
+  // (masalan admin bu orada bitta vakolatini olib tashlagan bo'lishi mumkin).
+  function staffRoleSwitchHandler() {
+    const key = staffChosenRoleKey();
+    if (key) localStorage.removeItem(key);
+    bootstrapApp();
   }
 
   // ---- Kassir: buyurtma ekrani (menyu → savat → tur/to'lov → yuborish) ----
@@ -4698,7 +4767,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
     } else if (data.isOwner) {
       maybeGateOwnerWithPassword(data);
     } else if (data.role) {
-      renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor);
+      // YANGI: bir nechta vakolatli xodim - avval qaysi bo'limda ishlashini
+      // so'raymiz (bu qurilmada avval tanlagan bo'lsa, localStorage'dan
+      // o'qib to'g'ridan-to'g'ri o'sha ekranga kiradi - qarang: staffChosenRoleKey).
+      if (Array.isArray(data.roles) && data.roles.length > 1) {
+        const key = staffChosenRoleKey();
+        const savedRole = key ? localStorage.getItem(key) : null;
+        if (savedRole && data.roles.includes(savedRole)) {
+          renderStaffScreen(savedRole, ROLE_LABELS[savedRole] || data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+        } else {
+          renderStaffRolePicker(data);
+        }
+      } else {
+        renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+      }
     } else {
       renderCustomerEntry();
     }
