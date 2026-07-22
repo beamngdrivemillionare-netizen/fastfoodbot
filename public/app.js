@@ -636,7 +636,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     // yuboradi (29-bosqich: preview har doim rad etib bo'lishi kerak).
     document.getElementById('cancelProfileBtn').addEventListener('click', () => {
       applyBrandColor(p.brandColor);
-      renderProfileView(p);
+      renderOwnerHomeScreen(p);
     });
 
     document.getElementById('saveProfileBtn').addEventListener('click', async () => {
@@ -659,7 +659,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         applyBrandColor(p.brandColor);
         return;
       }
-      renderProfileView(res.profile);
+      renderOwnerHomeScreen(res.profile);
     });
   }
 
@@ -809,7 +809,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         return;
       }
       onboardingState = null;
-      renderProfileView(res.profile);
+      renderOwnerHomeScreen(res.profile);
     });
   }
 
@@ -983,7 +983,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     el2.outerHTML = dashboardStatsHtml(res.cashflow).replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">');
     const btn = document.getElementById('dashOpenMoliyaBtn');
-    if (btn) btn.addEventListener('click', () => renderCashflowScreen(profile, () => renderProfileView(profile)));
+    if (btn) btn.addEventListener('click', () => renderCashflowScreen(profile, () => renderOwnerHomeScreen(profile)));
   }
 
   // 3-bosqich: KitchenOS bosh sahifa header'i — hamburger, logotip,
@@ -1029,7 +1029,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const bellBtn = document.getElementById('koHeaderBellBtn');
     // TODO (14-bosqich): hamburger yon-menyusini ochish
     if (menuBtn) menuBtn.addEventListener('click', () => console.log('KitchenOS: menyu tugmasi (14-bosqichda ulanadi)'));
-    if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderProfileView(profile)));
+    if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderOwnerHomeScreen(profile)));
   }
 
   // =========================================================================
@@ -1082,7 +1082,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function wireKoBottomNav(profile) {
     const nav = document.getElementById('koBottomNav');
     if (!nav) return;
-    const goBack = () => renderProfileView(profile);
+    const goBack = () => renderOwnerHomeScreen(profile);
     nav.querySelectorAll('[data-ko-nav]').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.getAttribute('data-ko-nav');
@@ -1260,7 +1260,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // skeleton, ham real HTML bilan almashtirilgach) alohida chaqiramiz.
   function wireKoStatusBanner(profile) {
     const btn = document.getElementById('koStatusAllBtn');
-    if (btn) btn.addEventListener('click', () => renderKitchenScreen(profile.name, () => renderProfileView(profile)));
+    if (btn) btn.addEventListener('click', () => renderKitchenScreen(profile.name, () => renderOwnerHomeScreen(profile)));
   }
 
   // 10-bosqich: "Bugungi holat" bannerini /api/order-status-counts
@@ -1328,7 +1328,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function wireKoMenuGrid(profile) {
     const grid = document.querySelector('.ko-menu-grid');
     if (!grid) return;
-    const goBack = () => renderProfileView(profile);
+    const goBack = () => renderOwnerHomeScreen(profile);
     const handlers = {
       savdo: () => renderCashflowScreen(profile, goBack),
       oshxona: () => renderKitchenScreen(profile.name, goBack),
@@ -1395,7 +1395,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // `screen` qiymatini haqiqiy navigatsiyaga aylantiradi (backend'dagi
   // /api/dashboard-alerts izohiga qarang: ombor / buyurtmalar_kechikkan / zreport).
   function koAlertScreenRoute(profile, screenKey) {
-    const goBack = () => renderProfileView(profile);
+    const goBack = () => renderOwnerHomeScreen(profile);
     if (screenKey === 'ombor') return () => renderStockScreen(profile.name, 'egasi', goBack);
     if (screenKey === 'buyurtmalar_kechikkan') return () => renderKitchenScreen(profile.name, goBack);
     if (screenKey === 'zreport') return () => renderZReportScreen(profile, goBack);
@@ -1504,41 +1504,148 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
   }
 
+  // =========================================================================
+  // 16-bosqich: "Bosh sahifa" — mustaqil ekran funksiyasi. Ilgari shu kontent
+  // renderProfileView(profile) ichidagi "bosh" tabida yashar edi (pastda hali
+  // ko'rinadi); endi u yerdan olib tashlanib, shu funksiyaga ko'chirildi va
+  // navigatsiyaning haqiqiy boshlang'ich nuqtasiga aylandi: login/onboarding
+  // tugagach hamda barcha "bosh sahifaga qaytish" callback'lari (pastki nav,
+  // "Bugungi holat → Barchasi", ogohlantirish bandlari, menyu-grid, header
+  // qo'ng'irog'i) endi shu funksiyani chaqiradi — renderProfileView(profile)
+  // emas.
+  //
+  // OCHIQ MASALA (keyingi bosqichga qoldirildi): renderProfileView ichida
+  // hali ham "menyu" / "xodimlar" / "moliya" degan 3 ta eski tab bor (taom/
+  // aksiya qo'shish, xodim qo'shish, bonus sozlamalari, dostavka guruhi).
+  // Ular UI'da bu o'zgarishdan OLDIN HAM ochilmas edi — tab-panelni
+  // almashtiradigan tugmalar qatori (ownerTabBarHtml/OWNER_TABS) hech qachon
+  // render qilinmagan, faqat "bosh" tab doim ko'rinardi. Shu sababli
+  // renderProfileView pastda funksionallik yo'qolmasin deb o'zgarishsiz
+  // qoldirildi, lekin endi hech qayerdan chaqirilmaydi (o'lik kod) — 20-
+  // bosqichda bu 3 bo'lim tegishli yangi ekranlarga ko'chirilib, funksiya
+  // butunlay olib tashlanadi.
+  // =========================================================================
+  function renderOwnerHomeScreen(profile) {
+    // Rasmda faqat bitta (qizil, KitchenOS uslubidagi) header bor — shu
+    // sababli umumiy app-shell header (setAppHeader, boshqa barcha
+    // ekranlarda ishlatiladi) shu ekranda ko'rsatilmaydi, o'rniga faqat
+    // koHomeHeaderHtml() qoladi.
+    clearAppHeader();
+    ekran(`
+      <div class="panel has-ko-bottom-nav ko-home-panel">
+        ${koHomeHeaderHtml(0, profile.name)}
+        ${koKpiGridSkeletonHtml()}
+        ${koStatusBannerSkeletonHtml()}
+        ${koMenuGridHtml()}
+        ${koAlertsListSkeletonHtml()}
+        ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
+        <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
+        <div class="kartochka">
+          <h2>Filial qo'shish</h2>
+          <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
+          <input type="text" id="branchAddressInput" placeholder="Manzil">
+          <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
+          <button class="btn" id="addBranchBtn">Filial qo'shish</button>
+          <div class="xabar" id="branchMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Filiallar</h2>
+          <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="section-label">${icon('link', 'icon-xs')} Mijozlar bilan ishlash</div>
+        <div class="kartochka">
+          <h2>Mijozlar uchun menyu</h2>
+          <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
+          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
+          <div id="customerLinkWrap"></div>
+          <div class="xabar" id="customerLinkMsg"></div>
+        </div>
+      </div>
+      ${koBottomNavHtml('bosh', 0)}
+    `);
+
+    loadOwnerDashboardStats(profile);
+    loadKoKpiGrid(profile);
+    wireKoStatusBanner(profile);
+    loadKoStatusBanner(profile);
+    wireKoMenuGrid(profile);
+    loadKoAlertsList(profile);
+    wireKoHomeHeader(profile);
+    wireKoBottomNav(profile);
+
+    document.getElementById('addBranchBtn').addEventListener('click', async () => {
+      const name = document.getElementById('branchNameInput').value.trim();
+      const address = document.getElementById('branchAddressInput').value.trim();
+      const phone = document.getElementById('branchPhoneInput').value.trim();
+      const msgEl = document.getElementById('branchMsg');
+      if (!name || !address) {
+        msgEl.textContent = 'Filial nomi va manzilini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/branch-add', { initData, name, address, phone });
+      if (res.ok) {
+        msgEl.textContent = 'Filial qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('branchNameInput').value = '';
+        document.getElementById('branchAddressInput').value = '';
+        document.getElementById('branchPhoneInput').value = '';
+        loadBranchAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('branchList').addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-remove-branch-id');
+      if (!id) return;
+      e.target.disabled = true;
+      await apiPost('/api/branch-remove', { initData, id });
+      loadBranchAndRender();
+    });
+
+    document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('customerLinkMsg');
+      const wrap = document.getElementById('customerLinkWrap');
+      msgEl.textContent = 'Yaratilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/customer-link', { initData });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        wrap.innerHTML = '';
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span>${escapeHtml(res.link)}</span>
+          <button id="copyCustomerLinkBtn">Nusxalash</button>
+        </div>
+        <div class="customer-link-hint">Bu havolani mijozlaringizga (masalan, ijtimoiy tarmoqlarda yoki stol ustida QR kod qilib) ulashing.</div>
+      `;
+      document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          msgEl.textContent = 'Havola nusxalandi.';
+          msgEl.className = 'xabar ok';
+        }).catch(() => {
+          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
+          msgEl.className = 'xabar err';
+        });
+      });
+    });
+
+    loadBranchAndRender();
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
       <div class="panel has-ko-bottom-nav">
         <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
-
-        <div class="owner-tab-panel ${ownerActiveTab === 'bosh' ? 'active' : ''}" data-tab="bosh">
-          ${koHomeHeaderHtml(0, profile.name)}
-          ${koKpiGridSkeletonHtml()}
-          ${koStatusBannerSkeletonHtml()}
-          ${koMenuGridHtml()}
-          ${koAlertsListSkeletonHtml()}
-          ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
-          <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
-          <div class="kartochka">
-            <h2>Filial qo'shish</h2>
-            <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
-            <input type="text" id="branchAddressInput" placeholder="Manzil">
-            <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
-            <button class="btn" id="addBranchBtn">Filial qo'shish</button>
-            <div class="xabar" id="branchMsg"></div>
-          </div>
-          <div class="kartochka">
-            <h2>Filiallar</h2>
-            <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
-          </div>
-          <div class="section-label">${icon('link', 'icon-xs')} Mijozlar bilan ishlash</div>
-          <div class="kartochka">
-            <h2>Mijozlar uchun menyu</h2>
-            <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
-            <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
-            <div id="customerLinkWrap"></div>
-            <div class="xabar" id="customerLinkMsg"></div>
-          </div>
-        </div>
 
         <div class="owner-tab-panel ${ownerActiveTab === 'menyu' ? 'active' : ''}" data-tab="menyu">
           <div class="kartochka">
@@ -1645,25 +1752,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
       ${koBottomNavHtml('bosh', 0)}
     `);
-    loadOwnerDashboardStats(profile);
-    loadKoKpiGrid(profile);
-    wireKoStatusBanner(profile);
-    loadKoStatusBanner(profile);
-    wireKoMenuGrid(profile);
-    loadKoAlertsList(profile);
-    wireKoHomeHeader(profile);
-    wireKoBottomNav(profile);
+    // 16-bosqich: bu yerda ilgari (kod endi renderOwnerHomeScreen() ichida)
+    // loadOwnerDashboardStats/loadKoKpiGrid/wireKoStatusBanner/... kabi "bosh"
+    // tabiga tegishli chaqiruvlar bor edi — ular ko'chirildi, chunki bu
+    // funksiya endi o'sha elementlarni umuman render qilmaydi.
     document.getElementById('openStockBtn').addEventListener('click', () => {
-      renderStockScreen(profile.name, 'egasi', () => renderProfileView(profile));
+      renderStockScreen(profile.name, 'egasi', () => renderOwnerHomeScreen(profile));
     });
     document.getElementById('openCashflowBtn').addEventListener('click', () => {
-      renderCashflowScreen(profile, () => renderProfileView(profile));
+      renderCashflowScreen(profile, () => renderOwnerHomeScreen(profile));
     });
     document.getElementById('openAiBtn').addEventListener('click', () => {
-      renderAiScreen(profile, () => renderProfileView(profile));
+      renderAiScreen(profile, () => renderOwnerHomeScreen(profile));
     });
     document.getElementById('openStaffControlBtn').addEventListener('click', () => {
-      renderStaffControlScreen(profile, () => renderProfileView(profile));
+      renderStaffControlScreen(profile, () => renderOwnerHomeScreen(profile));
     });
 
     document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
@@ -1776,70 +1879,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
-    document.getElementById('addBranchBtn').addEventListener('click', async () => {
-      const name = document.getElementById('branchNameInput').value.trim();
-      const address = document.getElementById('branchAddressInput').value.trim();
-      const phone = document.getElementById('branchPhoneInput').value.trim();
-      const msgEl = document.getElementById('branchMsg');
-      if (!name || !address) {
-        msgEl.textContent = 'Filial nomi va manzilini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/branch-add', { initData, name, address, phone });
-      if (res.ok) {
-        msgEl.textContent = 'Filial qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('branchNameInput').value = '';
-        document.getElementById('branchAddressInput').value = '';
-        document.getElementById('branchPhoneInput').value = '';
-        loadBranchAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('branchList').addEventListener('click', async (e) => {
-      const id = e.target.getAttribute('data-remove-branch-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/branch-remove', { initData, id });
-      loadBranchAndRender();
-    });
-
-    document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('customerLinkMsg');
-      const wrap = document.getElementById('customerLinkWrap');
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/customer-link', { initData });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        wrap.innerHTML = '';
-        return;
-      }
-      msgEl.textContent = '';
-      wrap.innerHTML = `
-        <div class="link-box">
-          <span>${escapeHtml(res.link)}</span>
-          <button id="copyCustomerLinkBtn">Nusxalash</button>
-        </div>
-        <div class="customer-link-hint">Bu havolani mijozlaringizga (masalan, ijtimoiy tarmoqlarda yoki stol ustida QR kod qilib) ulashing.</div>
-      `;
-      document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
-        }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
-        });
-      });
-    });
+    // 16-bosqich: "Filial qo'shish"/"Filiallar"/"Mijozlar havolasi" wiring'i
+    // (addBranchBtn, branchList, getCustomerLinkBtn) shu yerdan
+    // renderOwnerHomeScreen()ga ko'chirildi — bu funksiya endi o'sha
+    // elementlarni render qilmaydi.
 
     document.getElementById('addPromoBtn').addEventListener('click', async () => {
       const title = document.getElementById('promoTitleInput').value.trim();
@@ -3718,7 +3761,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
-    if (res.ok && res.profile) { applyBrandColor(res.profile.brandColor); renderProfileView(res.profile); }
+    if (res.ok && res.profile) { applyBrandColor(res.profile.brandColor); renderOwnerHomeScreen(res.profile); }
     else { resetBrandColor(); renderProfileForm(res.ok ? res.profile : null); }
   }
 
