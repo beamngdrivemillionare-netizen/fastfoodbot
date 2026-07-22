@@ -1157,12 +1157,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Aniq mos ekrani bor to'rttasi ulanadi: Bosh sahifa (joriy ekranning
-  // o'zi), Savdo (12-bosqichdagi qaror bilan bir xil: renderCashflowScreen),
-  // Bildirishnomalar va Profil (15-bosqichda qurilgan yangi ekranlar).
-  // Qolgan bittasi (Yangi buyurtma) uchun hali maqsad ekran belgilanmagan —
-  // renderCashierScreen orqaga qaytish imkoniyatisiz, egasi uchun
-  // to'g'ridan-to'g'ri mos emas, alohida qaror talab qiladi.
+  // Barcha beshtasi ulangan: Bosh sahifa (joriy ekranning o'zi), Savdo
+  // (renderCashflowScreen), Bildirishnomalar va Profil (15-bosqichda
+  // qurilgan ekranlar), va Yangi buyurtma — egasi uchun ham server
+  // (/api/create-order) 'egasi' rolini qabul qiladi, shu sababli kassir
+  // uchun tayyor bo'lgan renderCashierScreen shu yerda qayta ishlatiladi,
+  // faqat "← Orqaga" tugmasi bilan (kassirning o'z ekranida bu tugma yo'q,
+  // chunki u uning doimiy bosh sahifasi).
   function wireKoBottomNav(profile) {
     const nav = document.getElementById('koBottomNav');
     if (!nav) return;
@@ -1172,6 +1173,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const key = btn.getAttribute('data-ko-nav');
         if (key === 'bosh') return;
         if (key === 'savdo') { renderCashflowScreen(profile, goBack); return; }
+        if (key === 'yangiBuyurtma') {
+          cashierState.tab = 'yaratish';
+          renderCashierScreen(profile.name, goBack);
+          return;
+        }
         if (key === 'bildirishnomalar') { renderNotificationsScreen(profile, goBack); return; }
         if (key === 'profil') { renderOwnerProfileScreen(profile, goBack); return; }
         console.log(`KitchenOS: pastki nav "${key}" (hali ulanmagan)`);
@@ -1953,15 +1959,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  function renderCashierScreen(restaurantName) {
+  function renderCashierScreen(restaurantName, onBack) {
     stopOrdersPolling();
     if (cashierState.tab === 'holat') {
-      renderCashierOrdersTab(restaurantName);
+      renderCashierOrdersTab(restaurantName, onBack);
       return;
     }
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         ${cashierTabRowHtml()}
         <div class="bosh">Taomni bosib savatga qo'shing.</div>
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
@@ -1986,48 +1993,55 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `);
 
+    if (onBack) {
+      document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
+    }
     document.querySelector('.tab-row').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-cashier-tab');
       if (!t || t === cashierState.tab) return;
       cashierState.tab = t;
-      renderCashierScreen(restaurantName);
+      renderCashierScreen(restaurantName, onBack);
     });
 
     document.getElementById('orderTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-order-type');
       if (!t) return;
       cashierState.orderType = t;
-      renderCashierScreen(restaurantName);
+      renderCashierScreen(restaurantName, onBack);
     });
     document.getElementById('paymentTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-payment-type');
       if (!t) return;
       cashierState.paymentType = t;
-      renderCashierScreen(restaurantName);
+      renderCashierScreen(restaurantName, onBack);
     });
     const tableInput = document.getElementById('tableNumberInput');
     if (tableInput) tableInput.addEventListener('input', (e) => { cashierState.tableNumber = e.target.value; });
 
-    document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName));
+    document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
 
     loadCashierMenu(restaurantName);
   }
 
   // ---- Kassir: "Buyurtmalar holati" tabi — real-vaqtda ro'yxat, faqat "Tayyor" tugmasi bilan ----
-  function renderCashierOrdersTab(restaurantName) {
+  function renderCashierOrdersTab(restaurantName, onBack) {
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         ${cashierTabRowHtml()}
         ${cashierStatusChipsHtml()}
         <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
+    if (onBack) {
+      document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
+    }
     document.querySelector('.tab-row').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-cashier-tab');
       if (!t || t === cashierState.tab) return;
       cashierState.tab = t;
-      renderCashierScreen(restaurantName);
+      renderCashierScreen(restaurantName, onBack);
     });
     document.getElementById('cashierStatusChips').addEventListener('click', (e) => {
       const key = e.target.getAttribute('data-status-chip');
@@ -2094,7 +2108,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (el) el.textContent = cashierCartTotal() + " so'm";
   }
 
-  async function sendCashierOrder(restaurantName) {
+  async function sendCashierOrder(restaurantName, onBack) {
     const msgEl = document.getElementById('orderMsg');
     const items = Object.entries(cashierState.cart)
       .filter(([, qty]) => qty > 0)
@@ -2124,7 +2138,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (res.ok) {
       cashierState.cart = {};
       msgEl.textContent = '';
-      renderCashierScreen(restaurantName);
+      renderCashierScreen(restaurantName, onBack);
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
       topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${res.total} so'm)`;
