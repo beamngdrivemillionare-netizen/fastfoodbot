@@ -2194,6 +2194,28 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: mijoz — asosiy "Ochish" tugmasi orqali kirganda (havolasiz) faol oshxonalar ro'yxati ----
+  // ---- API: bitta oshxonaning ochiq brend ma'lumoti (nomi, logotipi, rangi) ----
+  // Mijoz ilovasi ochilganda "Tekshirilmoqda..." o'rniga darhol shu oshxonaning
+  // logotipi va "Xush kelibsiz!" yozuvini ko'rsatish uchun — shu sababli bu
+  // yengil va TEZ ishlaydigan, autentifikatsiya/yozuv talab qilmaydigan
+  // so'rov (bir xil ma'lumot allaqachon ochiq menyu sahifasida ko'rinadi).
+  if (req.method === 'POST' && req.url === '/api/restaurant-brand') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { ownerId } = payload;
+      if (!ownerId) return sendJSON(res, 200, { ok: false });
+      const owner = findOwner(loadOwners(), ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false });
+      return sendJSON(res, 200, {
+        ok: true,
+        name: (owner.profile && owner.profile.name) || 'Oshxona',
+        logoUrl: (owner.profile && owner.profile.logoUrl) || null,
+        brandColor: (owner.profile && owner.profile.brandColor) || null
+      });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/customer-restaurants-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
