@@ -631,6 +631,104 @@
   .ko-bottom-nav-fab .icon { width: 24px; height: 24px; color: #fff; }
   .has-ko-bottom-nav { padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
 
+  /* =========================================================================
+     14-bosqich: hamburger yon-menyu (sidebar). #app'dan TASHQARIDA
+     (document.body farzandi) qo'shiladigan overlay + chapdan suzib
+     chiquvchi panel — shu sababli z-index bu yerdagi eng yuqorisi
+     (.app-header'ning 50'sidan ham baland), .overlay/.modal (10) bilan
+     aralashmasin deb ataylab ajratilgan.
+     ========================================================================= */
+  .ko-sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 17, 17, 0.5);
+    z-index: 60;
+    animation: overlay-fade var(--transition-base);
+  }
+  .ko-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(78vw, 300px);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-floating);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    animation: ko-sidebar-slide-in var(--transition-base);
+  }
+  .ko-sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    background: var(--header-bg);
+    color: var(--header-on);
+    padding: var(--sp-5) var(--sp-4);
+    padding-top: calc(var(--sp-5) + env(safe-area-inset-top, 0px));
+    flex-shrink: 0;
+  }
+  .ko-sidebar-header-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-pill);
+    background: color-mix(in srgb, var(--header-on) 20%, transparent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .ko-sidebar-header-logo .icon { color: var(--header-on); }
+  .ko-sidebar-header-titles { min-width: 0; flex: 1; }
+  .ko-sidebar-header-title {
+    font-size: var(--fs-h2);
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ko-sidebar-header-subtitle {
+    font-size: var(--fs-xs);
+    color: var(--header-on-muted);
+    margin-top: 2px;
+  }
+  .ko-sidebar-close-btn {
+    background: none;
+    border: none;
+    color: var(--header-on);
+    padding: 4px;
+    display: flex;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .ko-sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    padding: var(--sp-2) 0;
+  }
+  .ko-sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    width: 100%;
+    background: none;
+    border: none;
+    padding: var(--sp-3) var(--sp-4);
+    font-size: var(--fs-body);
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .ko-sidebar-item:active { background: var(--surface-1); }
+  .ko-sidebar-item-icon { display: flex; color: var(--brand-primary); flex-shrink: 0; }
+  .ko-sidebar-item-icon .icon { width: 20px; height: 20px; }
+
+  @keyframes ko-sidebar-slide-in {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+  }
+
   /* ---- Admin panel ---- */
   .panel {
     width: 100%;
