@@ -169,48 +169,6 @@
   }
 
   /* =========================================================================
-     PASTKI TAB-BAR (12-bosqich): ko'p bo'limli rollar (masalan oshxona egasi)
-     uchun — bo'limlar orasida tugma bosib "sakrash" o'rniga doimiy pastki
-     navigatsiya. Faqat shu rol uchun chiqadi (bir bo'limli rollarda kerak
-     emas). Sahifa DOM'i qayta chizilmaydi — bo'limlar shunchaki
-     ko'rsatiladi/yashiriladi, shu bilan barcha mavjud ID/listener'lar saqlanadi.
-     ========================================================================= */
-  .tab-bar-bottom {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 40;
-    display: flex;
-    width: 100%;
-    max-width: 480px;
-    margin: 0 auto;
-    background: var(--surface-0);
-    border-top: 1px solid var(--border-color);
-    padding-bottom: env(safe-area-inset-bottom, 0);
-  }
-  .tab-bar-bottom button {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    padding: 8px 2px 7px;
-    background: none;
-    border: none;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-muted);
-    cursor: pointer;
-  }
-  .tab-bar-bottom button .icon { width: 20px; height: 20px; }
-  .tab-bar-bottom button.active { color: var(--brand-primary); transition: color var(--transition-fast); }
-  .has-bottom-tabs { padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
-  .owner-tab-panel { display: none; }
-  .owner-tab-panel.active { display: block; }
-
-  /* =========================================================================
      3-bosqich: KitchenOS bosh sahifa header'i. #app'ning standart
      padding'idan (--sp-6) chetga chiqib, chekkadan-chekkagacha (full-bleed)
      qizil panel hosil qilish uchun manfiy margin ishlatiladi.
@@ -384,10 +342,7 @@
   .ko-kpi-delta.down { color: var(--kpi-delta-down); }
   .ko-kpi-delta .icon { width: 13px; height: 13px; }
 
-  /* ---- Skeleton (yuklanish) holati — mavjud .skeleton (shimmer) naqshidan.
-     Diqqat: pastroqdagi .skeleton-block OQ fonli (qizil dashboard-hero-card
-     ustida ishlatish uchun) — bu yerda ISHLATILMAYDI, chunki KPI-kartochka
-     oq/och sirt (surface-0) ustida, oq skeleton unda ko'rinmas bo'lar edi. */
+  /* ---- Skeleton (yuklanish) holati — mavjud .skeleton (shimmer) naqshidan. */
   .ko-kpi-card.skeleton-tile .ko-kpi-icon { background: var(--surface-1); }
   .ko-kpi-card.skeleton-tile .ko-kpi-icon .icon { visibility: hidden; }
   .ko-kpi-card.skeleton-tile .ko-kpi-value.skeleton {
@@ -605,11 +560,9 @@
   /* =========================================================================
      14-bosqich: KitchenOS bosh sahifa PASTKI navigatsiya — rasmdagi kabi
      5 ta band: Bosh sahifa / Savdo / Yangi buyurtma (markazda qizil FAB) /
-     Bildirishnomalar / Profil. Eski 4-tabli `.tab-bar-bottom` (OWNER_TABS)
-     hamon faylda qoladi — u "Menyu" (taom boshqaruvi) panelini ko'rsatish
-     uchun ishlatilgan edi, lekin yangi navda "Menyu"ga aniq joy yo'q; bu
-     16/20-bosqichda hal qilinishi kerak bo'lgan ochiq masala (pastdagi
-     izohga qarang). Hozircha faqat ko'rinish almashtiriladi.
+     Bildirishnomalar / Profil. Eski 4-tabli tab-bar (`.owner-tab-panel`
+     bilan ishlagan) 20-bosqichda butunlay o'chirildi — uning "Menyu" (taom
+     boshqaruvi) paneli Sozlamalar ekraniga ko'chirildi.
      ========================================================================= */
   .ko-bottom-nav {
     position: fixed;
@@ -1617,92 +1570,4 @@
     font-weight: 600;
     cursor: pointer;
     padding: 2px 4px;
-  }
-
-  /* ---- Bosh sahifadagi savdo/tushum dashboard-kartasi ---- */
-  .dashboard-hero-card {
-    background: linear-gradient(155deg, var(--brand-primary) 0%, var(--brand-primary-dark) 100%);
-    color: var(--brand-on-primary);
-    margin-top: var(--sp-3);
-    box-shadow: var(--shadow-card);
-  }
-  .dash-hero-top {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--sp-2);
-    margin-bottom: var(--sp-3);
-  }
-  .dash-hero-title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--fs-h2);
-    font-weight: 700;
-  }
-  .dash-hero-sub {
-    font-size: var(--fs-xs);
-    opacity: 0.85;
-    white-space: nowrap;
-  }
-  .dash-stats-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--sp-2);
-  }
-  .dash-stat-tile {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: rgba(255, 255, 255, 0.14);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-  }
-  .dash-stat-icon {
-    flex-shrink: 0;
-    width: 32px; height: 32px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
-    display: flex; align-items: center; justify-content: center;
-    color: var(--brand-on-primary);
-  }
-  .dash-stat-body { min-width: 0; }
-  .dash-stat-label {
-    font-size: 11px;
-    opacity: 0.85;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dash-stat-val {
-    font-size: 16px;
-    font-weight: 700;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dash-stat-tile.negative .dash-stat-val { color: #FFD7D7; }
-  .dash-hero-btn {
-    margin-top: var(--sp-3);
-    background: rgba(255, 255, 255, 0.16);
-    border-color: rgba(255, 255, 255, 0.35);
-    color: var(--brand-on-primary);
-  }
-  .dash-hero-btn:hover { background: rgba(255, 255, 255, 0.26); }
-
-  /* ---- Yuklanish skeleton holati ---- */
-  .skeleton-block {
-    background: rgba(255, 255, 255, 0.22);
-    border-radius: var(--radius-sm);
-    animation: dash-skeleton-pulse 1.2s ease-in-out infinite;
-  }
-  .skeleton-text { height: 14px; width: 70%; margin-top: 4px; }
-  .skeleton-tile .dash-stat-icon { background: rgba(255, 255, 255, 0.22); }
-  @keyframes dash-skeleton-pulse {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 1; }
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .dash-stat-tile { background: rgba(255, 255, 255, 0.1); }
   }
