@@ -1677,6 +1677,25 @@
     white-space: nowrap;
     transition: background-color var(--transition-fast), color var(--transition-fast);
   }
+  /* Bir nechta vakolatli xodim uchun - rol belgisi yonidagi "rol almashtirish"
+     tugmasi (qarang: renderStaffScreen/staffRoleSwitchHandler). Faqat shunday
+     xodimlarda ko'rinadi, shuning uchun margin-left:auto endi shu tugmada. */
+  .app-header .app-header-role-switch-btn {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-pill);
+    border: none;
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .app-header .app-header-role-badge + .app-header-role-switch-btn { margin-left: 6px; }
+  .app-header .app-header-role-switch-btn:active { transform: scale(0.92); }
 
   /* =========================================================================
      Egasi profili — professional dashboard (savdo/tushum) va logotip
