@@ -64,6 +64,65 @@ function verifyTelegramInitData(initData, botToken) {
   return { ok: true, user };
 }
 
+// ====== Login/parol orqali kirish (oshxona egasi uchun, Telegram tashqarisidan ham) ======
+// Admin har bir oshxona egasiga login+parol biriktirib qo'yishi mumkin (owner.login,
+// owner.passwordHash — "tuz:hash" ko'rinishida, scrypt bilan). Owner shu login/parol
+// bilan /api/owner-login orqali kirsa, unga "sess_<token>" ko'rinishidagi sessiya
+// beriladi — frontend buni xuddi Telegram initData o'rniga ishlatadi. Shu sababli
+// pastdagi verifyAuth() BARCHA endpoint'larda verifyTelegramInitData o'rniga
+// chaqiriladi va ikkala usulni ham (Telegram initData YOKI sess_ token) tushunadi —
+// shu bilan minglab qatordagi endpoint kodini o'zgartirmasdan ikkala kirish usuli ham ishlaydi.
+const SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 kun
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  if (!stored || typeof stored !== 'string' || !stored.includes(':')) return false;
+  const [salt, hash] = stored.split(':');
+  try {
+    const computed = crypto.scryptSync(String(password), salt, 64).toString('hex');
+    const a = Buffer.from(hash, 'hex');
+    const b = Buffer.from(computed, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) {
+    return false;
+  }
+}
+
+function normalizeLogin(login) {
+  return String(login || '').trim().toLowerCase();
+}
+
+// initData ham Telegram'dan (imzolangan), ham login/parol orqali olingan
+// "sess_<token>" bo'lishi mumkin — shu yerda ikkalasi ham tekshiriladi va
+// natija har doim bir xil shaklda ({ok, user:{id,...}} yoki {ok:false, reason})
+// qaytariladi, shunda pastdagi barcha /api/... endpoint'lar o'zgarishsiz ishlayveradi.
+function verifyAuth(initData) {
+  if (typeof initData === 'string' && initData.startsWith('sess_')) {
+    const token = initData.slice('sess_'.length);
+    const owners = loadOwners();
+    const owner = owners.find(o => o.sessionToken === token);
+    if (!owner) return { ok: false, reason: 'Sessiya topilmadi. Iltimos, qaytadan login/parol bilan kiring.' };
+    if (!owner.sessionExpiresAt || new Date(owner.sessionExpiresAt).getTime() < Date.now()) {
+      return { ok: false, reason: 'Sessiya muddati tugagan. Iltimos, qaytadan login/parol bilan kiring.' };
+    }
+    return {
+      ok: true,
+      user: {
+        id: owner.id,
+        username: owner.username || owner.login || null,
+        first_name: (owner.profile && owner.profile.name) || owner.login || 'Egasi'
+      }
+    };
+  }
+  return verifyTelegramInitData(initData, BOT_TOKEN);
+}
+
 // ====== Do'kon egalari (owners) — oddiy JSON fayl orqali saqlanadi ======
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
 
@@ -1083,7 +1142,7 @@ const server = http.createServer((req, res) => {
       const { initData } = payload;
       if (!initData) return sendJSON(res, 400, { ok: false, reason: 'initData yo\'q' });
 
-      const result = verifyTelegramInitData(initData, BOT_TOKEN);
+      const result = verifyAuth(initData);
       if (!result.ok) return sendJSON(res, 200, { ok: false, reason: result.reason });
 
       const userId = String(result.user && result.user.id);
@@ -1115,7 +1174,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/staff-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1133,7 +1192,7 @@ const server = http.createServer((req, res) => {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, input, role, roles, branchId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1196,7 +1255,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id, roles } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1227,7 +1286,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id, branchId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1257,7 +1316,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1278,7 +1337,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/branch-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1296,7 +1355,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, name, address, phone } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1331,7 +1390,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id, name, address, phone } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1363,7 +1422,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1384,7 +1443,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/menu-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1402,7 +1461,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, name, price, category, description, imageUrl } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1443,7 +1502,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id, name, price, category, description, imageUrl, available } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1487,7 +1546,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1510,7 +1569,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-link') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1529,7 +1588,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/delivery-group-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1548,7 +1607,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/delivery-group-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1566,7 +1625,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/promo-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1582,7 +1641,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, title, description, discountPercent, minTotal } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1624,7 +1683,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1645,7 +1704,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1664,7 +1723,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1680,7 +1739,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, enabled, earnPercent } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
@@ -1702,7 +1761,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-restaurants-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const owners = pruneExpiredOwners();
@@ -1726,7 +1785,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
 
@@ -1763,7 +1822,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, ownerId);
@@ -1781,7 +1840,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, itemId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       if (!itemId) return sendJSON(res, 200, { ok: false, reason: 'Taom ko\'rsatilmagan.' });
 
@@ -1806,7 +1865,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -1829,7 +1888,7 @@ const server = http.createServer((req, res) => {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote, requestId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2126,7 +2185,7 @@ const server = http.createServer((req, res) => {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, items, orderType, tableNumber, paymentType, requestId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2232,7 +2291,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/orders-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2262,7 +2321,7 @@ const server = http.createServer((req, res) => {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, orderId, status } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2319,7 +2378,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, orderId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2357,7 +2416,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, orderId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2392,7 +2451,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/stock-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2417,7 +2476,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, name, qty, unit, price, minQty } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2490,7 +2549,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id, branchId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2520,7 +2579,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/stock-movements') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2545,7 +2604,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, stockId, branchId, qty } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2613,7 +2672,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, menuId, recipe } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2647,7 +2706,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, entries } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2722,7 +2781,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/audit-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2858,7 +2917,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, amount, note, category } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2896,7 +2955,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2918,7 +2977,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/cashflow') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2942,7 +3001,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -2996,7 +3055,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/order-status-counts') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3045,7 +3104,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/dashboard-alerts') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3121,7 +3180,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, period } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3161,7 +3220,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, period } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3199,7 +3258,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, percent } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3265,7 +3324,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/z-report-create') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3301,7 +3360,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/z-report-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3455,7 +3514,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, period, branchId } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3487,7 +3546,7 @@ const server = http.createServer((req, res) => {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, question } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3530,7 +3589,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, staffId, limit } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3562,7 +3621,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, period } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3601,7 +3660,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/my-profile') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3621,7 +3680,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, name, address, phone, workHours, logoUrl, brandColor } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3671,15 +3730,149 @@ const server = http.createServer((req, res) => {
   }
 
   // ---- API: do'kon egalari ro'yxatini olish (faqat admin) ----
+  // MUHIM: passwordHash/sessionToken kabi maxfiy maydonlar frontendga hech qachon
+  // yuborilmaydi — faqat login mavjudligini bildiruvchi hasLogin bayrog'i qaytariladi.
   if (req.method === 'POST' && req.url === '/api/owners') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
 
-      return sendJSON(res, 200, { ok: true, owners: pruneExpiredOwners() });
+      const owners = pruneExpiredOwners().map(o => {
+        const clean = Object.assign({}, o);
+        delete clean.passwordHash;
+        delete clean.sessionToken;
+        delete clean.sessionExpiresAt;
+        clean.hasLogin = !!(o.login && o.passwordHash);
+        return clean;
+      });
+      return sendJSON(res, 200, { ok: true, owners });
+    });
+    return;
+  }
+
+  // ---- API: admin do'kon egasiga login+parol biriktiradi (yoki yangilaydi) ----
+  // Shu login/parol bilan owner Mini App'ni Telegram tashqarisida (brauzerdan)
+  // ham ochib, o'z panelига kira oladi (qarang: pastdagi /api/owner-login).
+  if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, login, password } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      const loginNorm = normalizeLogin(login);
+      if (!/^[a-z0-9_.]{3,32}$/.test(loginNorm)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Login 3-32 belgi, faqat lotin harflari/raqam/._ bo\'lishi mumkin.' });
+      }
+      const passwordStr = String(password || '');
+      if (passwordStr.length < 6) {
+        return sendJSON(res, 200, { ok: false, reason: 'Parol kamida 6 belgidan iborat bo\'lishi kerak.' });
+      }
+      const clash = owners.find(o => normalizeLogin(o.login) === loginNorm && String(o.id) !== String(owner.id));
+      if (clash) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu login band, boshqasini tanlang.' });
+      }
+
+      owner.login = loginNorm;
+      owner.passwordHash = hashPassword(passwordStr);
+      // Parol yangilansa, oldingi barcha sessiyalar bekor qilinadi (xavfsizlik uchun)
+      owner.sessionToken = null;
+      owner.sessionExpiresAt = null;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, login: owner.login });
+    });
+    return;
+  }
+
+  // ---- API: admin do'kon egasidan login/parolni olib tashlaydi (Telegram orqali kirish ishlayveradi) ----
+  if (req.method === 'POST' && req.url === '/api/remove-owner-credentials') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      owner.login = null;
+      owner.passwordHash = null;
+      owner.sessionToken = null;
+      owner.sessionExpiresAt = null;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: oshxona egasi login+parol bilan kiradi (Telegram tashqarisidan, masalan oddiy brauzerdan) ----
+  // Muvaffaqiyatli bo'lsa "sess_<token>" beriladi — frontend buni initData o'rniga ishlatadi.
+  if (req.method === 'POST' && req.url === '/api/owner-login') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { login, password } = payload;
+      const loginNorm = normalizeLogin(login);
+      if (!loginNorm || !password) {
+        return sendJSON(res, 200, { ok: false, reason: 'Login va parolni kiriting.' });
+      }
+
+      const owners = pruneExpiredOwners();
+      const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
+      if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Login yoki parol noto\'g\'ri.' });
+      }
+      if (!isOwnerAccessValid(owner)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Obuna muddati tugagan. Administrator bilan bog\'laning.' });
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, owner.id);
+      const token = crypto.randomBytes(24).toString('hex');
+      target.sessionToken = token;
+      target.sessionExpiresAt = new Date(Date.now() + SESSION_TOKEN_TTL_MS).toISOString();
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, {
+        ok: true,
+        sessionToken: `sess_${token}`,
+        restaurantName: (target.profile && target.profile.name) || null
+      });
+    });
+    return;
+  }
+
+  // ---- API: oshxona egasi chiqadi (joriy sessiyani bekor qiladi) ----
+  if (req.method === 'POST' && req.url === '/api/owner-logout') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      if (typeof initData === 'string' && initData.startsWith('sess_')) {
+        const token = initData.slice('sess_'.length);
+        const owners = loadOwners();
+        const owner = owners.find(o => o.sessionToken === token);
+        if (owner) {
+          owner.sessionToken = null;
+          owner.sessionExpiresAt = null;
+          saveOwners(owners);
+        }
+      }
+      return sendJSON(res, 200, { ok: true });
     });
     return;
   }
@@ -3689,7 +3882,7 @@ const server = http.createServer((req, res) => {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, input, days, price, paid } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3747,7 +3940,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id, price, paid } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3784,7 +3977,7 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
-      const check = verifyTelegramInitData(initData, BOT_TOKEN);
+      const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
       const userId = String(check.user && check.user.id);
@@ -3805,7 +3998,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/create-invite') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const check = verifyTelegramInitData(payload.initData, BOT_TOKEN);
+      const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin havola yarata oladi' });
