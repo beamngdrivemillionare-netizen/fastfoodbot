@@ -1490,9 +1490,9 @@ const server = http.createServer((req, res) => {
         role: staffInfo ? staffInfo.role : null,
         roles: staffInfo ? staffInfo.roles : null,
         roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
-        ownerRestaurantName: staffInfo ? staffInfo.ownerName : null,
-        ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : null,
-        ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : null,
+        ownerRestaurantName: staffInfo ? staffInfo.ownerName : (ownerOk ? ((owner.profile && owner.profile.name) || null) : null),
+        ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : (ownerOk ? ((owner.profile && owner.profile.logoUrl) || null) : null),
+        ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : (ownerOk ? ((owner.profile && owner.profile.brandColor) || null) : null),
         hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
         // Egasi uchun admin login/parol o'rnatib qo'ygan bo'lsa — Telegram orqali
         // kirganda ham (initData avtomatik bo'lsa-da) bir martalik parol so'raladi
