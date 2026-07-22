@@ -2824,7 +2824,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <select id="stockUnitInput">
             ${Object.entries(STOCK_UNIT_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
           </select>
-          <input type="text" id="stockPriceInput" placeholder="Narxi, so'm (ixtiyoriy)" inputmode="numeric">
+          <input type="text" id="stockPriceInput" placeholder="Narxi, so'm *" inputmode="numeric">
           <input type="text" id="stockMinInput" placeholder="Kam qolish chegarasi (ixtiyoriy)" inputmode="decimal">
           <button class="btn" id="stockAddBtn">Qo'shish</button>
           <div class="xabar" id="stockAddMsg"></div>
@@ -2863,11 +2863,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
         return;
       }
+      // 5-bosqich: narx endi majburiy — har bir kirim uchun avtomatik
+      // xarajat yozuvi (Moliya) shu narxdan hisoblanadi.
+      if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) {
+        msgEl.textContent = 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
       const res = await apiPost('/api/stock-add', { initData, name, qty, unit, price, minQty, branchId: currentStockBranchId });
       if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi.';
+        msgEl.textContent = 'Qo\'shildi. Xarajat Moliyaga avtomatik yozildi.';
         msgEl.className = 'xabar ok';
         document.getElementById('stockNameInput').value = '';
         document.getElementById('stockQtyInput').value = '';
