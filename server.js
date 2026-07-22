@@ -1966,7 +1966,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/menu-update') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, price, category, description, imageUrl, available } = payload;
+      const { initData, id, name, price, category, description, imageUrl, available, directStockId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -1999,6 +1999,26 @@ const server = http.createServer((req, res) => {
         item.imageUrl = imageTrim || null;
       }
       if (available !== undefined) item.available = !!available;
+
+      // 17-bosqich: taomning turini ("Tayyorlanadigan" / "To'g'ridan skladdan")
+      // tahrirlash oynasidan ham o'zgartirish mumkin. Bo'sh qator ('') yuborilsa —
+      // "to'g'ridan skladdan" turi bekor qilinib, oddiy (retseptli) taomga qaytadi.
+      if (directStockId !== undefined) {
+        const directTrim = String(directStockId || '').trim();
+        if (!directTrim) {
+          item.directStockId = null;
+        } else {
+          // Retsepti bor taomni to'g'ridan-sklad turiga o'tkazib bo'lmaydi —
+          // avval retseptni tozalash kerak (aks holda ikkalasi ham ishlaydigan
+          // noaniq holat paydo bo'ladi).
+          if (Array.isArray(item.recipe) && item.recipe.length) {
+            return sendJSON(res, 200, { ok: false, reason: 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.' });
+          }
+          const stockItem = findStockItem(owner, directTrim);
+          if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti (markaziy skladda) topilmadi.' });
+          item.directStockId = directTrim;
+        }
+      }
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, item });
