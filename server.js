@@ -162,6 +162,42 @@ const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyo
 // Hozircha taxminiy qiymat — kerak bo'lsa keyinroq moslashtirish mumkin.
 const ORDER_DELAY_THRESHOLD_MINUTES = 20;
 
+// ---- Buyurtma yaratishda "ikki marta bosish" / tarmoq qayta yuborishi tufayli ----
+// ---- bitta buyurtmaning ikki marta yaratilib ketishining oldini olish ----
+// Klient har bir chek-aut urinishi uchun bitta `requestId` yuboradi. Shu
+// `requestId` bilan avval muvaffaqiyatli buyurtma yaratilgan bo'lsa, server
+// yangi buyurtma yaratmasdan, oldingi natijani qaytaradi (sklad ham qayta
+// kamaytirilmaydi). Yozuvlar xotirada saqlanadi va bir muddatdan so'ng
+// avtomatik tozalanadi — bu faqat qisqa muddatli himoya, doimiy audit emas.
+const ORDER_REQUEST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 daqiqa
+const orderRequestCache = new Map(); // key: `${ownerId}:${userId}:${requestId}` -> { response, expiresAt }
+
+function getCachedOrderResponse(ownerId, userId, requestId) {
+  if (!requestId) return null;
+  const key = `${ownerId}:${userId}:${requestId}`;
+  const entry = orderRequestCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    orderRequestCache.delete(key);
+    return null;
+  }
+  return entry.response;
+}
+
+function setCachedOrderResponse(ownerId, userId, requestId, response) {
+  if (!requestId) return;
+  const key = `${ownerId}:${userId}:${requestId}`;
+  orderRequestCache.set(key, { response, expiresAt: Date.now() + ORDER_REQUEST_CACHE_TTL_MS });
+}
+
+// Eskirgan keshlarni vaqti-vaqti bilan tozalab turadi (xotira sizib ketmasligi uchun)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of orderRequestCache) {
+    if (entry.expiresAt < now) orderRequestCache.delete(key);
+  }
+}, 5 * 60 * 1000);
+
 function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
 }
@@ -1792,7 +1828,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote } = payload;
+      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote, requestId } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -1800,6 +1836,12 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+
+      // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
+      // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
+      // muvaffaqiyatli javob berilgan bo'lsa, o'shani qaytaramiz.
+      const cachedResponse = getCachedOrderResponse(owner.id, userId, requestId);
+      if (cachedResponse) return sendJSON(res, 200, cachedResponse);
 
       if (!Array.isArray(items) || !items.length) {
         return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
@@ -1979,11 +2021,13 @@ const server = http.createServer((req, res) => {
         notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
       }
 
-      return sendJSON(res, 200, {
+      const successResponse = {
         ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
         bonusBalance: customer.bonusPoints, paymentPending: !!order.paymentProofStatus,
         paymentConfirmMethod: order.paymentConfirmMethod
-      });
+      };
+      setCachedOrderResponse(owner.id, userId, requestId, successResponse);
+      return sendJSON(res, 200, successResponse);
     });
     return;
   }
@@ -2081,7 +2125,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/create-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, items, orderType, tableNumber, paymentType } = payload;
+      const { initData, items, orderType, tableNumber, paymentType, requestId } = payload;
       const check = verifyTelegramInitData(initData, BOT_TOKEN);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -2091,6 +2135,12 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir buyurtma yaratishi mumkin' });
       }
+
+      // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
+      // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
+      // muvaffaqiyatli javob berilgan bo'lsa, o'shani qaytaramiz.
+      const cachedResponse = getCachedOrderResponse(ctx.owner.id, userId, requestId);
+      if (cachedResponse) return sendJSON(res, 200, cachedResponse);
 
       if (!Array.isArray(items) || !items.length) {
         return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
@@ -2171,7 +2221,9 @@ const server = http.createServer((req, res) => {
       }
       notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
 
-      return sendJSON(res, 200, { ok: true, orderId: order.id, total });
+      const successResponse = { ok: true, orderId: order.id, total };
+      setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
+      return sendJSON(res, 200, successResponse);
     });
     return;
   }
