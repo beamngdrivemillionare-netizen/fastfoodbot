@@ -2321,6 +2321,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function renderCashierScreen(restaurantName, onBack) {
     stopOrdersPolling();
+    disconnectSectionedMenuObserver('cashierCatRow');
     if (cashierState.tab === 'holat') {
       renderCashierOrdersTab(restaurantName, onBack);
       return;
@@ -2416,30 +2417,127 @@ const tg = window.Telegram && window.Telegram.WebApp;
     startOrdersPolling('kassir');
   }
 
-  function cashierMenuHtml() {
-    if (!cashierState.menu.length) return `<div class="bosh">Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang.</div>`;
-    return cashierState.menu.map(m => {
-      const qty = cashierState.cart[m.id] || 0;
-      const thumbHtml = m.imageUrl
-        ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
-        : `<div class="menu-item-thumb-empty"></div>`;
-      return `
-        <div class="menu-item">
-          <div class="menu-item-info">
-            ${thumbHtml}
-            <div>
-              <div class="m-name">${escapeHtml(m.name)}</div>
-              <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
-            </div>
-          </div>
-          <div class="qty-controls">
-            <button data-qty-minus="${escapeHtml(m.id)}">-</button>
-            <span class="qty-val">${qty}</span>
-            <button data-qty-plus="${escapeHtml(m.id)}">+</button>
+  // ==================== K. Umumiy: bo'limlarga bo'lingan menyu (29-30-bosqich) ====================
+  // Mijoz va kassir menyusi bir xil "bo'lim + sticky tab-bar + scrollspy"
+  // mantig'iga muhtoj edi — shu komponent ikkalasida ham qayta ishlatiladi,
+  // faqat karta ko'rinishi (renderItem) va konteyner id'lari (opts) farq qiladi.
+
+  function groupMenuItems(items) {
+    const order = [];
+    const groups = {};
+    items.forEach(m => {
+      const cat = m.category || 'Boshqa';
+      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
+      groups[cat].push(m);
+    });
+    return { order, groups };
+  }
+
+  // opts: { sectionIdPrefix, itemsWrapperClass, renderItem, emptyText }
+  function renderSectionedMenu(items, opts) {
+    if (!items.length) return `<div class="bosh">${opts.emptyText}</div>`;
+    const { order, groups } = groupMenuItems(items);
+    return order.map((cat, i) => `
+      <div class="menu-section" id="${opts.sectionIdPrefix}-${i}">
+        <div class="cat-heading">${escapeHtml(cat)}</div>
+        <div class="${opts.itemsWrapperClass || ''}">${groups[cat].map(opts.renderItem).join('')}</div>
+      </div>
+    `).join('');
+  }
+
+  // opts: { tabRowId, sectionIdPrefix, listElId }
+  function sectionedMenuTabsHtml(items, opts) {
+    const { order } = groupMenuItems(items);
+    if (order.length <= 1) return '';
+    return `
+      <div class="cat-row sectioned-menu-tabs" id="${opts.tabRowId}">
+        <div class="cat-opt" data-section-id="${opts.listElId}">Hammasi</div>
+        ${order.map((c, i) => `<div class="cat-opt" data-section-id="${opts.sectionIdPrefix}-${i}">${escapeHtml(c)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  // tabRowId bo'yicha kalitlangan IntersectionObserver'lar — mijoz va
+  // kassir ekranlari bir vaqtda alohida ishlaydi, biri ikkinchisiga
+  // xalaqit bermaydi.
+  const sectionedMenuObservers = {};
+
+  function disconnectSectionedMenuObserver(tabRowId) {
+    if (sectionedMenuObservers[tabRowId]) {
+      sectionedMenuObservers[tabRowId].disconnect();
+      delete sectionedMenuObservers[tabRowId];
+    }
+  }
+
+  function attachSectionedMenuTabHandlers(tabRowId) {
+    const tabRow = document.getElementById(tabRowId);
+    if (!tabRow) return;
+    tabRow.addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-section-id]');
+      if (!opt) return;
+      const targetEl = document.getElementById(opt.getAttribute('data-section-id'));
+      if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  function attachSectionedMenuScrollSpy(tabRowId, listElId) {
+    disconnectSectionedMenuObserver(tabRowId);
+    const tabRow = document.getElementById(tabRowId);
+    if (!tabRow) return;
+    const sections = Array.from(document.querySelectorAll('#' + listElId + ' .menu-section'));
+    if (!sections.length) return;
+
+    const setActiveTab = (sectionId) => {
+      tabRow.querySelectorAll('[data-section-id]').forEach(opt => {
+        const isActive = opt.getAttribute('data-section-id') === sectionId;
+        opt.classList.toggle('selected', isActive);
+        if (isActive) opt.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      });
+    };
+    setActiveTab(sections[0].id);
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => { if (entry.isIntersecting) setActiveTab(entry.target.id); });
+    }, { rootMargin: '-96px 0px -70% 0px', threshold: 0 });
+    sections.forEach(sec => observer.observe(sec));
+    sectionedMenuObservers[tabRowId] = observer;
+  }
+
+  function cashierItemRowHtml(m) {
+    const qty = cashierState.cart[m.id] || 0;
+    const thumbHtml = m.imageUrl
+      ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
+      : `<div class="menu-item-thumb-empty"></div>`;
+    return `
+      <div class="menu-item">
+        <div class="menu-item-info">
+          ${thumbHtml}
+          <div>
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
           </div>
         </div>
-      `;
-    }).join('');
+        <div class="qty-controls">
+          <button data-qty-minus="${escapeHtml(m.id)}">-</button>
+          <span class="qty-val">${qty}</span>
+          <button data-qty-plus="${escapeHtml(m.id)}">+</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // 29-bosqich: kassirning "Yangi buyurtma" menyusi ham mijoznikiga
+  // o'xshab bo'limlarga ajratildi (umumiy komponent — 30-bosqich).
+  function cashierMenuHtml() {
+    return `
+      ${sectionedMenuTabsHtml(cashierState.menu, { tabRowId: 'cashierCatRow', sectionIdPrefix: 'menu-section-cashier', listElId: 'cashierMenuList' })}
+      <div id="cashierMenuList">${renderSectionedMenu(cashierState.menu, {
+        sectionIdPrefix: 'menu-section-cashier',
+        itemsWrapperClass: '',
+        renderItem: cashierItemRowHtml,
+        emptyText: "Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang."
+      })}</div>
+    `;
   }
 
   async function loadCashierMenu(restaurantName) {
@@ -2449,6 +2547,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     cashierState.menu = res.ok ? res.menu : [];
     el.innerHTML = cashierMenuHtml();
     attachQtyHandlers(restaurantName);
+    attachSectionedMenuTabHandlers('cashierCatRow');
+    attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
   }
 
   function attachQtyHandlers(restaurantName) {
@@ -2458,6 +2558,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cashierState.cart[id] = (cashierState.cart[id] || 0) + 1;
       el.innerHTML = cashierMenuHtml();
       attachQtyHandlers(restaurantName);
+      attachSectionedMenuTabHandlers('cashierCatRow');
+      attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
       updateCartTotal();
     });
     el.querySelectorAll('[data-qty-minus]').forEach(btn => btn.onclick = () => {
@@ -2465,6 +2567,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cashierState.cart[id] = Math.max(0, (cashierState.cart[id] || 0) - 1);
       el.innerHTML = cashierMenuHtml();
       attachQtyHandlers(restaurantName);
+      attachSectionedMenuTabHandlers('cashierCatRow');
+      attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
       updateCartTotal();
     });
   }
@@ -4227,11 +4331,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     lastOrderRequestId: null
   };
 
-  // 26-bosqich: scrollspy uchun IntersectionObserver — har safar menyu
-  // qayta chizilganda eskisi uzib qo'yiladi (DOM tugunlari eskirib
-  // qolmasligi uchun).
-  let customerMenuScrollObserver = null;
-
   function customerCartTotal() {
     return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
   }
@@ -4264,32 +4363,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // 24-bosqich: bo'lim va tab-chip bitta manbadan (shu funksiya) tartib
-  // olsin — aks holda ID'lar mos kelmay qolishi mumkin.
-  function customerMenuGroups() {
-    const order = [];
-    const groups = {};
-    customerState.menu.forEach(m => {
-      const cat = m.category || 'Boshqa';
-      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
-      groups[cat].push(m);
-    });
-    return { order, groups };
-  }
-
-  function customerSectionId(i) {
-    return 'menu-section-' + i;
-  }
-
+  // 30-bosqich: mijoz uchun ham xuddi shu umumiy komponent (K-bo'lim,
+  // yuqorida) ishlatiladi — alohida customerMenuGroups/customerSectionId
+  // endi kerak emas.
   function customerCategoriesHtml() {
-    const { order } = customerMenuGroups();
-    if (order.length <= 1) return '';
-    return `
-      <div class="cat-row" id="customerCatRow">
-        <div class="cat-opt" data-section-id="customerMenuList">Hammasi</div>
-        ${order.map((c, i) => `<div class="cat-opt" data-section-id="${customerSectionId(i)}">${escapeHtml(c)}</div>`).join('')}
-      </div>
-    `;
+    return sectionedMenuTabsHtml(customerState.menu, {
+      tabRowId: 'customerCatRow', sectionIdPrefix: 'menu-section-cust', listElId: 'customerMenuList'
+    });
   }
 
   function customerItemCardHtml(m) {
@@ -4321,17 +4401,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // 23-bosqich: filtr o'rniga GURUHLASH — barcha kategoriyalar ketma-ket
-  // bo'lim sifatida chiqadi, hech qaysi biri yashirilmaydi.
   function customerMenuListHtml() {
-    if (!customerState.menu.length) return `<div class="bosh">Menyu hali bo'sh.</div>`;
-    const { order, groups } = customerMenuGroups();
-    return order.map((cat, i) => `
-      <div class="menu-section" id="${customerSectionId(i)}">
-        <div class="cat-heading">${escapeHtml(cat)}</div>
-        <div class="catalog-grid">${groups[cat].map(customerItemCardHtml).join('')}</div>
-      </div>
-    `).join('');
+    return renderSectionedMenu(customerState.menu, {
+      sectionIdPrefix: 'menu-section-cust',
+      itemsWrapperClass: 'catalog-grid',
+      renderItem: customerItemCardHtml,
+      emptyText: "Menyu hali bo'sh."
+    });
   }
 
   function customerPromoBannerHtml() {
@@ -4355,7 +4431,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
         : customerMenuListHtml();
       attachCustomerCatalogHandlers();
-      if (customerState.tab !== 'sevimli') attachCustomerMenuScrollSpy();
+      if (customerState.tab !== 'sevimli') attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
       updateCustomerCartFab();
     });
     listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
@@ -4365,7 +4441,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
         : customerMenuListHtml();
       attachCustomerCatalogHandlers();
-      if (customerState.tab !== 'sevimli') attachCustomerMenuScrollSpy();
+      if (customerState.tab !== 'sevimli') attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
       updateCustomerCartFab();
     });
     listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
@@ -4377,7 +4453,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       else {
         listEl.innerHTML = customerMenuListHtml();
         attachCustomerCatalogHandlers();
-        attachCustomerMenuScrollSpy();
+        attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
       }
     });
   }
@@ -4420,51 +4496,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (modalTotalEl) modalTotalEl.textContent = customerCartTotal() + " so'm";
   }
 
-  // 25-bosqich: tab-chip endi filtrlamaydi — bosilganda shu bo'limga
-  // silliq sakraydi.
-  function attachCustomerCategoryTabHandlers() {
-    const catRow = document.getElementById('customerCatRow');
-    if (!catRow) return;
-    catRow.addEventListener('click', (e) => {
-      const opt = e.target.closest('[data-section-id]');
-      if (!opt) return;
-      const targetEl = document.getElementById(opt.getAttribute('data-section-id'));
-      if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }
-
-  // 26-27-bosqich: scroll paytida qaysi bo'lim ko'rinib turganini
-  // IntersectionObserver bilan aniqlab, tepadagi tabni avtomatik
-  // faollashtiramiz (scrollspy) va uni gorizontal markazga tortamiz.
-  function attachCustomerMenuScrollSpy() {
-    const catRow = document.getElementById('customerCatRow');
-    if (customerMenuScrollObserver) {
-      customerMenuScrollObserver.disconnect();
-      customerMenuScrollObserver = null;
-    }
-    if (!catRow) return;
-    const sections = Array.from(document.querySelectorAll('#customerMenuList .menu-section'));
-    if (!sections.length) return;
-
-    const setActiveTab = (sectionId) => {
-      catRow.querySelectorAll('[data-section-id]').forEach(opt => {
-        const isActive = opt.getAttribute('data-section-id') === sectionId;
-        opt.classList.toggle('selected', isActive);
-        if (isActive) opt.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-      });
-    };
-
-    setActiveTab(sections[0].id);
-
-    customerMenuScrollObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting) setActiveTab(entry.target.id);
-      });
-    }, { rootMargin: '-96px 0px -70% 0px', threshold: 0 });
-
-    sections.forEach(sec => customerMenuScrollObserver.observe(sec));
-  }
-
   function renderCustomerMenuTab() {
     ekran(`
       <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
@@ -4480,8 +4511,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCustomerCatalogHandlers();
     attachCustomerTabHandlers();
     attachCartFabHandler();
-    attachCustomerCategoryTabHandlers();
-    attachCustomerMenuScrollSpy();
+    attachSectionedMenuTabHandlers('customerCatRow');
+    attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
 
     document.querySelectorAll('[data-promo-id]').forEach(el => {
       el.addEventListener('click', () => {
@@ -4614,7 +4645,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const t = e.target.getAttribute('data-customer-tab');
       if (!t || t === customerState.tab) return;
       customerState.tab = t;
-      if (customerMenuScrollObserver) { customerMenuScrollObserver.disconnect(); customerMenuScrollObserver = null; }
+      disconnectSectionedMenuObserver('customerCatRow');
       if (t === 'sevimli') renderCustomerFavoritesTab();
       else if (t === 'tarix') renderCustomerHistoryTab();
       else renderCustomerMenuTab();
