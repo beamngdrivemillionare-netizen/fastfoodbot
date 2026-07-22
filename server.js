@@ -2591,18 +2591,58 @@ const server = http.createServer((req, res) => {
   }
 
   // ====== F. Moliya (Cashflow) — kirim (buyurtmalar savdosi) / chiqim (xarajatlar), kunlik/haftalik/oylik ======
-  function dateKeyOf(iso) {
-    return String(iso).slice(0, 10); // YYYY-MM-DD
+  //
+  // TUZATISH: ilgari "bugungi kun" ikki xil, bir-biriga mos kelmaydigan
+  // usul bilan hisoblanardi — ba'zi joylarda serverning MAHALLIY vaqti
+  // (`setHours(0,0,0,0)`), ba'zi joylarda esa (Z-hisobot, dailySeries
+  // grafik kalitlari) UTC sanasi (`iso.slice(0,10)`). Server UTC vaqt
+  // zonasida ishlab turganda bular sonlar jihatidan tasodifan mos tushib
+  // qolardi-yu, ikkalasi ham haqiqiy Toshkent (UTC+5) mahalliy kuniga mos
+  // KELMASDI (kun almashinuvi soat 00:00 emas, ~05:00da bo'lardi) — server
+  // boshqa vaqt zonasida ishga tushirilsa esa ikkalasi bir-biriga zid
+  // natija berishi mumkin edi.
+  //
+  // Endi BUTUN hisob-kitob shu bitta yordamchi to'plam orqali, doim
+  // Toshkent (UTC+5, yil davomida DST'siz) mahalliy kuniga nisbatan
+  // hisoblanadi — natija serverning qaysi vaqt zonasida ishga
+  // tushirilishidan mustaqil bo'ladi, chunki hammasi mutlaq (UTC) lahza
+  // sifatida qaytariladi va shu holda solishtiriladi.
+  const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+  // Berilgan payt (Date | ISO-satr) Toshkent taqvimida qaysi kunga to'g'ri
+  // kelishini "YYYY-MM-DD" qilib qaytaradi.
+  function tzDateKey(input) {
+    const d = (input instanceof Date) ? input : new Date(input);
+    return new Date(d.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
   }
 
-  // Haftaning boshlanishi — Dushanba, soat 00:00
-  function startOfWeek(now) {
-    const day = now.getDay(); // 0=yakshanba,1=dushanba,...
+  // Berilgan "YYYY-MM-DD" Toshkent sanasining soat 00:00 (mahalliy) lahzasini
+  // mutlaq (UTC) Date sifatida qaytaradi.
+  function tzDayStartFromKey(dateKey) {
+    return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - TASHKENT_OFFSET_MS);
+  }
+
+  // Berilgan paytning Toshkent kuni boshlanish lahzasi.
+  function tzDayStart(input) {
+    return tzDayStartFromKey(tzDateKey(input));
+  }
+
+  // Toshkent haftasining boshlanishi (Dushanba, soat 00:00 mahalliy).
+  function tzWeekStart(input) {
+    const d = (input instanceof Date) ? input : new Date(input);
+    const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
+    const day = shifted.getUTCDay(); // 0=yakshanba,1=dushanba,...
     const diffToMonday = (day === 0 ? -6 : 1) - day;
-    const monday = new Date(now);
-    monday.setDate(now.getDate() + diffToMonday);
-    monday.setHours(0, 0, 0, 0);
-    return monday;
+    const mondayKey = new Date(shifted.getTime() + diffToMonday * 86400000).toISOString().slice(0, 10);
+    return tzDayStartFromKey(mondayKey);
+  }
+
+  // Toshkent oyining boshlanishi (1-kun, soat 00:00 mahalliy).
+  function tzMonthStart(input) {
+    const d = (input instanceof Date) ? input : new Date(input);
+    const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
+    const monthKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-01`;
+    return tzDayStartFromKey(monthKey);
   }
 
   // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda, buyurtmalar soni va xarajat kategoriyalari bo'yicha taqsimotni hisoblaydi
@@ -2634,19 +2674,23 @@ const server = http.createServer((req, res) => {
   // Egaga tegishli to'liq cashflow hisobotini shakllantiradi: bugun/hafta/oy + oxirgi 14 kunlik seriya
   function computeCashflow(owner) {
     const now = new Date();
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    const weekStart = startOfWeek(now);
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const todayStart = tzDayStart(now);
+    const weekStart = tzWeekStart(now);
+    const monthStart = tzMonthStart(now);
 
     const orders = owner.orders || [];
     const expenses = owner.expenses || [];
     const dailySeries = [];
+    // 14 kunlik seriya endi serverning mahalliy sana arifmetikasiga umuman
+    // tayanmaydi — har bir kunning Toshkent yarim tuni lahzasi to'g'ridan-to'g'ri
+    // `todayStart`dan aniq 86400000 ms qadamlar bilan hisoblanadi, shu bilan
+    // grafik kalitlari yuqoridagi bugun/hafta/oy chegaralari bilan doim mos keladi.
     for (let i = 13; i >= 0; i--) {
-      const d = new Date(now);
-      d.setDate(now.getDate() - i);
-      const key = dateKeyOf(d.toISOString());
-      const dayIncome = orders.filter(o => dateKeyOf(o.createdAt) === key).reduce((s, o) => s + (o.total || 0), 0);
-      const dayExpense = expenses.filter(e => dateKeyOf(e.createdAt) === key).reduce((s, e) => s + (e.amount || 0), 0);
+      const dayStart = new Date(todayStart.getTime() - i * 86400000);
+      const dayEnd = new Date(dayStart.getTime() + 86400000);
+      const key = tzDateKey(dayStart);
+      const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + (o.total || 0), 0);
+      const dayExpense = expenses.filter(e => { const t = new Date(e.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, e) => s + (e.amount || 0), 0);
       dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
     }
 
@@ -2756,8 +2800,8 @@ const server = http.createServer((req, res) => {
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
 
       const now = new Date();
-      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-      const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(todayStart.getDate() - 1);
+      const todayStart = tzDayStart(now);
+      const yesterdayStart = new Date(todayStart.getTime() - 86400000);
 
       // Bugun: mavjud cashflowBucket'dan foydalanamiz (yuqori chegarasiz —
       // kelajakdagi sanali buyurtma bo'lmagani uchun bu xavfsiz).
@@ -2810,7 +2854,7 @@ const server = http.createServer((req, res) => {
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
 
       const now = new Date();
-      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const todayStart = tzDayStart(now);
       const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
 
       const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
@@ -2878,7 +2922,7 @@ const server = http.createServer((req, res) => {
 
       // 2) Kechikayotgan buyurtmalar (bugungi, /api/order-status-counts bilan bir xil mantiq)
       const now = new Date();
-      const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+      const todayStart = tzDayStart(now);
       const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
       const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
       let delayedCount = 0;
@@ -2893,8 +2937,12 @@ const server = http.createServer((req, res) => {
         });
       }
 
-      // 3) Bugungi Z-hisobot (kunlik yakuniy hisobot) hali yopilmaganmi
-      const todayDateKey = now.toISOString().slice(0, 10);
+      // 3) Bugungi Z-hisobot (kunlik yakuniy hisobot) hali yopilmaganmi.
+      // TUZATISH: ilgari bu yerda `now.toISOString().slice(0,10)` (UTC sana)
+      // ishlatilardi — yuqoridagi "bugun" (todayStart, endi tzDayStart orqali)
+      // bilan bir xil funksiya ichida ikki xil kun tushunchasi aralashib
+      // ketardi. Endi ikkalasi ham bir xil tzDateKey manbaidan keladi.
+      const todayDateKey = tzDateKey(now);
       const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey);
       if (!dailyReportClosed) {
         alerts.push({
@@ -2911,11 +2959,10 @@ const server = http.createServer((req, res) => {
   // Davr nomidan (bugun/hafta/oy/hammasi) boshlanish sanasini qaytaradi — cashflow va kuryerlar hisoboti uchun umumiy
   function resolvePeriodStart(period) {
     const now = new Date();
-    if (period === 'week') return startOfWeek(now);
-    if (period === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+    if (period === 'week') return tzWeekStart(now);
+    if (period === 'month') return tzMonthStart(now);
     if (period === 'all') return new Date(0);
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    return todayStart;
+    return tzDayStart(now);
   }
 
   // ---- API: filiallar kesimida solishtiruv hisobot — qaysi filial ko'proq sotmoqda (faqat egasi) ----
@@ -3023,7 +3070,7 @@ const server = http.createServer((req, res) => {
 
   // ====== Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda, to'lov turlari bo'yicha ======
   function buildZReport(owner, dateKey) {
-    const dayStart = new Date(dateKey + 'T00:00:00');
+    const dayStart = tzDayStartFromKey(dateKey);
     const dayEnd = new Date(dayStart.getTime() + 86400000);
 
     const orders = (owner.orders || []).filter(o => {
@@ -3075,7 +3122,7 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
 
-      const dateKey = new Date().toISOString().slice(0, 10);
+      const dateKey = tzDateKey(new Date());
       const built = buildZReport(owner, dateKey);
 
       if (!owner.zReports) owner.zReports = [];
