@@ -2289,9 +2289,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (order.status === 'yangi') {
       if (role === 'oshpaz') {
         actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyorlanmoqda">Boshlash</button>`;
-      } else if (role === 'kassir' || role === 'egasi') {
-        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+      } else if (role === 'egasi') {
+        // Egasi tuzatish/favqulodda holat uchun bosqichni chetlab o'tishi mumkin (server ham shunga ruxsat beradi)
+        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor (majburiy)</button>`;
       }
+      // kassir uchun bu yerda hech qanday tugma chiqmaydi — buyurtma hali oshpaz tomonidan
+      // "Boshlash" bosilmagan, shuning uchun kassir uni to'g'ridan-to'g'ri "Tayyor" qila olmaydi.
     } else if (order.status === 'tayyorlanmoqda') {
       actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
     }
