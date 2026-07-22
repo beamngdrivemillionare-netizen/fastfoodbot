@@ -1192,6 +1192,31 @@ const tg = window.Telegram && window.Telegram.WebApp;
       .replace('id="koStatusBanner"', 'id="koStatusBanner" data-loading="1"');
   }
 
+  // "Barchasi" tugmasini buyurtmalar ekraniga ulaydi. Skeleton va real
+  // holatning ikkalasida ham chaqiriladi (data hali kelmagan bo'lsa ham
+  // "Barchasi" ishlashi kerak), shuning uchun renderni har safar (ham
+  // skeleton, ham real HTML bilan almashtirilgach) alohida chaqiramiz.
+  function wireKoStatusBanner(profile) {
+    const btn = document.getElementById('koStatusAllBtn');
+    if (btn) btn.addEventListener('click', () => renderKitchenScreen(profile.name, () => renderProfileView(profile)));
+  }
+
+  // 10-bosqich: "Bugungi holat" bannerini /api/order-status-counts
+  // natijasiga ulaydi — skeletonni real sonlar bilan almashtiradi.
+  async function loadKoStatusBanner(profile) {
+    const el = document.getElementById('koStatusBanner');
+    if (!el) return;
+    const res = await apiPost('/api/order-status-counts', { initData });
+    const el2 = document.getElementById('koStatusBanner');
+    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!res.ok) {
+      el2.outerHTML = `<div class="ko-status-banner kartochka" id="koStatusBanner"><div class="bosh">Bugungi holat yuklanmadi.</div></div>`;
+      return;
+    }
+    el2.outerHTML = koStatusBannerHtml(res.counts);
+    wireKoStatusBanner(profile);
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -1348,6 +1373,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
     loadOwnerDashboardStats(profile);
     loadKoKpiGrid(profile);
+    wireKoStatusBanner(profile);
+    loadKoStatusBanner(profile);
     wireKoHomeHeader();
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
@@ -2106,17 +2133,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Oshpaz: kelgan buyurtmalar ro'yxati real-vaqtda, holatni bosqichma-bosqich o'zgartirish ----
-  function renderKitchenScreen(restaurantName) {
+  // onBack ixtiyoriy: xodim sifatida kirilganda berilmaydi (orqaga qaytish
+  // yo'q, bu yagona vazifali ekran); egasi "Bugungi holat" bannerdan yoki
+  // menyudan kirganda beriladi (10-bosqich).
+  function renderKitchenScreen(restaurantName, onBack) {
     // 13-bosqich: bitta vazifali rol — restoran nomi allaqachon doimiy
     // header'da (11-bosqich) ko'rinadi, shuning uchun bu yerda takrorlanmaydi;
     // ekran to'g'ridan-to'g'ri yagona vazifaga — buyurtmalarga — qaratiladi.
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
+        ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
+    if (onBack) document.getElementById('kitchenBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
     startOrdersPolling('oshpaz');
   }
 
