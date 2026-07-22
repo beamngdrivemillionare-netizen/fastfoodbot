@@ -1249,6 +1249,45 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return `<div class="ko-menu-grid">${KO_MENU_ITEMS.map(koMenuItemHtml).join('')}</div>`;
   }
 
+  // 12-bosqich: har bir grid tugmasini mavjud ekranga ulaydi.
+  // Aniq mos ekrani bor to'rttasi rejadagidek ulanadi: Oshxona, Ombor,
+  // Xodimlar (nazorat ekrani), Moliya, Yetkazib berish, AI Tavsiyalar.
+  // Qolgan to'rttasi uchun qaror:
+  //  - Savdo: alohida "savdo" ekrani yo'q — eng yaqin mos ekran Moliya bilan
+  //    bir xil (renderCashflowScreen), chunki savdo dinamikasi grafigi va
+  //    davr tanlash (Bugun/Hafta/Oy) allaqachon o'sha yerda.
+  //  - Hisobotlar: kunlik yakuniy Z-hisobot ekrani (renderZReportScreen)
+  //    "hisobot" ma'nosiga to'g'ridan-to'g'ri mos keladi.
+  //  - Filiallar: alohida ekran kerak emas — "Bosh" tabining o'zida
+  //    Filiallar bo'limi allaqachon bor, shu sababli faqat o'sha bo'limga
+  //    scroll qilinadi (yangi ekran ochilmaydi).
+  //  - Sozlamalar: do'kon profilini tahrirlash formasi (renderProfileForm)
+  //    — mavjud "Profilni tahrirlash" tugmasi bilan bir xil maqsad.
+  function wireKoMenuGrid(profile) {
+    const grid = document.querySelector('.ko-menu-grid');
+    if (!grid) return;
+    const goBack = () => renderProfileView(profile);
+    const handlers = {
+      savdo: () => renderCashflowScreen(profile, goBack),
+      oshxona: () => renderKitchenScreen(profile.name, goBack),
+      ombor: () => renderStockScreen(profile.name, 'egasi', goBack),
+      xodimlar: () => renderStaffControlScreen(profile, goBack),
+      moliya: () => renderCashflowScreen(profile, goBack),
+      yetkazibBerish: () => renderDeliveryScreen(profile.name, goBack),
+      filiallar: () => {
+        const target = document.getElementById('koBranchesSectionLabel');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      },
+      hisobotlar: () => renderZReportScreen(profile, goBack),
+      aiTavsiyalar: () => renderAiScreen(profile, goBack),
+      sozlamalar: () => renderProfileForm(profile)
+    };
+    grid.querySelectorAll('[data-menu-key]').forEach(btn => {
+      const fn = handlers[btn.getAttribute('data-menu-key')];
+      if (fn) btn.addEventListener('click', fn);
+    });
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -1273,7 +1312,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             </div>
             <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
           </div>
-          <div class="section-label">${icon('users', 'icon-xs')} Filiallar</div>
+          <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
           <div class="kartochka">
             <h2>Filial qo'shish</h2>
             <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
@@ -1408,6 +1447,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadKoKpiGrid(profile);
     wireKoStatusBanner(profile);
     loadKoStatusBanner(profile);
+    wireKoMenuGrid(profile);
     wireKoHomeHeader();
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openStockBtn').addEventListener('click', () => {
@@ -2249,16 +2289,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ordersPollTimer = setInterval(refreshDeliveryBoard, 4000);
   }
 
-  function renderDeliveryScreen(restaurantName) {
+  // onBack ixtiyoriy: dostavkachi xodim sifatida kirilganda berilmaydi;
+  // egasi menyu-griddan ("Yetkazib berish") kirganda beriladi (12-bosqich).
+  function renderDeliveryScreen(restaurantName, onBack) {
     // 13-bosqich: bitta vazifali rol — restoran nomi header'da (11-bosqich)
     // ko'rinadi, shu sabab bu yerda sarlavha bevosita vazifani nomlaydi.
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">Yetkazib berish</div>
+        ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
+    if (onBack) document.getElementById('deliveryBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
     startDeliveryPolling();
   }
 
