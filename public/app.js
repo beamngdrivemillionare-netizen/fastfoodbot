@@ -4432,6 +4432,83 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
+  // ---- Ism, familiya, telefon raqam bilan ro'yxatdan o'tish (Mini App ichida,
+  // botning shaxsiy chatiga chiqmasdan). onDone — muvaffaqiyatli yuborilgandan
+  // keyin chaqiriladigan callback (odatda joriy ekranni qayta yuklaydigan funksiya). ----
+  async function renderPersonRegistrationScreen(onDone) {
+    const canRequestContact = tg && typeof tg.requestContact === 'function';
+    ekran(`
+      <div class="panel">
+        <div class="salom">Tanishuv</div>
+        <div class="bosh">Davom etishdan oldin ismingiz, familiyangiz va telefon raqamingizni kiriting.</div>
+        <div class="kartochka">
+          <label class="field-label">Ism</label>
+          <input type="text" id="regFirstName" placeholder="Ism" autocomplete="given-name">
+          <label class="field-label" style="margin-top:10px;">Familiya</label>
+          <input type="text" id="regLastName" placeholder="Familiya" autocomplete="family-name">
+          <label class="field-label" style="margin-top:10px;">Telefon raqam</label>
+          <input type="tel" id="regPhone" placeholder="+998901234567" autocomplete="tel">
+          ${canRequestContact ? `<button type="button" class="btn" id="regContactBtn" style="margin-top:8px;">${icon('user', 'icon-xs')}<span>Raqamni Telegram orqali yuborish</span></button>` : ''}
+          <button class="btn" id="regSubmitBtn" style="margin-top:14px;">${icon('check-circle', 'icon-xs')}<span>Davom etish</span></button>
+          <div class="xabar" id="regMsg"></div>
+        </div>
+      </div>
+    `);
+
+    const contactBtn = document.getElementById('regContactBtn');
+    if (contactBtn) {
+      contactBtn.addEventListener('click', () => {
+        try {
+          tg.requestContact((granted, contactData) => {
+            if (!granted) return;
+            const c = (contactData && (contactData.responseUnsafe || contactData)) || {};
+            const contact = c.contact || c;
+            if (contact && contact.phone_number) {
+              document.getElementById('regPhone').value = contact.phone_number;
+            }
+            if (contact && contact.first_name && !document.getElementById('regFirstName').value) {
+              document.getElementById('regFirstName').value = contact.first_name;
+            }
+            if (contact && contact.last_name && !document.getElementById('regLastName').value) {
+              document.getElementById('regLastName').value = contact.last_name;
+            }
+          });
+        } catch (e) { /* eski Telegram versiyalarida requestContact bo'lmasligi mumkin */ }
+      });
+    }
+
+    const doSubmit = async () => {
+      const msgEl = document.getElementById('regMsg');
+      const btn = document.getElementById('regSubmitBtn');
+      const firstName = document.getElementById('regFirstName').value.trim();
+      const lastName = document.getElementById('regLastName').value.trim();
+      const phone = document.getElementById('regPhone').value.trim();
+      if (!firstName || !lastName || !phone) {
+        msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      btn.disabled = true;
+      msgEl.textContent = 'Yuborilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/profile-register', { initData, firstName, lastName, phone });
+      if (res.networkError) {
+        msgEl.textContent = res.reason;
+        msgEl.className = 'xabar err';
+        btn.disabled = false;
+        return;
+      }
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        btn.disabled = false;
+        return;
+      }
+      onDone();
+    };
+    document.getElementById('regSubmitBtn').addEventListener('click', doSubmit);
+  }
+
   async function renderCustomerApp(ownerId) {
     clearAppHeader();
     ekran('<div class="xato">Tekshirilmoqda...</div>');
@@ -4444,13 +4521,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(verifyRes.reason || 'Bu menyu hozircha mavjud emas.')}</div>`);
       return;
     }
+    applyBrandColor(verifyRes.restaurant.brandColor);
+    setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
+    if (!verifyRes.personRegistered) {
+      renderPersonRegistrationScreen(() => renderCustomerApp(ownerId));
+      return;
+    }
     customerState.ownerId = ownerId;
     customerState.restaurant = verifyRes.restaurant;
     customerState.favorites = verifyRes.customer.favorites || [];
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
-    applyBrandColor(verifyRes.restaurant.brandColor);
-    setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
@@ -4606,6 +4687,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
       renderCustomerEntry();
+      return;
+    }
+    if (!data.personRegistered) {
+      renderPersonRegistrationScreen(() => bootstrapApp());
       return;
     }
     if (data.isAdmin) {
