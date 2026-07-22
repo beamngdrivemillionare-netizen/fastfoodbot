@@ -1,6 +1,11 @@
 const tg = window.Telegram && window.Telegram.WebApp;
   const appEl = document.getElementById('app');
-  const initData = tg && tg.initData;
+  // Login/parol orqali kirish (16-bosqich): Telegram initData bo'lmasa,
+  // localStorage'da saqlangan sessiya tokeni ("sess_<token>") bo'lishi mumkin —
+  // u xuddi Telegram initData o'rniga barcha /api/... so'rovlarida ishlatiladi.
+  const OWNER_SESSION_STORAGE_KEY = 'kitchenOsOwnerSession';
+  let initData = (tg && tg.initData) || localStorage.getItem(OWNER_SESSION_STORAGE_KEY) || null;
+  let usingOwnerSession = !tg && !!initData;
 
   function ekran(html) {
     appEl.innerHTML = html;
@@ -367,6 +372,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="owner-price" data-edit-price="${escapeHtml(o.id)}">
             ${icon('card', 'icon-xs icon-muted')} ${o.price ? escapeHtml(String(o.price)) + " so'm/oy" : 'Narx kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
           </div>
+          <div class="owner-price" data-edit-credentials="${escapeHtml(o.id)}">
+            ${icon('user', 'icon-xs icon-muted')} ${o.hasLogin ? `Login: ${escapeHtml(o.login)}` : 'Login/parol o\'rnatilmagan'} ${icon('edit', 'icon-xs icon-muted')}
+          </div>
         </div>
         <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
       </div>
@@ -586,19 +594,55 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button data-save-price="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
         `;
       }
+
+      const credEl = e.target.closest('[data-edit-credentials]');
+      if (credEl && !credEl.querySelector('input')) {
+        const editId = credEl.getAttribute('data-edit-credentials');
+        const hasLoginNow = credEl.textContent.includes('Login:');
+        credEl.innerHTML = `
+          <input type="text" placeholder="Login" style="margin:0; padding:6px 8px; font-size:13px;" data-login-field="${escapeHtml(editId)}" autocomplete="off">
+          <input type="text" placeholder="Yangi parol" style="margin:0; padding:6px 8px; font-size:13px;" data-password-field="${escapeHtml(editId)}" autocomplete="off">
+          <button data-save-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+          ${hasLoginNow ? `<button data-remove-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">O'chirish</button>` : ''}
+        `;
+      }
     });
 
     document.getElementById('ownerList').addEventListener('click', async (e) => {
       const saveId = e.target.getAttribute('data-save-price');
-      if (!saveId) return;
-      const input = document.querySelector(`input[data-price-field="${saveId}"]`);
-      const val = input ? input.value.trim() : '';
-      if (val && (!/^\d+$/.test(val) || parseInt(val, 10) < 0)) {
-        alert('Narx musbat son bo\'lishi kerak.');
+      if (saveId) {
+        const input = document.querySelector(`input[data-price-field="${saveId}"]`);
+        const val = input ? input.value.trim() : '';
+        if (val && (!/^\d+$/.test(val) || parseInt(val, 10) < 0)) {
+          alert('Narx musbat son bo\'lishi kerak.');
+          return;
+        }
+        await apiPost('/api/update-owner-billing', { initData, id: saveId, price: val || 0 });
+        loadOwnersAndRender();
         return;
       }
-      await apiPost('/api/update-owner-billing', { initData, id: saveId, price: val || 0 });
-      loadOwnersAndRender();
+
+      const saveCredId = e.target.getAttribute('data-save-credentials');
+      if (saveCredId) {
+        const loginInput = document.querySelector(`input[data-login-field="${saveCredId}"]`);
+        const passwordInput = document.querySelector(`input[data-password-field="${saveCredId}"]`);
+        const loginVal = loginInput ? loginInput.value.trim() : '';
+        const passwordVal = passwordInput ? passwordInput.value : '';
+        const res = await apiPost('/api/set-owner-credentials', { initData, id: saveCredId, login: loginVal, password: passwordVal });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+          return;
+        }
+        loadOwnersAndRender();
+        return;
+      }
+
+      const removeCredId = e.target.getAttribute('data-remove-credentials');
+      if (removeCredId) {
+        await apiPost('/api/remove-owner-credentials', { initData, id: removeCredId });
+        loadOwnersAndRender();
+        return;
+      }
     });
   }
 
@@ -751,8 +795,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
           <div class="xabar" id="deliveryGroupMsg"></div>
         </div>
+
+        ${usingOwnerSession ? `
+        <div class="section-label">${icon('user', 'icon-xs')} Hisob</div>
+        <div class="kartochka">
+          <div class="bosh">Siz login/parol orqali kirgansiz.</div>
+          <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
+        </div>
+        ` : ''}
       </div>
     `);
+
+    if (usingOwnerSession) {
+      const logoutBtn = document.getElementById('ownerLogoutBtn');
+      if (logoutBtn) logoutBtn.addEventListener('click', ownerLogout);
+    }
 
     attachBrandSwatchHandlers((hex) => {
       pendingBrandColor = hex;
@@ -4444,9 +4501,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const urlParams = new URLSearchParams(location.search);
   const customerOwnerId = urlParams.get('customer');
 
-  if (!tg || !initData) {
-    // Oddiy brauzerdan yoki Telegram tashqarisidan ochilsa — kirish rad etiladi
-    ekran('<div class="xato">Kirish rad etildi.<br>Bu ilova faqat Telegram orqali ishlaydi.</div>');
+  if (!tg && !customerOwnerId) {
+    // Oddiy brauzerdan (Telegram tashqarisidan) ochilsa — oshxona egasi
+    // login/parol bilan kirishi mumkin (admin bergan login/parol orqali).
+    if (initData) {
+      bootstrapApp();
+    } else {
+      renderOwnerLoginScreen();
+    }
+  } else if (!tg) {
+    ekran('<div class="xato">Kirish rad etildi.<br>Bu havola faqat Telegram orqali ishlaydi.</div>');
   } else {
     tg.ready();
     tg.expand();
@@ -4458,6 +4522,69 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
+  // ---- Login/parol orqali kirish ekrani (Telegram tashqarisida) ----
+  function renderOwnerLoginScreen(errorText) {
+    clearAppHeader();
+    resetBrandColor();
+    ekran(`
+      <div class="panel">
+        <div class="salom">Oshxona egasi kirishi</div>
+        <div class="bosh">Administrator sizga bergan login va parolni kiriting.</div>
+        <div class="kartochka">
+          <label class="field-label">Login</label>
+          <input type="text" id="ownerLoginInput" autocomplete="username" placeholder="Login">
+          <label class="field-label">Parol</label>
+          <input type="password" id="ownerPasswordInput" autocomplete="current-password" placeholder="Parol">
+          <button class="btn" id="ownerLoginBtn" style="margin-top:10px;">${icon('user', 'icon-xs')}<span>Kirish</span></button>
+          <div class="xabar ${errorText ? 'err' : ''}" id="ownerLoginMsg">${errorText ? escapeHtml(errorText) : ''}</div>
+        </div>
+      </div>
+    `);
+
+    const doLogin = async () => {
+      const login = document.getElementById('ownerLoginInput').value.trim();
+      const password = document.getElementById('ownerPasswordInput').value;
+      const msgEl = document.getElementById('ownerLoginMsg');
+      const btn = document.getElementById('ownerLoginBtn');
+      if (!login || !password) {
+        msgEl.textContent = 'Login va parolni kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      btn.disabled = true;
+      msgEl.textContent = 'Tekshirilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/owner-login', { login, password });
+      btn.disabled = false;
+      if (res.networkError) {
+        msgEl.textContent = res.reason;
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Login yoki parol noto\'g\'ri.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      initData = res.sessionToken;
+      usingOwnerSession = true;
+      localStorage.setItem(OWNER_SESSION_STORAGE_KEY, res.sessionToken);
+      bootstrapApp();
+    };
+
+    document.getElementById('ownerLoginBtn').addEventListener('click', doLogin);
+    document.getElementById('ownerPasswordInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doLogin();
+    });
+  }
+
+  // Login/parol orqali kirilgan sessiyani tugatadi (owner profil ekranidagi "Chiqish" tugmasi)
+  async function ownerLogout() {
+    await apiPost('/api/owner-logout', { initData });
+    localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
+    location.reload();
+  }
+
   async function bootstrapApp() {
     ekran('<div class="xato">Tekshirilmoqda...</div>');
     const data = await apiPost('/api/verify', { initData });
@@ -4466,6 +4593,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     if (!data.ok) {
+      if (usingOwnerSession) {
+        // Login/parol orqali kirilgan sessiya yaroqsiz/eskirgan — qaytadan kirishni so'raymiz
+        localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
+        initData = null;
+        renderOwnerLoginScreen(data.reason);
+        return;
+      }
       // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
       renderCustomerEntry();
       return;
