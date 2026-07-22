@@ -1145,7 +1145,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
-  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer' };
+  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer', manager: 'Menejer' };
   function rolesLabelClient(roles) {
     return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
   }
@@ -2274,6 +2274,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     if (role === 'dostavka') {
       renderDeliveryScreen(restaurantName);
+      return;
+    }
+    if (role === 'manager') {
+      renderManagerHomeScreen({ name: restaurantName });
       return;
     }
     ekran(`
@@ -4069,23 +4073,34 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }).join('');
   }
 
-  function renderCourierReportScreen(profile, onBack) {
+  function renderCourierReportScreen(profile, onBack, isOwnerView = true) {
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">Kuryerlar hisoboti</div>
-        <button class="btn ikkinchi" id="crBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        ${onBack ? `<button class="btn ikkinchi" id="crBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <div class="tab-row">
           <div class="tab-opt ${courierReportState.period === 'today' ? 'selected' : ''}" data-cr-period="today">Bugun</div>
           <div class="tab-opt ${courierReportState.period === 'week' ? 'selected' : ''}" data-cr-period="week">Hafta</div>
           <div class="tab-opt ${courierReportState.period === 'month' ? 'selected' : ''}" data-cr-period="month">Oy</div>
           <div class="tab-opt ${courierReportState.period === 'all' ? 'selected' : ''}" data-cr-period="all">Hammasi</div>
         </div>
+        ${isOwnerView ? `
         <div class="kartochka">
           <h2>Komissiya foizi</h2>
           <input type="text" id="crCommissionInput" placeholder="Masalan: 10" inputmode="numeric">
           <button class="btn ikkinchi" id="crSaveCommissionBtn">Saqlash</button>
           <div class="xabar" id="crCommissionMsg"></div>
         </div>
+        <div class="kartochka">
+          <h2>Menejer ko'rishi</h2>
+          <div class="bosh">Yoqilsa, menejer ham kuryerlar puli va hisobotini ko'ra oladi (kassaga qaytarishni ham u boshqara oladi).</div>
+          <label class="rol-checkbox" style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="crManagerVisibilityToggle">
+            <span>Menejerga ko'rinsin</span>
+          </label>
+          <div class="xabar" id="crManagerVisibilityMsg"></div>
+        </div>
+        ` : ''}
         <div class="kartochka">
           <h2>Kuryerlar</h2>
           <div id="crList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
@@ -4097,51 +4112,77 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `);
 
-    document.getElementById('crBackBtn').addEventListener('click', () => onBack && onBack());
+    if (onBack) document.getElementById('crBackBtn').addEventListener('click', () => onBack());
 
     document.querySelector('.tab-row').addEventListener('click', (e) => {
       const p = e.target.getAttribute('data-cr-period');
       if (!p || p === courierReportState.period) return;
       courierReportState.period = p;
-      renderCourierReportScreen(profile, onBack);
+      renderCourierReportScreen(profile, onBack, isOwnerView);
     });
 
-    document.getElementById('crSaveCommissionBtn').addEventListener('click', async () => {
-      const percent = document.getElementById('crCommissionInput').value.trim();
-      const msgEl = document.getElementById('crCommissionMsg');
-      if (!/^\d+(\.\d+)?$/.test(percent)) {
-        msgEl.textContent = 'To\'g\'ri foiz kiriting (0-100).';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/set-courier-commission', { initData, percent });
-      if (res.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
-        loadCourierReport();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
+    if (isOwnerView) {
+      document.getElementById('crSaveCommissionBtn').addEventListener('click', async () => {
+        const percent = document.getElementById('crCommissionInput').value.trim();
+        const msgEl = document.getElementById('crCommissionMsg');
+        if (!/^\d+(\.\d+)?$/.test(percent)) {
+          msgEl.textContent = 'To\'g\'ri foiz kiriting (0-100).';
+          msgEl.className = 'xabar err';
+          return;
+        }
+        msgEl.textContent = 'Saqlanmoqda...';
+        msgEl.className = 'xabar';
+        const res = await apiPost('/api/set-courier-commission', { initData, percent });
+        if (res.ok) {
+          msgEl.textContent = 'Saqlandi.';
+          msgEl.className = 'xabar ok';
+          loadCourierReport(isOwnerView);
+        } else {
+          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+          msgEl.className = 'xabar err';
+        }
+      });
 
-    loadCourierReport();
+      document.getElementById('crManagerVisibilityToggle').addEventListener('change', async (e) => {
+        const msgEl = document.getElementById('crManagerVisibilityMsg');
+        const visible = e.target.checked;
+        e.target.disabled = true;
+        msgEl.textContent = 'Saqlanmoqda...';
+        msgEl.className = 'xabar';
+        const res = await apiPost('/api/set-manager-courier-visibility', { initData, visible });
+        e.target.disabled = false;
+        if (res.ok) {
+          msgEl.textContent = visible ? 'Menejerga ko\'rinadi.' : 'Menejerdan yashirildi.';
+          msgEl.className = 'xabar ok';
+        } else {
+          e.target.checked = !visible;
+          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+          msgEl.className = 'xabar err';
+        }
+      });
+    }
+
+    loadCourierReport(isOwnerView);
   }
 
-  async function loadCourierReport() {
+  async function loadCourierReport(isOwnerView = true) {
     const listEl = document.getElementById('crList');
     const commissionInput = document.getElementById('crCommissionInput');
     if (!listEl) return;
     const res = await apiPost('/api/courier-report', { initData, period: courierReportState.period });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadCourierReport); return; }
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadCourierReport(isOwnerView)); return; }
     if (!res.ok) {
       listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      const historyElOnErr = document.getElementById('crHistory');
+      if (historyElOnErr) historyElOnErr.innerHTML = '';
       return;
     }
     if (commissionInput && document.activeElement !== commissionInput) {
       commissionInput.value = res.commissionPercent;
+    }
+    const managerToggle = document.getElementById('crManagerVisibilityToggle');
+    if (managerToggle && document.activeElement !== managerToggle) {
+      managerToggle.checked = !!res.managerCourierMoneyVisible;
     }
     listEl.innerHTML = courierReportRowsHtml(res.report);
 
@@ -4155,7 +4196,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         btn.textContent = 'Yuklanmoqda...';
         const cRes = await apiPost('/api/courier-collect-cash', { initData, courierId });
         if (cRes.ok) {
-          loadCourierReport();
+          loadCourierReport(isOwnerView);
         } else {
           btn.disabled = false;
           btn.textContent = 'Kassaga qaytarildi';
@@ -4163,6 +4204,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         }
       });
     });
+  }
+
+  // ---- Menejer: kuryerlar hisoboti (egasi ruxsat bergan bo'lsa ko'rinadi) ----
+  function renderManagerHomeScreen(profile) {
+    renderCourierReportScreen(profile, null, false);
   }
 
   // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
