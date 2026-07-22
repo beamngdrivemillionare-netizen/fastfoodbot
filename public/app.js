@@ -622,6 +622,64 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <div class="xabar" id="profileMsg"></div>
         </div>
+
+        <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
+        <div class="kartochka">
+          <h2>Menyuga taom qo'shish</h2>
+          <input type="text" id="menuNameInput" placeholder="Taom nomi">
+          <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
+          <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
+          <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
+          <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
+          <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
+          <img id="menuImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
+          <input type="hidden" id="menuImageInput">
+          <button class="btn" id="addMenuBtn">Qo'shish</button>
+          <div class="xabar" id="menuMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Menyu</h2>
+          <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Aksiya/chegirma qo'shish</h2>
+          <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
+          <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
+          <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
+          <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
+          <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
+          <div class="xabar" id="promoMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Aksiyalar ro'yxati</h2>
+          <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+
+        <div class="section-label">${icon('star', 'icon-xs')} Mijozlarni rag'batlantirish</div>
+        <div class="kartochka">
+          <h2>Bonus tizimi</h2>
+          <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
+          <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
+            <input type="checkbox" id="bonusEnabledInput">
+            Bonus tizimini yoqish
+          </label>
+          <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
+          <button class="btn" id="saveBonusBtn">Saqlash</button>
+          <div class="xabar" id="bonusMsg"></div>
+        </div>
+
+        <div class="section-label">${icon('link', 'icon-xs')} Dostavka</div>
+        <div class="kartochka">
+          <h2>Dostavka admin guruhi</h2>
+          <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+          <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+          <div class="customer-link-hint">
+            Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
+            Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+          </div>
+          <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+          <div class="xabar" id="deliveryGroupMsg"></div>
+        </div>
       </div>
     `);
 
@@ -661,6 +719,138 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       renderOwnerHomeScreen(res.profile);
     });
+
+    document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('menuMsg');
+      const preview = document.getElementById('menuImagePreview');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('menuImageInput').value = dataUrl || '';
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('addMenuBtn').addEventListener('click', async () => {
+      const name = document.getElementById('menuNameInput').value.trim();
+      const price = document.getElementById('menuPriceInput').value.trim();
+      const category = document.getElementById('menuCategoryInput').value.trim();
+      const description = document.getElementById('menuDescriptionInput').value.trim();
+      const imageUrl = document.getElementById('menuImageInput').value.trim();
+      const msgEl = document.getElementById('menuMsg');
+      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
+        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl });
+      if (res.ok) {
+        msgEl.textContent = 'Qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('menuNameInput').value = '';
+        document.getElementById('menuPriceInput').value = '';
+        document.getElementById('menuCategoryInput').value = '';
+        document.getElementById('menuDescriptionInput').value = '';
+        document.getElementById('menuImageInput').value = '';
+        document.getElementById('menuImageFileInput').value = '';
+        document.getElementById('menuImagePreview').style.display = 'none';
+        loadMenuAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('addPromoBtn').addEventListener('click', async () => {
+      const title = document.getElementById('promoTitleInput').value.trim();
+      const description = document.getElementById('promoDescInput').value.trim();
+      const discountPercent = document.getElementById('promoPercentInput').value.trim();
+      const minTotal = document.getElementById('promoMinInput').value.trim();
+      const msgEl = document.getElementById('promoMsg');
+      if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
+        msgEl.textContent = 'Aksiya nomi va chegirma foizini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/promo-add', { initData, title, description, discountPercent, minTotal });
+      if (res.ok) {
+        msgEl.textContent = 'Aksiya qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('promoTitleInput').value = '';
+        document.getElementById('promoDescInput').value = '';
+        document.getElementById('promoPercentInput').value = '';
+        document.getElementById('promoMinInput').value = '';
+        loadPromoAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('promoList').addEventListener('click', async (e) => {
+      const toggleId = e.target.getAttribute('data-toggle-promo-id');
+      const removeId = e.target.getAttribute('data-remove-promo-id');
+      if (toggleId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-toggle', { initData, id: toggleId });
+        loadPromoAndRender();
+      } else if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-remove', { initData, id: removeId });
+        loadPromoAndRender();
+      }
+    });
+
+    document.getElementById('saveBonusBtn').addEventListener('click', async () => {
+      const enabled = document.getElementById('bonusEnabledInput').checked;
+      const earnPercent = document.getElementById('bonusPercentInput').value.trim();
+      const msgEl = document.getElementById('bonusMsg');
+      if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
+        msgEl.textContent = 'Bonus foizini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/bonus-settings-save', { initData, enabled, earnPercent: earnPercent || 0 });
+      if (res.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('deliveryGroupMsg');
+      msgEl.textContent = 'Bekor qilinmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/delivery-group-remove', { initData });
+      if (res.ok) {
+        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
+        msgEl.className = 'xabar ok';
+        loadDeliveryGroupStatus();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadMenuAndRender();
+    loadPromoAndRender();
+    loadBonusSettingsAndRender();
+    loadDeliveryGroupStatus();
   }
 
   // ---- Do'kon egasi: birinchi marta profil to'ldirish — bosqichma-bosqich
@@ -882,115 +1072,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
   }
 
-  // 12-bosqich: oshxona egasi — ko'p bo'limli rol. Qaysi tab ochiqligini
-  // eslab qolamiz, shunda "Sklad"/"Moliya" kabi tashqi ekranlardan
-  // renderProfileView(profile)ga qaytganda foydalanuvchi oldingi tabda qoladi.
-  let ownerActiveTab = 'bosh';
-  const OWNER_TABS = [
-    { key: 'bosh', label: 'Bosh', icon: 'building' },
-    { key: 'menyu', label: 'Menyu', icon: 'restaurant' },
-    { key: 'xodimlar', label: 'Xodimlar', icon: 'users' },
-    { key: 'moliya', label: 'Moliya', icon: 'wallet' }
-  ];
-
-  function ownerTabBarHtml() {
-    return `
-      <div class="tab-bar-bottom" id="ownerTabBar">
-        ${OWNER_TABS.map(t => `
-          <button type="button" data-owner-tab="${t.key}" class="${ownerActiveTab === t.key ? 'active' : ''}">
-            ${icon(t.icon)}
-            <span>${escapeHtml(t.label)}</span>
-          </button>
-        `).join('')}
-      </div>
-    `;
-  }
-
-  function setOwnerActiveTab(key) {
-    ownerActiveTab = key;
-    document.querySelectorAll('#ownerTabBar button').forEach(btn => {
-      btn.classList.toggle('active', btn.getAttribute('data-owner-tab') === key);
-    });
-    document.querySelectorAll('.owner-tab-panel').forEach(panel => {
-      panel.classList.toggle('active', panel.getAttribute('data-tab') === key);
-    });
-  }
-
-  // Owner bosh sahifasidagi savdo/tushum dashboard-kartasi — yuklanish paytida
-  // skeleton, keyin /api/cashflow natijasi bilan almashtiriladi.
-  function dashboardStatTileHtml(iconName, label, value, tone) {
-    return `
-      <div class="dash-stat-tile ${tone || ''}">
-        <div class="dash-stat-icon">${icon(iconName, 'icon-sm')}</div>
-        <div class="dash-stat-body">
-          <div class="dash-stat-label">${escapeHtml(label)}</div>
-          <div class="dash-stat-val">${value}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  function dashboardStatsSkeletonHtml() {
-    return `
-      <div class="dashboard-hero-card kartochka">
-        <div class="dash-hero-top">
-          <div class="dash-hero-title">${icon('trending-up', 'icon-xs')} Savdo va tushum</div>
-        </div>
-        <div class="dash-stats-grid">
-          ${['Bugun', 'Shu hafta', 'Shu oy', 'Sof foyda'].map(l => `
-            <div class="dash-stat-tile skeleton-tile">
-              <div class="dash-stat-icon skeleton-block"></div>
-              <div class="dash-stat-body">
-                <div class="dash-stat-label">${l}</div>
-                <div class="dash-stat-val skeleton-block skeleton-text"></div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
-  }
-
-  function dashboardStatsHtml(cashflow) {
-    const t = cashflow.today, w = cashflow.week, m = cashflow.month;
-    const netTone = t.net >= 0 ? 'positive' : 'negative';
-    return `
-      <div class="dashboard-hero-card kartochka">
-        <div class="dash-hero-top">
-          <div class="dash-hero-title">${icon('trending-up', 'icon-xs')} Savdo va tushum</div>
-          <div class="dash-hero-sub">${t.orderCount} ta buyurtma bugun</div>
-        </div>
-        <div class="dash-stats-grid">
-          ${dashboardStatTileHtml('wallet', 'Bugungi savdo', cfFormatSum(t.income), 'income')}
-          ${dashboardStatTileHtml('clipboard', 'Shu hafta', cfFormatSum(w.income), 'income')}
-          ${dashboardStatTileHtml('building', 'Shu oy', cfFormatSum(m.income), 'income')}
-          ${dashboardStatTileHtml('trending-up', 'Bugungi sof foyda', cfFormatSum(t.net), netTone)}
-        </div>
-        <button class="btn ikkinchi dash-hero-btn" id="dashOpenMoliyaBtn">${icon('wallet', 'icon-xs')} To'liq moliya hisobotini ko'rish</button>
-      </div>
-    `;
-  }
-
-  async function loadOwnerDashboardStats(profile) {
-    const el = document.getElementById('ownerDashboardStats');
-    if (!el) return;
-    const res = await apiPost('/api/cashflow', { initData });
-    const el2 = document.getElementById('ownerDashboardStats');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa tabga o'tgan bo'lishi mumkin
-    // 19-bosqich: internet uzilgan holatni alohida ushlaymiz — umumiy
-    // "yuklanmadi" matni o'rniga renderNetworkErrorInline() orqali "Qayta
-    // urinish" tugmasi ko'rsatiladi (loyihadagi boshqa yuklovchilar bilan
-    // bir xil pattern).
-    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadOwnerDashboardStats(profile)); return; }
-    if (!res.ok) {
-      el2.outerHTML = `<div class="kartochka" id="ownerDashboardStats"><div class="bosh">Statistika yuklanmadi.</div></div>`;
-      return;
-    }
-    el2.outerHTML = dashboardStatsHtml(res.cashflow).replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">');
-    const btn = document.getElementById('dashOpenMoliyaBtn');
-    if (btn) btn.addEventListener('click', () => renderCashflowScreen(profile, () => renderOwnerHomeScreen(profile)));
-  }
-
   // 3-bosqich: KitchenOS bosh sahifa header'i — hamburger, logotip,
   // nom/taglayn, sana va bildirishnoma qo'ng'irog'i (badge bilan).
   // Hozircha faqat "Bosh" tabida sinov uchun ulangan — bildirishnomalar
@@ -1040,14 +1121,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // =========================================================================
   // Bosh sahifa PASTKI navigatsiyasi — rasmdagi kabi 5 band: Bosh sahifa,
   // Savdo, Yangi buyurtma (markazda FAB), Bildirishnomalar, Profil. Eski
-  // 4-tabli ownerTabBarHtml()/OWNER_TABS o'rnini shu egallaydi.
+  // 4-tabli tab-bar o'rnini shu egallaydi.
   //
-  // OCHIQ MASALA — "Menyu" (taom qo'shish / aksiya) paneli: eski navda
-  // OWNER_TABS ichida 'menyu' degan alohida tab bor edi, yangi 5-bandli
-  // navda unga aniq joy yo'q (rasmda ham yo'q). Kod hozircha o'chirilmadi
-  // (ownerTabBarHtml/OWNER_TABS pastda hali bor, faqat render qilinmayapti),
-  // lekin bu funksiya uchun yangi joy (masalan Profil yoki Sozlamalar ichida
-  // bo'lim sifatida) 15/16-bosqichda tanlab berilishi kerak.
+  // 20-bosqich: "Menyu" (taom qo'shish / aksiya) paneli — rasmda unga aniq
+  // joy yo'q edi, shu sababli Sozlamalar ekraniga (renderProfileForm)
+  // ko'chirildi: do'kon egasi uchun eng yaqin mos joy shu, chunki menyu
+  // tarkibi ham do'kon sozlamasi hisoblanadi.
   // =========================================================================
   function koBottomNavHtml(activeKey, notifCount) {
     const count = notifCount || 0;
@@ -1539,10 +1618,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // tabidan shu yerga ko'chirildi (endi u yerda ikki marta ko'rsatilmaydi).
   //
   // MA'LUM CHEKLOV: "Profilni tahrirlash" tugmasi mavjud renderProfileForm()
-  // ekranini ochadi — u saqlagach doim renderProfileView(profile) (Bosh
+  // ekranini ochadi — u saqlagach doim renderOwnerHomeScreen(profile) (Bosh
   // sahifa)ga qaytaradi, Profil ekraniga emas, chunki forma ichidagi
-  // navigatsiya shunday yozilgan (bu joyning o'zgarishi emas). 16-bosqichda
-  // butun ekran arxitekturasi birlashtirilganda shuni ham to'g'rilash mumkin.
+  // navigatsiya shunday yozilgan (bu joyning o'zgarishi emas).
   // =========================================================================
   function renderOwnerProfileScreen(profile, onBack) {
     ekran(`
@@ -1569,24 +1647,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   // =========================================================================
   // 16-bosqich: "Bosh sahifa" — mustaqil ekran funksiyasi. Ilgari shu kontent
-  // renderProfileView(profile) ichidagi "bosh" tabida yashar edi (pastda hali
-  // ko'rinadi); endi u yerdan olib tashlanib, shu funksiyaga ko'chirildi va
-  // navigatsiyaning haqiqiy boshlang'ich nuqtasiga aylandi: login/onboarding
-  // tugagach hamda barcha "bosh sahifaga qaytish" callback'lari (pastki nav,
-  // "Bugungi holat → Barchasi", ogohlantirish bandlari, menyu-grid, header
+  // renderProfileView(profile) ichidagi "bosh" tabida yashar edi; endi u
+  // yerdan olib tashlanib, shu funksiyaga ko'chirildi va navigatsiyaning
+  // haqiqiy boshlang'ich nuqtasiga aylandi: login/onboarding tugagach hamda
+  // barcha "bosh sahifaga qaytish" callback'lari (pastki nav, "Bugungi
+  // holat → Barchasi", ogohlantirish bandlari, menyu-grid, header
   // qo'ng'irog'i) endi shu funksiyani chaqiradi — renderProfileView(profile)
   // emas.
   //
-  // OCHIQ MASALA (keyingi bosqichga qoldirildi): renderProfileView ichida
-  // hali ham "menyu" / "xodimlar" / "moliya" degan 3 ta eski tab bor (taom/
-  // aksiya qo'shish, xodim qo'shish, bonus sozlamalari, dostavka guruhi).
-  // Ular UI'da bu o'zgarishdan OLDIN HAM ochilmas edi — tab-panelni
-  // almashtiradigan tugmalar qatori (ownerTabBarHtml/OWNER_TABS) hech qachon
-  // render qilinmagan, faqat "bosh" tab doim ko'rinardi. Shu sababli
-  // renderProfileView pastda funksionallik yo'qolmasin deb o'zgarishsiz
-  // qoldirildi, lekin endi hech qayerdan chaqirilmaydi (o'lik kod) — 20-
-  // bosqichda bu 3 bo'lim tegishli yangi ekranlarga ko'chirilib, funksiya
-  // butunlay olib tashlanadi.
+  // 20-bosqich: renderProfileView butunlay olib tashlandi (o'lik kod edi,
+  // hech qayerdan chaqirilmasdi). Undagi 3 ta eski tab yangi joylarga
+  // ko'chirildi: "menyu"/"moliya" tabidagi taom, aksiya, bonus va dostavka
+  // guruhi bo'limlari renderProfileForm() (Sozlamalar) ichiga, "xodimlar"
+  // tabidagi xodim qo'shish/ro'yxati esa renderStaffControlScreen()
+  // (Xodimlar) ichiga.
   // =========================================================================
   function renderOwnerHomeScreen(profile) {
     // Rasmda faqat bitta (qizil, KitchenOS uslubidagi) header bor — shu
@@ -1605,7 +1679,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${koStatusBannerSkeletonHtml()}
         ${koMenuGridHtml()}
         ${koAlertsListSkeletonHtml()}
-        ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
         <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
         <div class="kartochka">
           <h2>Filial qo'shish</h2>
@@ -1631,7 +1704,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ${koBottomNavHtml('bosh', 0)}
     `);
 
-    loadOwnerDashboardStats(profile);
     loadKoKpiGrid(profile);
     wireKoStatusBanner(profile);
     loadKoStatusBanner(profile);
@@ -1706,334 +1778,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
 
     loadBranchAndRender();
-  }
-
-  function renderProfileView(profile) {
-    setAppHeader(profile.logoUrl, profile.name, 'Egasi');
-    ekran(`
-      <div class="panel has-ko-bottom-nav">
-        <div class="salom">Salom, ${escapeHtml(profile.name)}</div>
-
-        <div class="owner-tab-panel ${ownerActiveTab === 'menyu' ? 'active' : ''}" data-tab="menyu">
-          <div class="kartochka">
-            <h2>Menyuga taom qo'shish</h2>
-            <input type="text" id="menuNameInput" placeholder="Taom nomi">
-            <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
-            <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
-            <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
-            <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
-            <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
-            <img id="menuImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
-            <input type="hidden" id="menuImageInput">
-            <button class="btn" id="addMenuBtn">Qo'shish</button>
-            <div class="xabar" id="menuMsg"></div>
-          </div>
-          <div class="kartochka">
-            <h2>Menyu</h2>
-            <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
-          </div>
-          <div class="kartochka">
-            <h2>Aksiya/chegirma qo'shish</h2>
-            <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
-            <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
-            <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
-            <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
-            <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
-            <div class="xabar" id="promoMsg"></div>
-          </div>
-          <div class="kartochka">
-            <h2>Aksiyalar ro'yxati</h2>
-            <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
-          </div>
-        </div>
-
-        <div class="owner-tab-panel ${ownerActiveTab === 'xodimlar' ? 'active' : ''}" data-tab="xodimlar">
-          <div class="kartochka">
-            <h2>Xodim qo'shish</h2>
-            <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-            <div class="staff-hint" style="margin-top:8px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
-            <div class="staff-role-grid">
-              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
-              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
-              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
-              <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
-            </div>
-            <select id="staffBranchInput">
-              <option value="">— Markaziy (filialsiz) —</option>
-            </select>
-            <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
-            <div class="xabar" id="staffMsg"></div>
-          </div>
-          <div class="kartochka">
-            <h2>Xodimlar ro'yxati</h2>
-            <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
-          </div>
-          <div class="kartochka">
-            <h2>Xodimlar nazorati</h2>
-            <div class="bosh">Amallar jurnali, 30 kunlik faoliyat hisoboti va xodimlar reytingi shu yerda.</div>
-            <button class="btn ikkinchi" id="openStaffControlBtn" style="margin-top:10px;">${icon('users', 'icon-xs')} Xodimlar nazoratini ochish</button>
-          </div>
-          <div class="kartochka">
-            <h2>Dostavka admin guruhi</h2>
-            <div class="bosh">Mijoz "Dostavka" turida buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
-            <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
-            <div class="customer-link-hint">
-              Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
-              Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
-            </div>
-            <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
-            <div class="xabar" id="deliveryGroupMsg"></div>
-          </div>
-        </div>
-
-        <div class="owner-tab-panel ${ownerActiveTab === 'moliya' ? 'active' : ''}" data-tab="moliya">
-          <div class="section-label">${icon('wallet', 'icon-xs')} Hisob-kitob va tahlil</div>
-          <div class="kartochka">
-            <h2>Sklad</h2>
-            <div class="bosh">Mahsulot kirim/chiqimi, kam qolganlar va kunlik audit shu yerda.</div>
-            <button class="btn ikkinchi" id="openStockBtn" style="margin-top:10px;">${icon('box', 'icon-xs')} Sklad boshqaruvini ochish</button>
-          </div>
-          <div class="kartochka">
-            <h2>Moliya</h2>
-            <div class="bosh">Kirim/chiqim, kunlik/haftalik/oylik cashflow shu yerda.</div>
-            <button class="btn ikkinchi" id="openCashflowBtn" style="margin-top:10px;">${icon('wallet', 'icon-xs')} Moliyani ochish</button>
-          </div>
-          <div class="kartochka">
-            <h2>AI tahlil</h2>
-            <div class="bosh">Top taomlar, pik vaqtlar, ertangi sklad ehtiyoji va AI'dan savol-javob shu yerda.</div>
-            <button class="btn ikkinchi" id="openAiBtn" style="margin-top:10px;">${icon('ai', 'icon-xs')} AI tahlilni ochish</button>
-          </div>
-          <div class="section-label">${icon('star', 'icon-xs')} Mijozlarni rag'batlantirish</div>
-          <div class="kartochka">
-            <h2>Bonus tizimi</h2>
-            <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
-            <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
-              <input type="checkbox" id="bonusEnabledInput">
-              Bonus tizimini yoqish
-            </label>
-            <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
-            <button class="btn" id="saveBonusBtn">Saqlash</button>
-            <div class="xabar" id="bonusMsg"></div>
-          </div>
-        </div>
-      </div>
-      ${koBottomNavHtml('bosh', 0)}
-    `);
-    // 16-bosqich: bu yerda ilgari (kod endi renderOwnerHomeScreen() ichida)
-    // loadOwnerDashboardStats/loadKoKpiGrid/wireKoStatusBanner/... kabi "bosh"
-    // tabiga tegishli chaqiruvlar bor edi — ular ko'chirildi, chunki bu
-    // funksiya endi o'sha elementlarni umuman render qilmaydi.
-    document.getElementById('openStockBtn').addEventListener('click', () => {
-      renderStockScreen(profile.name, 'egasi', () => renderOwnerHomeScreen(profile));
-    });
-    document.getElementById('openCashflowBtn').addEventListener('click', () => {
-      renderCashflowScreen(profile, () => renderOwnerHomeScreen(profile));
-    });
-    document.getElementById('openAiBtn').addEventListener('click', () => {
-      renderAiScreen(profile, () => renderOwnerHomeScreen(profile));
-    });
-    document.getElementById('openStaffControlBtn').addEventListener('click', () => {
-      renderStaffControlScreen(profile, () => renderOwnerHomeScreen(profile));
-    });
-
-    document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
-      const file = e.target.files && e.target.files[0];
-      const msgEl = document.getElementById('menuMsg');
-      const preview = document.getElementById('menuImagePreview');
-      if (!file) return;
-      try {
-        const dataUrl = await readImageFileAsCompressedDataUrl(file);
-        document.getElementById('menuImageInput').value = dataUrl || '';
-        preview.src = dataUrl;
-        preview.style.display = 'block';
-      } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
-        e.target.value = '';
-      }
-    });
-
-    document.getElementById('addMenuBtn').addEventListener('click', async () => {
-      const name = document.getElementById('menuNameInput').value.trim();
-      const price = document.getElementById('menuPriceInput').value.trim();
-      const category = document.getElementById('menuCategoryInput').value.trim();
-      const description = document.getElementById('menuDescriptionInput').value.trim();
-      const imageUrl = document.getElementById('menuImageInput').value.trim();
-      const msgEl = document.getElementById('menuMsg');
-      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
-        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl });
-      if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('menuNameInput').value = '';
-        document.getElementById('menuPriceInput').value = '';
-        document.getElementById('menuCategoryInput').value = '';
-        document.getElementById('menuDescriptionInput').value = '';
-        document.getElementById('menuImageInput').value = '';
-        document.getElementById('menuImageFileInput').value = '';
-        document.getElementById('menuImagePreview').style.display = 'none';
-        loadMenuAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('addStaffBtn').addEventListener('click', async () => {
-      const val = document.getElementById('staffInput').value.trim();
-      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
-      const branchId = document.getElementById('staffBranchInput').value;
-      const msgEl = document.getElementById('staffMsg');
-      if (!val) {
-        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (!roles.length) {
-        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/add-staff', { initData, input: val, roles, branchId });
-      if (res.ok) {
-        msgEl.textContent = 'Xodim qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('staffInput').value = '';
-        document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
-        loadStaffAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('staffList').addEventListener('click', async (e) => {
-      const id = e.target.getAttribute('data-remove-staff-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/remove-staff', { initData, id });
-      loadStaffAndRender();
-    });
-
-    document.getElementById('staffList').addEventListener('change', async (e) => {
-      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
-      if (branchStaffId) {
-        e.target.disabled = true;
-        await apiPost('/api/set-staff-branch', { initData, id: branchStaffId, branchId: e.target.value });
-        loadStaffAndRender();
-        return;
-      }
-      const roleStaffId = e.target.getAttribute('data-staff-role-checkbox');
-      if (roleStaffId) {
-        const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
-        const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
-        if (!roles.length) {
-          e.target.checked = true; // kamida bitta lavozim qolishi shart
-          alert('Xodimda kamida bitta lavozim qolishi kerak.');
-          return;
-        }
-        checkboxes.forEach(cb => cb.disabled = true);
-        await apiPost('/api/set-staff-roles', { initData, id: roleStaffId, roles });
-        loadStaffAndRender();
-      }
-    });
-
-    // 16-bosqich: "Filial qo'shish"/"Filiallar"/"Mijozlar havolasi" wiring'i
-    // (addBranchBtn, branchList, getCustomerLinkBtn) shu yerdan
-    // renderOwnerHomeScreen()ga ko'chirildi — bu funksiya endi o'sha
-    // elementlarni render qilmaydi.
-
-    document.getElementById('addPromoBtn').addEventListener('click', async () => {
-      const title = document.getElementById('promoTitleInput').value.trim();
-      const description = document.getElementById('promoDescInput').value.trim();
-      const discountPercent = document.getElementById('promoPercentInput').value.trim();
-      const minTotal = document.getElementById('promoMinInput').value.trim();
-      const msgEl = document.getElementById('promoMsg');
-      if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
-        msgEl.textContent = 'Aksiya nomi va chegirma foizini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/promo-add', { initData, title, description, discountPercent, minTotal });
-      if (res.ok) {
-        msgEl.textContent = 'Aksiya qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('promoTitleInput').value = '';
-        document.getElementById('promoDescInput').value = '';
-        document.getElementById('promoPercentInput').value = '';
-        document.getElementById('promoMinInput').value = '';
-        loadPromoAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('promoList').addEventListener('click', async (e) => {
-      const toggleId = e.target.getAttribute('data-toggle-promo-id');
-      const removeId = e.target.getAttribute('data-remove-promo-id');
-      if (toggleId) {
-        e.target.disabled = true;
-        await apiPost('/api/promo-toggle', { initData, id: toggleId });
-        loadPromoAndRender();
-      } else if (removeId) {
-        e.target.disabled = true;
-        await apiPost('/api/promo-remove', { initData, id: removeId });
-        loadPromoAndRender();
-      }
-    });
-
-    document.getElementById('saveBonusBtn').addEventListener('click', async () => {
-      const enabled = document.getElementById('bonusEnabledInput').checked;
-      const earnPercent = document.getElementById('bonusPercentInput').value.trim();
-      const msgEl = document.getElementById('bonusMsg');
-      if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
-        msgEl.textContent = 'Bonus foizini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/bonus-settings-save', { initData, enabled, earnPercent: earnPercent || 0 });
-      if (res.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('deliveryGroupMsg');
-      msgEl.textContent = 'Bekor qilinmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/delivery-group-remove', { initData });
-      if (res.ok) {
-        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
-        msgEl.className = 'xabar ok';
-        loadDeliveryGroupStatus();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    loadBranchAndRender().then(loadStaffAndRender);
-    loadMenuAndRender();
-    loadPromoAndRender();
-    loadBonusSettingsAndRender();
-    loadDeliveryGroupStatus();
   }
 
   async function loadDeliveryGroupStatus() {
@@ -3426,8 +3170,29 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function renderStaffControlScreen(profile, onBack) {
     ekran(`
       <div class="panel">
-        <div class="salom" style="font-size:20px;">Xodimlar nazorati</div>
+        <div class="salom" style="font-size:20px;">Xodimlar</div>
         <button class="btn ikkinchi" id="scBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>Xodim qo'shish</h2>
+          <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
+          <div class="staff-hint" style="margin-top:8px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+          <div class="staff-role-grid">
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Dostavkachi</label>
+          </div>
+          <select id="staffBranchInput">
+            <option value="">— Markaziy (filialsiz) —</option>
+          </select>
+          <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
+          <div class="xabar" id="staffMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar ro'yxati</h2>
+          <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="section-label">${icon('bar-chart', 'icon-xs')} Nazorat</div>
         <div class="tab-row">
           <div class="tab-opt ${staffControlState.period === 'week' ? 'selected' : ''}" data-sc-period="week">Hafta</div>
           <div class="tab-opt ${staffControlState.period === 'month' ? 'selected' : ''}" data-sc-period="month">30 kun</div>
@@ -3452,6 +3217,68 @@ const tg = window.Telegram && window.Telegram.WebApp;
       renderStaffControlScreen(profile, onBack);
     });
 
+    document.getElementById('addStaffBtn').addEventListener('click', async () => {
+      const val = document.getElementById('staffInput').value.trim();
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
+      const branchId = document.getElementById('staffBranchInput').value;
+      const msgEl = document.getElementById('staffMsg');
+      if (!val) {
+        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!roles.length) {
+        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/add-staff', { initData, input: val, roles, branchId });
+      if (res.ok) {
+        msgEl.textContent = 'Xodim qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('staffInput').value = '';
+        document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
+        loadStaffAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('staffList').addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-remove-staff-id');
+      if (!id) return;
+      e.target.disabled = true;
+      await apiPost('/api/remove-staff', { initData, id });
+      loadStaffAndRender();
+    });
+
+    document.getElementById('staffList').addEventListener('change', async (e) => {
+      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
+      if (branchStaffId) {
+        e.target.disabled = true;
+        await apiPost('/api/set-staff-branch', { initData, id: branchStaffId, branchId: e.target.value });
+        loadStaffAndRender();
+        return;
+      }
+      const roleStaffId = e.target.getAttribute('data-staff-role-checkbox');
+      if (roleStaffId) {
+        const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
+        const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
+        if (!roles.length) {
+          e.target.checked = true; // kamida bitta lavozim qolishi shart
+          alert('Xodimda kamida bitta lavozim qolishi kerak.');
+          return;
+        }
+        checkboxes.forEach(cb => cb.disabled = true);
+        await apiPost('/api/set-staff-roles', { initData, id: roleStaffId, roles });
+        loadStaffAndRender();
+      }
+    });
+
+    loadBranchAndRender().then(loadStaffAndRender);
     loadStaffControlData();
   }
 
