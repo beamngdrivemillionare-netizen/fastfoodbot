@@ -752,7 +752,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <h2>Menyuga taom qo'shish</h2>
           <input type="text" id="menuNameInput" placeholder="Taom nomi">
           <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
-          <input type="text" id="menuCategoryInput" placeholder="Kategoriya (ixtiyoriy, masalan: Issiq taomlar)">
+          <label class="field-label">Bo'lim (ixtiyoriy)</label>
+          <select id="menuCategoryInput"><option value="">— Bo'lim tanlanmagan —</option></select>
           <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
           <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
           <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
@@ -775,6 +776,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka">
           <h2>Menyu</h2>
           <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Bo'limlar (kategoriyalar)</h2>
+          <div class="bosh">Taomlarni bo'limlarga ajratish uchun ro'yxat. Shu yerdagi tartib mijozlar va kassir menyusida ko'rinadigan tartibni belgilaydi.</div>
+          <input type="text" id="categoryNameInput" placeholder="Bo'lim nomi (masalan: Issiq taomlar)" style="margin-top:10px;">
+          <button class="btn" id="addCategoryBtn" style="margin-top:8px;">Bo'lim qo'shish</button>
+          <div class="xabar" id="categoryMsg"></div>
+          <div class="owner-list" id="categoryList" style="margin-top:12px;"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
         <div class="kartochka">
           <h2>Aksiya/chegirma qo'shish</h2>
@@ -972,6 +981,28 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    document.getElementById('addCategoryBtn').addEventListener('click', async () => {
+      const name = document.getElementById('categoryNameInput').value.trim();
+      const msgEl = document.getElementById('categoryMsg');
+      if (!name) {
+        msgEl.textContent = 'Bo\'lim nomini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/category-add', { initData, name });
+      if (res.ok) {
+        msgEl.textContent = 'Qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('categoryNameInput').value = '';
+        loadCategoriesAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
     document.getElementById('addPromoBtn').addEventListener('click', async () => {
       const title = document.getElementById('promoTitleInput').value.trim();
       const description = document.getElementById('promoDescInput').value.trim();
@@ -1050,6 +1081,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    loadCategoriesAndRender();
     loadMenuAndRender();
     loadPromoAndRender();
     loadBonusSettingsAndRender();
@@ -2110,6 +2142,71 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
+  // ==================== F. Bo'lim (kategoriya) boshqaruvi (36-40-bosqich) ====================
+  // Egasi panelidagi "Bo'limlar" kartochkasi shu yerda boshqariladi. Yuklab
+  // olingan ro'yxat `ownerCategoriesCache`da saqlanadi — shu bilan bir
+  // vaqtda "Menyuga taom qo'shish" formasidagi select ham to'ldiriladi
+  // (39-bosqich), alohida so'rov yubormasdan.
+  let ownerCategoriesCache = [];
+
+  function categoryListHtml(categories) {
+    if (!categories || !categories.length) return `<div class="bosh">Hali bo'lim qo'shilmagan.</div>`;
+    return categories.map((c, i) => `
+      <div class="owner-item">
+        <div class="owner-id">${escapeHtml(c.name)}</div>
+        <div class="owner-actions">
+          <button data-cat-up="${escapeHtml(c.id)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button data-cat-down="${escapeHtml(c.id)}" ${i === categories.length - 1 ? 'disabled' : ''}>↓</button>
+          <button data-remove-cat-id="${escapeHtml(c.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function moveCategory(id, direction) {
+    const ids = ownerCategoriesCache.map(c => c.id);
+    const idx = ids.indexOf(id);
+    const swapWith = idx + direction;
+    if (idx < 0 || swapWith < 0 || swapWith >= ids.length) return;
+    const tmp = ids[idx];
+    ids[idx] = ids[swapWith];
+    ids[swapWith] = tmp;
+    await apiPost('/api/category-reorder', { initData, orderedIds: ids });
+    loadCategoriesAndRender();
+  }
+
+  async function loadCategoriesAndRender() {
+    const listEl = document.getElementById('categoryList');
+    const selectEl = document.getElementById('menuCategoryInput');
+    if (!listEl && !selectEl) return;
+    const res = await apiPost('/api/category-list', { initData });
+    ownerCategoriesCache = (res.ok && Array.isArray(res.categories)) ? res.categories : [];
+
+    if (listEl) {
+      listEl.innerHTML = categoryListHtml(ownerCategoriesCache);
+      listEl.querySelectorAll('[data-remove-cat-id]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          await apiPost('/api/category-remove', { initData, id: btn.getAttribute('data-remove-cat-id') });
+          loadCategoriesAndRender();
+        });
+      });
+      listEl.querySelectorAll('[data-cat-up]').forEach(btn => {
+        btn.addEventListener('click', () => moveCategory(btn.getAttribute('data-cat-up'), -1));
+      });
+      listEl.querySelectorAll('[data-cat-down]').forEach(btn => {
+        btn.addEventListener('click', () => moveCategory(btn.getAttribute('data-cat-down'), 1));
+      });
+    }
+
+    if (selectEl) {
+      const prevVal = selectEl.value;
+      selectEl.innerHTML = '<option value="">— Bo\'lim tanlanmagan —</option>' +
+        ownerCategoriesCache.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+      selectEl.value = prevVal;
+    }
+  }
+
   function promoListHtml(promotions) {
     if (!promotions || !promotions.length) return `<div class="bosh">Hali aksiya qo'shilmagan.</div>`;
     return promotions.map(p => `
@@ -2422,7 +2519,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // mantig'iga muhtoj edi — shu komponent ikkalasida ham qayta ishlatiladi,
   // faqat karta ko'rinishi (renderItem) va konteyner id'lari (opts) farq qiladi.
 
-  function groupMenuItems(items) {
+  // categories (ixtiyoriy) — owner.categories ro'yxati (F-bo'lim, 36-40-bosqich).
+  // Berilsa, bo'limlar shu yerdagi tartib (order) bo'yicha chiqadi; ro'yxatda
+  // yo'q kategoriyalar (masalan, bo'lim keyinchalik o'chirilgan bo'lsa yoki
+  // taomda umuman kategoriya belgilanmagan bo'lsa — "Boshqa") oxiriga,
+  // taomlarda uchragan tartibda qo'shiladi.
+  function groupMenuItems(items, categories) {
+    const orderIndex = {};
+    (categories || []).forEach((c, i) => { orderIndex[c.name] = i; });
     const order = [];
     const groups = {};
     items.forEach(m => {
@@ -2430,13 +2534,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!groups[cat]) { groups[cat] = []; order.push(cat); }
       groups[cat].push(m);
     });
+    order.sort((a, b) => {
+      const ai = Object.prototype.hasOwnProperty.call(orderIndex, a) ? orderIndex[a] : Infinity;
+      const bi = Object.prototype.hasOwnProperty.call(orderIndex, b) ? orderIndex[b] : Infinity;
+      return ai - bi;
+    });
     return { order, groups };
   }
 
-  // opts: { sectionIdPrefix, itemsWrapperClass, renderItem, emptyText }
+  // opts: { sectionIdPrefix, itemsWrapperClass, renderItem, emptyText, categories }
   function renderSectionedMenu(items, opts) {
     if (!items.length) return `<div class="bosh">${opts.emptyText}</div>`;
-    const { order, groups } = groupMenuItems(items);
+    const { order, groups } = groupMenuItems(items, opts.categories);
     return order.map((cat, i) => `
       <div class="menu-section" id="${opts.sectionIdPrefix}-${i}">
         <div class="cat-heading">${escapeHtml(cat)}</div>
@@ -2445,9 +2554,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // opts: { tabRowId, sectionIdPrefix, listElId }
+  // opts: { tabRowId, sectionIdPrefix, listElId, categories }
   function sectionedMenuTabsHtml(items, opts) {
-    const { order } = groupMenuItems(items);
+    const { order } = groupMenuItems(items, opts.categories);
     if (order.length <= 1) return '';
     return `
       <div class="cat-row sectioned-menu-tabs" id="${opts.tabRowId}">
@@ -2530,12 +2639,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // o'xshab bo'limlarga ajratildi (umumiy komponent — 30-bosqich).
   function cashierMenuHtml() {
     return `
-      ${sectionedMenuTabsHtml(cashierState.menu, { tabRowId: 'cashierCatRow', sectionIdPrefix: 'menu-section-cashier', listElId: 'cashierMenuList' })}
+      ${sectionedMenuTabsHtml(cashierState.menu, { tabRowId: 'cashierCatRow', sectionIdPrefix: 'menu-section-cashier', listElId: 'cashierMenuList', categories: cashierState.categories })}
       <div id="cashierMenuList">${renderSectionedMenu(cashierState.menu, {
         sectionIdPrefix: 'menu-section-cashier',
         itemsWrapperClass: '',
         renderItem: cashierItemRowHtml,
-        emptyText: "Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang."
+        emptyText: "Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang.",
+        categories: cashierState.categories
       })}</div>
     `;
   }
@@ -2545,6 +2655,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/menu-list', { initData });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, () => loadCashierMenu(restaurantName)); return; }
     cashierState.menu = res.ok ? res.menu : [];
+    cashierState.categories = res.ok ? (res.categories || []) : [];
     el.innerHTML = cashierMenuHtml();
     attachQtyHandlers(restaurantName);
     attachSectionedMenuTabHandlers('cashierCatRow');
@@ -4206,6 +4317,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const stockOptionsHtml = stockList.length
       ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
       : '';
+    // 39-bosqich: bo'limlar ro'yxatini yuklab, select uchun tayyorlaymiz.
+    // Agar taomning joriy kategoriyasi biror sababdan ro'yxatda bo'lmasa
+    // (masalan, o'sha bo'lim keyinchalik o'chirilgan bo'lsa), uni saqlashda
+    // sezdirmasdan yo'qotib qo'ymaslik uchun alohida belgi bilan qo'shamiz.
+    const catRes = await apiPost('/api/category-list', { initData });
+    const categoriesList = (catRes.ok && Array.isArray(catRes.categories)) ? catRes.categories : [];
+    let categoryOptionsHtml = '<option value="">— Bo\'lim tanlanmagan —</option>';
+    if (menuItem.category && !categoriesList.some(c => c.name === menuItem.category)) {
+      categoryOptionsHtml += `<option value="${escapeHtml(menuItem.category)}" selected>${escapeHtml(menuItem.category)} (ro'yxatda yo'q)</option>`;
+    }
+    categoryOptionsHtml += categoriesList.map(c => `<option value="${escapeHtml(c.name)}" ${c.name === (menuItem.category || '') ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
     overlay.innerHTML = `
@@ -4213,7 +4335,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <h3>Taomni tahrirlash</h3>
         <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
         <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
-        <input type="text" id="editMenuCategoryInput" placeholder="Kategoriya (ixtiyoriy)" value="${escapeHtml(menuItem.category || '')}">
+        <label class="field-label">Bo'lim (ixtiyoriy)</label>
+        <select id="editMenuCategoryInput">${categoryOptionsHtml}</select>
         <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
         <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
         <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
@@ -4314,6 +4437,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ownerId: null,
     restaurant: null,
     menu: [],
+    categories: [],
     promotions: [],
     favorites: [],
     bonusPoints: 0,
@@ -4368,7 +4492,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // endi kerak emas.
   function customerCategoriesHtml() {
     return sectionedMenuTabsHtml(customerState.menu, {
-      tabRowId: 'customerCatRow', sectionIdPrefix: 'menu-section-cust', listElId: 'customerMenuList'
+      tabRowId: 'customerCatRow', sectionIdPrefix: 'menu-section-cust', listElId: 'customerMenuList', categories: customerState.categories
     });
   }
 
@@ -4406,7 +4530,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       sectionIdPrefix: 'menu-section-cust',
       itemsWrapperClass: 'catalog-grid',
       renderItem: customerItemCardHtml,
-      emptyText: "Menyu hali bo'sh."
+      emptyText: "Menyu hali bo'sh.",
+      categories: customerState.categories
     });
   }
 
@@ -4917,6 +5042,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
+    customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
     customerState.promotions = menuRes.ok ? menuRes.promotions : [];
 
     renderCustomerMenuTab();
