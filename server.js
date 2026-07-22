@@ -2212,7 +2212,7 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !ctxHasRole(ctx, 'dostavka')) {
+      if (!ctx || !ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat dostavkachi bu amalni bajara oladi' });
       }
 
