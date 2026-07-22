@@ -4227,6 +4227,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     lastOrderRequestId: null
   };
 
+  // 26-bosqich: scrollspy uchun IntersectionObserver — har safar menyu
+  // qayta chizilganda eskisi uzib qo'yiladi (DOM tugunlari eskirib
+  // qolmasligi uchun).
+  let customerMenuScrollObserver = null;
+
   function customerCartTotal() {
     return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
   }
@@ -4259,12 +4264,30 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  // 24-bosqich: bo'lim va tab-chip bitta manbadan (shu funksiya) tartib
+  // olsin — aks holda ID'lar mos kelmay qolishi mumkin.
+  function customerMenuGroups() {
+    const order = [];
+    const groups = {};
+    customerState.menu.forEach(m => {
+      const cat = m.category || 'Boshqa';
+      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
+      groups[cat].push(m);
+    });
+    return { order, groups };
+  }
+
+  function customerSectionId(i) {
+    return 'menu-section-' + i;
+  }
+
   function customerCategoriesHtml() {
-    const cats = ['hammasi', ...new Set(customerState.menu.map(m => m.category).filter(Boolean))];
-    if (cats.length <= 1) return '';
+    const { order } = customerMenuGroups();
+    if (order.length <= 1) return '';
     return `
-      <div class="cat-row">
-        ${cats.map(c => `<div class="cat-opt ${customerState.category === c ? 'selected' : ''}" data-cat="${escapeHtml(c)}">${escapeHtml(c === 'hammasi' ? 'Hammasi' : c)}</div>`).join('')}
+      <div class="cat-row" id="customerCatRow">
+        <div class="cat-opt" data-section-id="customerMenuList">Hammasi</div>
+        ${order.map((c, i) => `<div class="cat-opt" data-section-id="${customerSectionId(i)}">${escapeHtml(c)}</div>`).join('')}
       </div>
     `;
   }
@@ -4302,15 +4325,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // bo'lim sifatida chiqadi, hech qaysi biri yashirilmaydi.
   function customerMenuListHtml() {
     if (!customerState.menu.length) return `<div class="bosh">Menyu hali bo'sh.</div>`;
-    const order = [];
-    const groups = {};
-    customerState.menu.forEach(m => {
-      const cat = m.category || 'Boshqa';
-      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
-      groups[cat].push(m);
-    });
-    return order.map(cat => `
-      <div class="menu-section">
+    const { order, groups } = customerMenuGroups();
+    return order.map((cat, i) => `
+      <div class="menu-section" id="${customerSectionId(i)}">
         <div class="cat-heading">${escapeHtml(cat)}</div>
         <div class="catalog-grid">${groups[cat].map(customerItemCardHtml).join('')}</div>
       </div>
@@ -4338,6 +4355,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
         : customerMenuListHtml();
       attachCustomerCatalogHandlers();
+      if (customerState.tab !== 'sevimli') attachCustomerMenuScrollSpy();
       updateCustomerCartFab();
     });
     listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
@@ -4347,6 +4365,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
         : customerMenuListHtml();
       attachCustomerCatalogHandlers();
+      if (customerState.tab !== 'sevimli') attachCustomerMenuScrollSpy();
       updateCustomerCartFab();
     });
     listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
@@ -4358,6 +4377,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       else {
         listEl.innerHTML = customerMenuListHtml();
         attachCustomerCatalogHandlers();
+        attachCustomerMenuScrollSpy();
       }
     });
   }
@@ -4400,6 +4420,51 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (modalTotalEl) modalTotalEl.textContent = customerCartTotal() + " so'm";
   }
 
+  // 25-bosqich: tab-chip endi filtrlamaydi — bosilganda shu bo'limga
+  // silliq sakraydi.
+  function attachCustomerCategoryTabHandlers() {
+    const catRow = document.getElementById('customerCatRow');
+    if (!catRow) return;
+    catRow.addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-section-id]');
+      if (!opt) return;
+      const targetEl = document.getElementById(opt.getAttribute('data-section-id'));
+      if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  // 26-27-bosqich: scroll paytida qaysi bo'lim ko'rinib turganini
+  // IntersectionObserver bilan aniqlab, tepadagi tabni avtomatik
+  // faollashtiramiz (scrollspy) va uni gorizontal markazga tortamiz.
+  function attachCustomerMenuScrollSpy() {
+    const catRow = document.getElementById('customerCatRow');
+    if (customerMenuScrollObserver) {
+      customerMenuScrollObserver.disconnect();
+      customerMenuScrollObserver = null;
+    }
+    if (!catRow) return;
+    const sections = Array.from(document.querySelectorAll('#customerMenuList .menu-section'));
+    if (!sections.length) return;
+
+    const setActiveTab = (sectionId) => {
+      catRow.querySelectorAll('[data-section-id]').forEach(opt => {
+        const isActive = opt.getAttribute('data-section-id') === sectionId;
+        opt.classList.toggle('selected', isActive);
+        if (isActive) opt.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      });
+    };
+
+    setActiveTab(sections[0].id);
+
+    customerMenuScrollObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) setActiveTab(entry.target.id);
+      });
+    }, { rootMargin: '-96px 0px -70% 0px', threshold: 0 });
+
+    sections.forEach(sec => customerMenuScrollObserver.observe(sec));
+  }
+
   function renderCustomerMenuTab() {
     ekran(`
       <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
@@ -4415,14 +4480,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCustomerCatalogHandlers();
     attachCustomerTabHandlers();
     attachCartFabHandler();
-
-    const catRow = document.querySelector('.cat-row');
-    if (catRow) catRow.addEventListener('click', (e) => {
-      const c = e.target.getAttribute('data-cat');
-      if (!c) return;
-      customerState.category = c;
-      renderCustomerMenuTab();
-    });
+    attachCustomerCategoryTabHandlers();
+    attachCustomerMenuScrollSpy();
 
     document.querySelectorAll('[data-promo-id]').forEach(el => {
       el.addEventListener('click', () => {
@@ -4555,6 +4614,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const t = e.target.getAttribute('data-customer-tab');
       if (!t || t === customerState.tab) return;
       customerState.tab = t;
+      if (customerMenuScrollObserver) { customerMenuScrollObserver.disconnect(); customerMenuScrollObserver = null; }
       if (t === 'sevimli') renderCustomerFavoritesTab();
       else if (t === 'tarix') renderCustomerHistoryTab();
       else renderCustomerMenuTab();
