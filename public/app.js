@@ -1418,9 +1418,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // iconName — icon-sprite'dagi nom, label — kichik sarlavha (masalan
   // "BUGUNGI SAVDO"), value — allaqachon formatlangan matn (masalan "12.45M"),
   // delta — koFormatDelta() natijasi (yoki null, agar ko'rsatilmasa).
-  function koKpiCardHtml(iconName, label, value, delta) {
+  // 3-bosqich: cardId berilsa, kartochka bosiladigan (clickable) qilib
+  // belgilanadi — chaqiruvchi tomon shu id orqali click listener ulaydi.
+  function koKpiCardHtml(iconName, label, value, delta, cardId) {
     return `
-      <div class="ko-kpi-card">
+      <div class="ko-kpi-card${cardId ? ' ko-kpi-clickable' : ''}"${cardId ? ` id="${cardId}"` : ''}>
         <div class="ko-kpi-label">${escapeHtml(label)}</div>
         <div class="ko-kpi-icon">${icon(iconName)}</div>
         <div class="ko-kpi-value">${escapeHtml(value)}</div>
@@ -1450,7 +1452,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // 2-bosqich: "O'rtacha chek" kartochkasi olib tashlandi — 3-bosqichda
   // o'rniga "Kuryer hisoboti" kartochkasi qo'shiladi.
   function koKpiGridSkeletonHtml() {
-    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar'];
+    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', 'Kuryer hisoboti'];
     return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
   }
 
@@ -1468,9 +1470,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   // 8-bosqich: 4 ta KPI-kartochkani /api/dashboard-summary natijasidan
   // yasab, 2x2 grid ichida qaytaradi.
-  // 2-bosqich: "O'rtacha chek" kartochkasi vaqtincha olib tashlandi — uning
-  // o'rniga 3-bosqichda "Kuryer hisoboti" kartochkasi qo'shiladi (shu funksiya
-  // o'sha bosqichda yana to'rt kartochkali holatga qaytadi).
+  // 3-bosqich: "O'rtacha chek" o'rniga "Kuryer hisoboti" — bugun kuryerlar
+  // yetkazib bergan buyurtmalar soni. Bosilsa (loadKoKpiGrid'da ulanadi)
+  // to'liq kuryer hisoboti ekraniga (har bir kuryer bo'yicha qator, tarix) o'tadi.
   function koKpiGridHtml(summary) {
     const cards = [
       koKpiCardHtml('wallet', 'Bugungi savdo',
@@ -1481,7 +1483,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         koFormatDelta(summary.todayNetProfit, summary.yesterdayNetProfit)),
       koKpiCardHtml('clipboard', 'Buyurtmalar',
         koFormatCompact(summary.todayOrderCount),
-        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount))
+        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount)),
+      koKpiCardHtml('scooter', 'Kuryer hisoboti',
+        koFormatCompact(summary.todayCourierDeliveries),
+        koFormatCountDelta(summary.todayCourierDeliveries, summary.yesterdayCourierDeliveries),
+        'koCourierCard')
     ];
     return `<div class="ko-kpi-grid" id="koKpiGrid">${cards.join('')}</div>`;
   }
@@ -1506,6 +1512,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     el2.outerHTML = koKpiGridHtml(res.summary);
+
+    // 5-bosqich: "Kuryer hisoboti" kartochkasiga bosilganda batafsil oyna —
+    // har bir kuryer bo'yicha alohida qator va kassaga qaytarish tarixini
+    // ko'rsatadigan mavjud ekran (renderCourierReportScreen, ilgari faqat
+    // Moliya ichidan ochilar edi).
+    const courierCard = document.getElementById('koCourierCard');
+    if (courierCard) {
+      courierCard.addEventListener('click', () => {
+        renderCourierReportScreen(profile, () => renderOwnerHomeScreen(profile));
+      });
+    }
   }
 
   // =========================================================================
