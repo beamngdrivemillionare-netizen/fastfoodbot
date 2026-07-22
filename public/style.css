@@ -301,6 +301,15 @@
     gap: var(--sp-2);
     min-width: 0;
   }
+  /* 3-bosqich: "Kuryer hisoboti" kabi bosiladigan KPI kartochkalari */
+  .ko-kpi-card.ko-kpi-clickable {
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+  .ko-kpi-card.ko-kpi-clickable:active {
+    transform: scale(0.97);
+    box-shadow: none;
+  }
   .ko-kpi-label {
     font-size: var(--fs-xs);
     font-weight: 700;
