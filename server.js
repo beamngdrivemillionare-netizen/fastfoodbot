@@ -267,6 +267,17 @@ function sortedOwnerCategories(owner) {
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
 const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
+// "Dostavka orqali" to'langan buyurtmalarda pul avval kuryerning o'z qo'lida
+// turadi — kuryer shu pulni oshxonaga/egasiga jismonan topshirmaguncha
+// (courierCashCollected === true bo'lmaguncha) bu summa hech qanday daromad
+// hisobotiga (kassa, kunlik Z-hisobot, cashflow va h.k.) QO'SHILMAYDI. Karta
+// orqali to'lovda pul to'g'ridan-to'g'ri hisobga/kassaga tushadi va kuryerning
+// qo'lida "yotib qolmaydi", shuning uchun karta har doim darhol daromadga
+// qo'shiladi (eski buyurtmalarda maydon bo'lmasa ham — moslik uchun default true).
+function orderIncomeAmount(o) {
+  if (o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false) return 0;
+  return o.total || 0;
+}
 // ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
 const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
 // 5-bosqich: "Kechikayotgan" tayyor holatida bo'lmagan ma'lumot modelida
@@ -1339,7 +1350,7 @@ function aiDirTashkentHour(input) {
 function aiDirCashBucket(owner, fromDate, toDate) {
   const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
   const expenses = (owner.expenses || []).filter(e => { const t = new Date(e.createdAt); return t >= fromDate && t < toDate; });
-  const income = orders.reduce((s, o) => s + (o.total || 0), 0);
+  const income = orders.reduce((s, o) => s + orderIncomeAmount(o), 0);
   const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   return { income, expense, net: income - expense, orderCount: orders.length };
 }
@@ -2587,6 +2598,12 @@ const server = http.createServer((req, res) => {
       if (orderType === 'stol' && !String(tableNumber || '').trim()) {
         return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
       }
+      // Dostavka buyurtmasida "naqd" varianti mavjud emas — kuryer naqd
+      // pulni olsa ham bu "dostavka_orqali" turi bilan hisoblanadi (pastda
+      // qarang: courierCashCollected daromad hisobotlarini to'g'ri yuritish uchun).
+      if (orderType === 'dostavka' && paymentType === 'naqd') {
+        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+      }
 
       // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - kuryer
       // mijozni topa olishi uchun kamida BITTASI bo'lishi shart: aniqlangan
@@ -2715,6 +2732,10 @@ const server = http.createServer((req, res) => {
         paymentProofStatus: (paymentType === 'karta' || (orderType === 'stol' && paymentType === 'naqd')) ? 'kutilmoqda' : null,
         paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : (orderType === 'stol' && paymentType === 'naqd') ? 'naqd_kassa' : null,
         paymentProofFileId: null,
+        // Kuryer "dostavka orqali" pulni mijozdan qo'lda olgani uchun bu pul
+        // egasi kuryerdan jismonan qabul qilib olmaguncha (/api/courier-collect-cash)
+        // daromad hisobiga qo'shilmaydi — qarang: orderIncomeAmount().
+        courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
         branchId: null,
         customerId: userId,
         customerName: customerDisplayName(userId, check.user),
@@ -2928,6 +2949,9 @@ const server = http.createServer((req, res) => {
       if (orderType === 'stol' && !String(tableNumber || '').trim()) {
         return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
       }
+      if (orderType === 'dostavka' && paymentType === 'naqd') {
+        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+      }
 
       // Narxlarni klientdan emas, serverdagi menyudan olamiz (soxtalashtirilmasligi uchun)
       const menu = ctx.owner.menu || [];
@@ -2995,6 +3019,9 @@ const server = http.createServer((req, res) => {
         paymentType,
         status: 'yangi',
         branchId: orderBranchId,
+        // qarang: orderIncomeAmount() — kuryerda turgan naqd pul egasi
+        // tomonidan olinmaguncha daromadga qo'shilmaydi.
+        courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
         createdAt: new Date().toISOString(),
         createdBy: userId
       };
@@ -3636,8 +3663,8 @@ const server = http.createServer((req, res) => {
 
     const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
     const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
-    const kassaIncome = kassaOrders.reduce((sum, o) => sum + (o.total || 0), 0);
-    const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+    const kassaIncome = kassaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
+    const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
     const income = kassaIncome + dostavkaIncome;
     const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
@@ -3672,7 +3699,7 @@ const server = http.createServer((req, res) => {
       const dayStart = new Date(todayStart.getTime() - i * 86400000);
       const dayEnd = new Date(dayStart.getTime() + 86400000);
       const key = tzDateKey(dayStart);
-      const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + (o.total || 0), 0);
+      const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + orderIncomeAmount(o), 0);
       const dayExpense = expenses.filter(e => { const t = new Date(e.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, e) => s + (e.amount || 0), 0);
       dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
     }
@@ -3796,7 +3823,7 @@ const server = http.createServer((req, res) => {
         const d = new Date(o.createdAt);
         return d >= yesterdayStart && d < todayStart;
       });
-      const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + (o.total || 0), 0);
+      const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
       const yesterdayExpense = (owner.expenses || []).filter(e => {
         const d = new Date(e.createdAt);
         return d >= yesterdayStart && d < todayStart;
@@ -3974,9 +4001,9 @@ const server = http.createServer((req, res) => {
         const key = buckets.has(o.branchId || null) ? (o.branchId || null) : null;
         const bucket = buckets.get(key);
         bucket.orderCount += 1;
-        bucket.income += (o.total || 0);
-        if (o.orderType === 'dostavka') bucket.dostavkaIncome += (o.total || 0);
-        else bucket.kassaIncome += (o.total || 0);
+        bucket.income += orderIncomeAmount(o);
+        if (o.orderType === 'dostavka') bucket.dostavkaIncome += orderIncomeAmount(o);
+        else bucket.kassaIncome += orderIncomeAmount(o);
       }
 
       const report = Array.from(buckets.values())
@@ -4011,11 +4038,17 @@ const server = http.createServer((req, res) => {
       const report = couriers.map(c => {
         const mine = deliveredOrders.filter(o => String(o.deliveredBy) === String(c.id));
         const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
+        // Kuryerning qo'lida hali topshirilmagan naqd/dostavka orqali pul —
+        // egasi "Pulni oldim" tugmasini bosmaguncha shu summa daromadga qo'shilmaydi.
+        const pendingAmount = mine
+          .filter(o => o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false)
+          .reduce((sum, o) => sum + (o.total || 0), 0);
         return {
           id: c.id,
           username: c.username || null,
           orderCount: mine.length,
           totalAmount,
+          pendingAmount,
           commission: Math.round(totalAmount * commissionPercent / 100)
         };
       });
@@ -4051,6 +4084,45 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: kuryerdan naqd pulni "oldim" deb belgilash (faqat egasi) ----
+  // Kuryer "dostavka orqali" to'lovda mijozdan naqd pulni o'zi qo'lida
+  // ushlab turadi. Egasi shu pulni jismonan kuryerdan olganda shu API
+  // chaqiriladi — shundan keyingina bu buyurtmalar summasi daromad
+  // hisobotlariga (Z-hisobot, cashflow, filiallar hisoboti) qo'shiladi.
+  // Karta orqali to'langan buyurtmalarga bu umuman tegishli emas — ular
+  // har doim darhol daromadga qo'shilgan bo'ladi.
+  if (req.method === 'POST' && req.url === '/api/courier-collect-cash') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, courierId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
+
+      if (!courierId) return sendJSON(res, 200, { ok: false, reason: 'Kuryer tanlanmagan.' });
+
+      let collected = 0;
+      let count = 0;
+      for (const o of (owner.orders || [])) {
+        if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali' &&
+            String(o.deliveredBy) === String(courierId) && o.courierCashCollected === false) {
+          o.courierCashCollected = true;
+          o.courierCashCollectedAt = new Date().toISOString();
+          collected += (o.total || 0);
+          count++;
+        }
+      }
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, collected, count });
+    });
+    return;
+  }
+
   // ====== Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda, to'lov turlari bo'yicha ======
   function buildZReport(owner, dateKey) {
     const dayStart = tzDayStartFromKey(dateKey);
@@ -4067,15 +4139,15 @@ const server = http.createServer((req, res) => {
 
     const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
     const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
-    const kassaIncome = kassaOrders.reduce((s, o) => s + (o.total || 0), 0);
-    const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + (o.total || 0), 0);
+    const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+    const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
     const income = kassaIncome + dostavkaIncome;
 
     const paymentBreakdown = {};
     for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
     for (const o of orders) {
       const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + (o.total || 0);
+      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
     }
 
     const expenseByCategory = {};
