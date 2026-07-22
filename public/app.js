@@ -1149,6 +1149,49 @@ const tg = window.Telegram && window.Telegram.WebApp;
     el2.outerHTML = koKpiGridHtml(res.summary);
   }
 
+  // =========================================================================
+  // 9-bosqich: KitchenOS bosh sahifa "Bugungi holat" banneri — qizil
+  // sarlavha ("BUGUNGI HOLAT" + "Barchasi" havolasi) va pastida 4 ustun
+  // (icon + katta son + label): Yangi / Tayyorlanmoqda / Tayyor /
+  // Kechikayotgan. Bu yerda faqat komponentning o'zi va skeleton holati —
+  // /api/order-status-counts'ga ulash 10-bosqichda qilinadi.
+  // =========================================================================
+  const KO_STATUS_COLUMNS = [
+    { key: 'yangi', icon: 'file-plus', label: 'Yangi' },
+    { key: 'tayyorlanmoqda', icon: 'chef-hat', label: 'Tayyorlanmoqda' },
+    { key: 'tayyor', icon: 'cloche', label: 'Tayyor' },
+    { key: 'kechikayotgan', icon: 'clock', label: 'Kechikayotgan' }
+  ];
+
+  function koStatusColumnHtml(col, count) {
+    return `
+      <div class="ko-status-col" data-status-key="${col.key}">
+        <div class="ko-status-col-label">${escapeHtml(col.label)}</div>
+        <div class="ko-status-col-icon">${icon(col.icon)}</div>
+        <div class="ko-status-col-value${count === null ? ' skeleton' : ''}">${count === null ? '' : escapeHtml(String(count))}</div>
+      </div>
+    `;
+  }
+
+  function koStatusBannerHtml(counts) {
+    return `
+      <div class="ko-status-banner kartochka" id="koStatusBanner">
+        <div class="ko-status-banner-header">
+          <span>BUGUNGI HOLAT</span>
+          <button type="button" class="ko-status-banner-all" id="koStatusAllBtn">Barchasi <span class="ko-status-banner-all-chevron">›</span></button>
+        </div>
+        <div class="ko-status-banner-body">
+          ${KO_STATUS_COLUMNS.map(col => koStatusColumnHtml(col, counts[col.key])).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function koStatusBannerSkeletonHtml() {
+    return koStatusBannerHtml({ yangi: null, tayyorlanmoqda: null, tayyor: null, kechikayotgan: null })
+      .replace('id="koStatusBanner"', 'id="koStatusBanner" data-loading="1"');
+  }
+
   function renderProfileView(profile) {
     setAppHeader(profile.logoUrl, profile.name, 'Egasi');
     ekran(`
@@ -1158,6 +1201,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="owner-tab-panel ${ownerActiveTab === 'bosh' ? 'active' : ''}" data-tab="bosh">
           ${koHomeHeaderHtml(0)}
           ${koKpiGridSkeletonHtml()}
+          ${koStatusBannerSkeletonHtml()}
           ${dashboardStatsSkeletonHtml().replace('<div class="dashboard-hero-card kartochka">', '<div class="dashboard-hero-card kartochka" id="ownerDashboardStats">')}
           <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
           <div class="kartochka">
