@@ -4625,10 +4625,40 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('regSubmitBtn').addEventListener('click', doSubmit);
   }
 
+  // Mijoz ilovasi ochilganda ko'rsatiladigan "Xush kelibsiz" yuklanish ekrani —
+  // oshxonaning logotipi orqa fonda (xira/qorong'ilashtirilgan), ustida
+  // "Xush kelibsiz!" va oshxona nomi. brand — /api/restaurant-brand natijasi
+  // ({name, logoUrl}) yoki null (topilmasa/hali kelmagan bo'lsa umumiy ko'rinish).
+  function customerWelcomeLoadingHtml(brand) {
+    const name = (brand && brand.name) || 'Oshxona';
+    const logoUrl = brand && brand.logoUrl;
+    return `
+      <div class="customer-welcome-loading"${logoUrl ? ` style="background-image:url('${escapeHtml(logoUrl)}')"` : ''}>
+        <div class="customer-welcome-overlay">
+          ${logoUrl
+            ? `<img class="customer-welcome-logo" src="${escapeHtml(logoUrl)}" alt="">`
+            : `<div class="customer-welcome-logo customer-welcome-logo-fallback">${icon('restaurant', 'icon-lg')}</div>`}
+          <div class="customer-welcome-title">Xush kelibsiz!</div>
+          <div class="customer-welcome-sub">${escapeHtml(name)}</div>
+          <div class="customer-welcome-loading-text">Yuklanmoqda...</div>
+        </div>
+      </div>
+    `;
+  }
+
   async function renderCustomerApp(ownerId) {
     clearAppHeader();
-    ekran('<div class="xato">Tekshirilmoqda...</div>');
+    ekran(customerWelcomeLoadingHtml(null));
+    // Brend (logo/nom) va to'liq tekshiruv PARALLEL yuboriladi — logo tezroq
+    // qaytsa, ekran darhol yangilanadi. `stillLoading` — brend so'rovi
+    // tekshiruvdan KECHROQ qaytib qolsa (ekran allaqachon menyuga o'tgan
+    // bo'lsa), uni qayta "Xush kelibsiz" ekrani bilan bosib qo'ymasligi uchun.
+    let stillLoading = true;
+    apiPost('/api/restaurant-brand', { ownerId }).then(r => {
+      if (stillLoading && r && r.ok) ekran(customerWelcomeLoadingHtml(r));
+    }).catch(() => {});
     const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
+    stillLoading = false;
     if (verifyRes.networkError) {
       renderNetworkErrorScreen(verifyRes.reason, () => renderCustomerApp(ownerId));
       return;
