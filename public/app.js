@@ -2160,11 +2160,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div>
           <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
-          <div class="m-price">${escapeHtml(String(m.price))} so'm${m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : ''}</div>
+          <div class="m-price">${escapeHtml(String(m.price))} so'm${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
           <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
-          <button data-recipe-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Retsept</button>
+          ${m.directStockId ? '' : `<button data-recipe-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Retsept</button>`}
           <button data-toggle-avail-id="${escapeHtml(m.id)}" class="row-action-btn brand">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
           <button data-remove-menu-id="${escapeHtml(m.id)}" class="row-action-btn danger">O'chirish</button>
         </div>
@@ -4079,8 +4079,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
     };
   }
 
-  function renderMenuItemEditOverlay(menuItem) {
+  async function renderMenuItemEditOverlay(menuItem) {
     let pendingImage = menuItem.imageUrl || '';
+    const isDirectInitially = !!menuItem.directStockId;
+    // 17-bosqich: "To'g'ridan skladdan" turini tanlash uchun markaziy sklad
+    // ro'yxati oldindan yuklab qo'yiladi (select tayyor tursin).
+    const stockRes = await apiPost('/api/stock-list', { initData });
+    const stockList = (stockRes.ok && Array.isArray(stockRes.stock)) ? stockRes.stock : [];
+    const stockOptionsHtml = stockList.length
+      ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
+      : '';
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
     overlay.innerHTML = `
@@ -4093,6 +4101,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
         <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
         <input type="file" id="editMenuImageFileInput" accept="image/*">
+
+        <label class="field-label" style="margin-top:10px;">Turi</label>
+        <select id="editMenuTypeInput">
+          <option value="recipe" ${isDirectInitially ? '' : 'selected'}>Tayyorlanadigan (retsept)</option>
+          <option value="direct" ${isDirectInitially ? 'selected' : ''}>To'g'ridan skladdan (masalan: shishada suv)</option>
+        </select>
+        <div id="editMenuDirectStockWrap" class="${isDirectInitially ? '' : 'hidden'}" style="margin-top:8px;">
+          <label class="field-label">Sklad mahsuloti</label>
+          <select id="editMenuDirectStockInput">${stockOptionsHtml || '<option value="">Avval skladga mahsulot qo\'shing</option>'}</select>
+        </div>
+
         <div class="xabar" id="editMenuMsg"></div>
         <div class="btn-row">
           <button class="btn ikkinchi" id="editMenuCancelBtn">Bekor qilish</button>
@@ -4103,6 +4122,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.body.appendChild(overlay);
 
     document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
+
+    document.getElementById('editMenuTypeInput').addEventListener('change', (e) => {
+      document.getElementById('editMenuDirectStockWrap').classList.toggle('hidden', e.target.value !== 'direct');
+    });
 
     document.getElementById('editMenuImageFileInput').addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
@@ -4126,16 +4149,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const price = document.getElementById('editMenuPriceInput').value.trim();
       const category = document.getElementById('editMenuCategoryInput').value.trim();
       const description = document.getElementById('editMenuDescriptionInput').value.trim();
+      const menuType = document.getElementById('editMenuTypeInput').value;
+      const directStockId = menuType === 'direct' ? document.getElementById('editMenuDirectStockInput').value : '';
       const msgEl = document.getElementById('editMenuMsg');
       if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
         msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
         msgEl.className = 'xabar err';
         return;
       }
+      if (menuType === 'direct' && !directStockId) {
+        msgEl.textContent = 'Sklad mahsulotini tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = 'Saqlanmoqda...';
       msgEl.className = 'xabar';
       const res = await apiPost('/api/menu-update', {
-        initData, id: menuItem.id, name, price, category, description, imageUrl: pendingImage
+        initData, id: menuItem.id, name, price, category, description, imageUrl: pendingImage, directStockId
       });
       if (res.ok) {
         overlay.remove();
