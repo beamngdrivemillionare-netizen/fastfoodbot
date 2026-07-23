@@ -3015,6 +3015,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // vaqtda kerak emas (chalkashlikni oldini olish).
   function visiblePaymentTypeEntries(orderType) {
     return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
+      if (k === 'dostavka_orqali' && customerState.cardOnlyRestricted) return false;
       if (orderType === 'dostavka') return k !== 'naqd';
       return k !== 'dostavka_orqali';
     });
@@ -5715,6 +5716,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     category: 'hammasi',
     promoId: '',
     usePoints: false,
+    cardOnlyRestricted: false,
     lastOrderRequestId: null
   };
 
@@ -5958,6 +5960,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
         `).join('')}
       </div>
+      ${customerState.orderType === 'dostavka' && customerState.cardOnlyRestricted ? `
+        <div class="xabar err" style="margin-bottom:10px;">Avvalgi buyurtma(lar)ingizda kuryer sizga bog'lana olmagani sababli, hozircha faqat Karta orqali oldindan to'lov mavjud.</div>
+      ` : ''}
       ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
         <label style="display:flex; align-items:center; gap:8px; font-size:var(--fs-body); margin-bottom:10px;">
           <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
@@ -6368,6 +6373,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.favorites = verifyRes.customer.favorites || [];
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
+    customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
