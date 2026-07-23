@@ -1331,6 +1331,12 @@
   }
   .order-card .order-type { font-size: var(--fs-body); font-weight: 700; }
   .order-card .order-time { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+  .order-card .call-link {
+    display: inline; border: none; background: transparent; padding: 0; margin: 0;
+    font: inherit; font-size: var(--fs-xs); color: var(--brand-primary, var(--text-primary));
+    cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .orders-board-large .call-link { font-size: var(--fs-sm); }
   .order-card .order-items { font-size: var(--fs-body); line-height: var(--lh-body); margin-bottom: var(--sp-2); }
   .order-card .order-bottom { display: flex; align-items: center; justify-content: space-between; }
   .order-card .order-total { font-size: var(--fs-body); font-weight: 700; }
