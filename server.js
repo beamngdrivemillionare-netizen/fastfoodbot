@@ -536,6 +536,7 @@ const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka
 // qo'lida "yotib qolmaydi", shuning uchun karta har doim darhol daromadga
 // qo'shiladi (eski buyurtmalarda maydon bo'lmasa ham — moslik uchun default true).
 function orderIncomeAmount(o) {
+  if (o.status === 'bekor_qilindi') return 0;
   if (o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false) return 0;
   return o.total || 0;
 }
@@ -4237,6 +4238,70 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: kuryer — mijoz buyurtmani qabul qilmadi (bekor qildi) ----
+  // Kuryer manzilga borgach mijoz eshikda buyurtmadan voz kechishi mumkin
+  // (fikr o'zgargan, telefon javob bermagan va h.k.). Bunday holatda buyurtma
+  // "Yetkazildi" deb belgilanmaydi — "Bekor qilindi" holatiga o'tadi, daromad
+  // hisobiga qo'shilmaydi (qarang: orderIncomeAmount()) va oshxona egasiga
+  // xabar boradi.
+  if (req.method === 'POST' && req.url === '/api/reject-delivery-order') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId, reason } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.orderType !== 'dostavka') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma dostavka turi emas.' });
+      }
+      if (order.deliveredBy) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
+      }
+      if (order.status === 'bekor_qilindi') {
+        return sendJSON(res, 200, { ok: true, order }); // allaqachon bekor qilingan
+      }
+
+      order.status = 'bekor_qilindi';
+      order.cancelReason = String(reason || 'Mijoz qabul qilmadi').trim().slice(0, 200);
+      order.cancelledBy = userId;
+      order.cancelledAt = new Date().toISOString();
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'dostavka_bekor', orderId: order.id, note: order.cancelReason });
+      saveOwners(owners);
+
+      syncGroupMessagesForOrder(ctx.owner, order);
+
+      // Egasi va kassirlarga darhol xabar — kim, qaysi buyurtmani va nima
+      // sababdan bekor qilganini bilishlari uchun.
+      const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
+      const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${order.total} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}`;
+      const staffList = ctx.owner.staff || [];
+      const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
+      for (const targetId of new Set([ctx.owner.id, ...targetIds])) {
+        if (String(targetId) === userId) continue;
+        sendMessage(targetId, alertText);
+      }
+
+      if (order.customerId) {
+        sendMessage(order.customerId, '❌ Kechirasiz, dostavka buyurtmangiz bekor qilindi (yetkazib berish amalga oshmadi). Savol bo\'lsa, oshxonaga murojaat qiling.');
+      }
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
   // ---- API: egasi xato bosilgan "Yetkazildi" belgisini bekor qiladi ----
   // (masalan, kuryer boshqa buyurtmani bosib yuborgan yoki hali yetkazmasdan
   // tugmani bosib yuborgan holatlarni tuzatish uchun). Faqat "egasi" roliga ruxsat
@@ -4965,6 +5030,7 @@ const server = http.createServer((req, res) => {
 
       let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
       for (const o of todaysOrders) {
+        if (o.status === 'bekor_qilindi') continue;
         if (o.status === 'tayyor') { tayyor += 1; continue; }
         const ageMs = now - new Date(o.createdAt);
         if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
