@@ -424,6 +424,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         <div class="salom">Salom, admin</div>
         <div class="bosh admin-subtitle">Do'kon egalarini shu yerdan boshqarasiz — havola yarating, qo'lda qo'shing yoki mavjudlarini tahrirlang.</div>
+        <button type="button" class="btn ikkinchi" id="systemStatusBtn" style="margin-bottom:10px;">${icon('settings', 'icon-xs')}<span>System status</span></button>
 
         ${statsHtml}
 
@@ -492,6 +493,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (noResults) noResults.classList.toggle('hidden', !(q && visibleCount === 0));
       });
     }
+
+    document.getElementById('systemStatusBtn').addEventListener('click', () => {
+      loadAndShowSystemStatus();
+    });
 
     document.getElementById('createInviteBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('inviteMsg');
@@ -715,6 +720,86 @@ const tg = window.Telegram && window.Telegram.WebApp;
         removeBtn.remove();
       });
     }
+  }
+
+  // ---- Admin: kichik "System status" paneli (50-bosqich) ----
+  // Serverning umumiy holatini (ishlash vaqti, xotira, ma'lumotlar hajmi,
+  // webhook statistikasi) bitta oynada ko'rsatadi. /api/system-status'dan
+  // olinadi, faqat admin ko'ra oladi.
+  function formatUptime(sec) {
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const parts = [];
+    if (d) parts.push(`${d} kun`);
+    if (h) parts.push(`${h} soat`);
+    parts.push(`${m} daqiqa`);
+    return parts.join(' ');
+  }
+
+  function systemStatusModalHtml(s) {
+    const row = (label, value) => `
+      <div class="profile-row"><b>${escapeHtml(label)}:</b> ${value}</div>
+    `;
+    return `
+      <div class="modal" style="max-width:380px; text-align:left;">
+        <h3>${icon('settings', 'icon-xs')} System status</h3>
+        ${row('Server ishlayapti', formatUptime(s.uptimeSeconds))}
+        ${row('Node versiyasi', escapeHtml(s.nodeVersion))}
+        ${row('Xotira (RSS)', `${s.memoryRssMb} MB`)}
+        ${row('Bot tokeni', s.botConfigured ? '✅ sozlangan' : '⚠️ sozlanmagan')}
+        ${row('PUBLIC_URL', s.publicUrlConfigured ? '✅ sozlangan' : '⚠️ sozlanmagan')}
+        <div class="kartochka" style="margin-top:10px;">
+          <h2 style="font-size:14px;">Do'kon egalari</h2>
+          ${row('Jami', String(s.owners.total))}
+          ${row('Faol', String(s.owners.active))}
+          ${row('Muddati o\'tgan', String(s.owners.expired))}
+        </div>
+        <div class="kartochka">
+          <h2 style="font-size:14px;">Faoliyat</h2>
+          ${row('Jami xodimlar', String(s.totalStaff))}
+          ${row('Jami buyurtmalar', String(s.totalOrders))}
+          ${row('Bugungi buyurtmalar', String(s.todayOrders))}
+          ${row('Bildirishnoma xatolari', String(s.notificationErrors))}
+        </div>
+        <div class="kartochka">
+          <h2 style="font-size:14px;">Webhook</h2>
+          ${row('Qabul qilingan', String(s.webhook.received))}
+          ${row('Xatoliklar', String(s.webhook.errors))}
+          ${row('Oxirgisi', s.webhook.lastAt ? timeAgo(s.webhook.lastAt) : '—')}
+        </div>
+        <div class="kartochka">
+          <h2 style="font-size:14px;">Ma'lumot fayllari</h2>
+          ${row('owners.json', `${s.dataFiles.owners.sizeKb} KB`)}
+          ${row('invites.json', `${s.dataFiles.invites.sizeKb} KB`)}
+          ${row('requests.json', `${s.dataFiles.requests.sizeKb} KB`)}
+          ${row('profiles.json', `${s.dataFiles.profiles.sizeKb} KB`)}
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="systemStatusOkBtn">Yopish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadAndShowSystemStatus() {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `<div class="modal" style="max-width:380px;"><div class="bosh">Yuklanmoqda...</div></div>`;
+    document.body.appendChild(overlay);
+    const res = await apiPost('/api/system-status', { initData });
+    if (!res.ok) {
+      overlay.innerHTML = `
+        <div class="modal" style="max-width:380px;">
+          <div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>
+          <div class="btn-row"><button class="btn" id="systemStatusOkBtn">Yopish</button></div>
+        </div>
+      `;
+      document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
+      return;
+    }
+    overlay.innerHTML = systemStatusModalHtml(res.status);
+    document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
   }
 
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
