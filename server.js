@@ -3613,6 +3613,102 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
+  // Faqat oshxona egasiga ko'rinadi (boshqa moliyaviy hisobotlar — kuryer/Z-hisobot —
+  // bilan bir xil qoida). Sana oralig'i, xodim (kim yaratgan) va to'lov turi bo'yicha
+  // filtrlab, sahifalab (pagination) qaytaradi.
+  if (req.method === 'POST' && req.url === '/api/order-history') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      }
+
+      const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
+      let page = parseInt(payload.page, 10);
+      if (!Number.isFinite(page) || page < 1) page = 1;
+      const PAGE_SIZE = 30;
+
+      let orders = (ctx.owner.orders || []).slice();
+
+      if (dateFrom) {
+        const from = new Date(dateFrom + 'T00:00:00');
+        if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
+      }
+      if (dateTo) {
+        const to = new Date(dateTo + 'T23:59:59');
+        if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
+      }
+      if (employeeId) {
+        orders = orders.filter(o => String(o.createdBy) === String(employeeId));
+      }
+      if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+        orders = orders.filter(o => o.paymentType === paymentType);
+      }
+      if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+        orders = orders.filter(o => o.orderType === orderType);
+      }
+
+      orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      const totalCount = orders.length;
+      const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+      const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+      if (page > totalPages) page = totalPages;
+      const pageOrders = orders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+      // Xodim F.I.Sh — buyurtmani kim yaratgani (1-bosqich bilan bir xil qoida)
+      const nameCache = new Map();
+      const staffNameById = (id) => {
+        if (!id) return null;
+        if (nameCache.has(id)) return nameCache.get(id);
+        let name;
+        if (String(id) === String(ctx.owner.id)) {
+          name = 'Egasi';
+        } else {
+          const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
+          name = staff ? staffDisplayName(staff) : `ID: ${id}`;
+        }
+        nameCache.set(id, name);
+        return name;
+      };
+
+      const resultOrders = pageOrders.map(o => ({
+        id: o.id,
+        items: o.items,
+        total: o.total,
+        orderType: o.orderType,
+        tableNumber: o.tableNumber,
+        paymentType: o.paymentType,
+        status: o.status,
+        createdAt: o.createdAt,
+        createdBy: o.createdBy,
+        createdByName: staffNameById(o.createdBy)
+      }));
+
+      // Filtr uchun xodimlar ro'yxati (egasi + hozircha buyurtma yaratgan xodimlar)
+      const employees = [{ id: ctx.owner.id, name: 'Egasi' }];
+      (ctx.owner.staff || []).forEach(s => {
+        employees.push({ id: s.id, name: staffDisplayName(s) });
+      });
+
+      return sendJSON(res, 200, {
+        ok: true,
+        orders: resultOrders,
+        page, totalPages, totalCount, totalSum,
+        pageSize: PAGE_SIZE,
+        employees
+      });
+    });
+    return;
+  }
+
   // ---- API: buyurtma holatini o'zgartirish (Yangi -> Tayyorlanmoqda -> Tayyor) ----
   if (req.method === 'POST' && req.url === '/api/update-order-status') {
     readBody(req, async (err, payload) => {
