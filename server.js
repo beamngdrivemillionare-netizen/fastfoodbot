@@ -4385,8 +4385,13 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: true, order }); // allaqachon bekor qilingan
       }
 
+      const trimmedReason = String(reason || '').trim();
+      if (!trimmedReason) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bekor qilish sababini yozish majburiy.' });
+      }
+
       order.status = 'bekor_qilindi';
-      order.cancelReason = String(reason || 'Mijoz qabul qilmadi').trim().slice(0, 200);
+      order.cancelReason = trimmedReason.slice(0, 200);
       order.cancelledBy = userId;
       order.cancelledAt = new Date().toISOString();
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'dostavka_bekor', orderId: order.id, note: order.cancelReason });
