@@ -2473,6 +2473,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi bo\'limlarni boshqara oladi' });
+      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
 
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Bo\'lim nomini kiriting.' });
@@ -2507,6 +2508,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       ensureOwnerCategories(owner);
@@ -2537,6 +2539,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
       if (!Array.isArray(orderedIds)) return sendJSON(res, 200, { ok: false, reason: 'Tartib ro\'yxati noto\'g\'ri.' });
 
       const categories = ensureOwnerCategories(owner);
@@ -2580,6 +2583,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi menyuni boshqara oladi' });
+      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
 
       const nameTrim = String(name || '').trim();
       const priceNum = Number(price);
@@ -2635,6 +2639,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi menyuni boshqara oladi' });
+      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const item = (owner.menu || []).find(m => m.id === id);
@@ -2699,6 +2704,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.menu = (owner.menu || []).filter(m => m.id !== id);
