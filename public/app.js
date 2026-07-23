@@ -3409,7 +3409,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
 
   // ---- Oshpaz va kassir uchun umumiy: buyurtmalar taxtasi (real-vaqtda) ----
-  const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
+  const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor', bekor_qilindi: 'Bekor qilindi' };
   let ordersPollTimer = null;
   let lastOrdersSnapshot = null;
   let knownOrderIds = null; // 46-bosqich: yangi buyurtmani aniqlash uchun oldingi ID'lar to'plami
@@ -3814,6 +3814,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             ? `<span class="order-time">✅ Yetkazib berildi (${timeAgo(order.deliveredAt)})</span>`
             : `<button class="order-action-btn ready" data-deliver-order-id="${escapeHtml(order.id)}">Yetkazildi</button>`}
         </div>
+        ${isDelivered ? '' : `<button type="button" class="btn ikkinchi" data-reject-order-id="${escapeHtml(order.id)}" style="width:100%; margin-top:8px; color:var(--danger); border-color:var(--danger);">Mijoz qabul qilmadi</button>`}
       </div>
     `;
   }
@@ -3849,6 +3850,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const order = lastDeliveryOrdersById.get(orderId);
         const url = order ? deliveryRouteUrl(order) : null;
         if (url) openExternalLink(url);
+      });
+    });
+    board.querySelectorAll('[data-reject-order-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Mijoz buyurtmani qabul qilmadimi? Buyurtma bekor qilinadi.')) return;
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-reject-order-id');
+        const res = await apiPost('/api/reject-delivery-order', { initData, orderId });
+        if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        lastOrdersSnapshot = null;
+        await refreshDeliveryBoard();
       });
     });
   }
@@ -5937,7 +5949,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </button>
         <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
         <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
-        <input type="tel" id="cExtraPhoneInput" placeholder="Qo'shimcha telefon raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel" style="margin-top:6px;">
+        <input type="tel" id="cExtraPhoneInput" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel" style="margin-top:6px;">
       </div>
       <div class="type-row" id="cPaymentTypeRow">
         ${visiblePaymentTypeEntries(customerState.orderType).map(([k, label]) => `
