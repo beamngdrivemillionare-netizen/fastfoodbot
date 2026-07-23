@@ -524,7 +524,22 @@ function comboOutOfStock(owner, combo) {
   });
 }
 
-// ====== Sklad birliklari va buyurtma turlari (module darajasida — bir nechta joyda ishlatiladi) ======
+// ---- Dostavka bekor qilinishi (mijoz javob bermay/telefon o'chirib qo'yib
+// kuryerga yetkazib berilmagan buyurtmalar) takrorlansa - shu mijozga endi
+// "naqd/dostavka orqali" to'lov ko'rsatilmaydi, faqat "Karta" (oldindan
+// to'lov) qoladi. Shunda kuryer behuda yo'lga chiqib, pulini ololmay
+// qolish xavfi kamayadi. ----
+const CARD_ONLY_AFTER_CANCELLED_DELIVERIES = 2;
+function customerCancelledDeliveryCount(owner, userId) {
+  return (owner.orders || []).filter(o =>
+    String(o.customerId) === String(userId) &&
+    o.orderType === 'dostavka' &&
+    o.status === 'bekor_qilindi'
+  ).length;
+}
+function customerIsCardOnlyRestricted(owner, userId) {
+  return customerCancelledDeliveryCount(owner, userId) >= CARD_ONLY_AFTER_CANCELLED_DELIVERIES;
+}
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
 const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
@@ -3229,7 +3244,7 @@ const server = http.createServer((req, res) => {
           logoUrl: (owner.profile && owner.profile.logoUrl) || null,
           brandColor: (owner.profile && owner.profile.brandColor) || null
         },
-        customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints },
+        customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
         personRegistered: isRegisteredUser(userId),
         bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
       });
@@ -3370,6 +3385,14 @@ const server = http.createServer((req, res) => {
       // ikki qavatli bo'lishi kerak).
       if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
         return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+      }
+      // YANGI: kuryer avval yetkazib bera olmagan (mijoz javob bermagan/rad
+      // etgan) buyurtmalar takrorlangan mijozlarga endi "dostavka orqali"
+      // (naqd, kuryerga to'lov) taklif qilinmaydi — faqat Karta orqali
+      // oldindan to'lov bilan buyurtma qabul qilinadi (qarang:
+      // customerIsCardOnlyRestricted()).
+      if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Avvalgi buyurtma(lar)ingizda kuryer sizga bog\'lana olmagani sababli, endi faqat Karta orqali oldindan to\'lov bilan buyurtma bera olasiz.' });
       }
 
       // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - kuryer
