@@ -941,13 +941,29 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const current = res.tariffs.find(t => t.id === id);
         if (!confirm(`"${current ? current.name : ''}" tarifini o'chirasizmi?`)) return;
         const r = await apiPost('/api/tariff-remove', { initData, id });
-        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
+        if (!r.ok) {
+          // 55-bosqich: agar tarifga do'kon egalari biriktirilgan bo'lsa,
+          // admin buni bilib, xohlasa tasdiqlab (force) baribir o'chirishi mumkin.
+          if (r.blockedCount) {
+            const forceConfirm = confirm(`${r.reason}\n\nBaribir o'chirilsinmi? (${r.blockedCount} ta do'kon egasi tarifsiz qoladi)`);
+            if (!forceConfirm) return;
+            const r2 = await apiPost('/api/tariff-remove', { initData, id, force: true });
+            if (!r2.ok) { alert(r2.reason || 'Xatolik yuz berdi.'); return; }
+            loadTariffList();
+            return;
+          }
+          alert(r.reason || 'Xatolik yuz berdi.');
+          return;
+        }
         loadTariffList();
       });
     });
   }
 
-  // 52-bosqich: tarif nomi va narxini birgalikda tahrirlash oynasi
+  // 52-bosqich: tarif nomi va narxini birgalikda tahrirlash oynasi.
+  // 56-bosqich: shu oynadan to'g'ridan-to'g'ri "Ruxsatlar" (funksiyalar)
+  // modaliga o'tish tugmasi ham qo'shildi — ikkalasi bir yaxlit
+  // "tarifni tahrirlash" oqimi sifatida ishlaydi.
   function showTariffEditModal(tariff) {
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
@@ -959,6 +975,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <label class="field-label">Narx (so'm/oy)</label>
         <input type="text" id="tariffEditPriceInput" value="${tariff.price || 0}" inputmode="numeric">
         <div class="xabar" id="tariffEditMsg"></div>
+        <button type="button" class="btn ikkinchi" id="tariffEditPermsBtn" style="margin-top:4px;">${icon('check-circle', 'icon-xs')}<span>Ruxsatlar (funksiyalar)</span></button>
         <div class="btn-row">
           <button class="btn ikkinchi" id="tariffEditCancelBtn">Bekor qilish</button>
           <button class="btn" id="tariffEditSaveBtn">Saqlash</button>
@@ -967,6 +984,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
     document.body.appendChild(overlay);
     document.getElementById('tariffEditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('tariffEditPermsBtn').onclick = async () => {
+      overlay.remove();
+      await showTariffFeaturesModal(tariff);
+    };
     document.getElementById('tariffEditSaveBtn').onclick = async () => {
       const nameVal = document.getElementById('tariffEditNameInput').value.trim();
       const priceVal = document.getElementById('tariffEditPriceInput').value.trim();
