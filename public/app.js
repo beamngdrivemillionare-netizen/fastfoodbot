@@ -1174,7 +1174,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
-  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer', manager: 'Menejer' };
+  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer' };
   function rolesLabelClient(roles) {
     return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
   }
@@ -2338,10 +2338,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     if (role === 'dostavka') {
       renderDeliveryScreen(restaurantName);
-      return;
-    }
-    if (role === 'manager') {
-      renderManagerHomeScreen({ name: restaurantName });
       return;
     }
     ekran(`
@@ -4167,15 +4163,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn ikkinchi" id="crSaveCommissionBtn">Saqlash</button>
           <div class="xabar" id="crCommissionMsg"></div>
         </div>
-        <div class="kartochka">
-          <h2>Menejer ko'rishi</h2>
-          <div class="bosh">Yoqilsa, menejer ham kuryerlar puli va hisobotini ko'ra oladi (kassaga qaytarishni ham u boshqara oladi).</div>
-          <label class="rol-checkbox" style="margin-top:8px; display:flex; align-items:center; gap:8px;">
-            <input type="checkbox" id="crManagerVisibilityToggle">
-            <span>Menejerga ko'rinsin</span>
-          </label>
-          <div class="xabar" id="crManagerVisibilityMsg"></div>
-        </div>
         ` : ''}
         <div class="kartochka">
           <h2>Kuryerlar</h2>
@@ -4218,24 +4205,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           msgEl.className = 'xabar err';
         }
       });
-
-      document.getElementById('crManagerVisibilityToggle').addEventListener('change', async (e) => {
-        const msgEl = document.getElementById('crManagerVisibilityMsg');
-        const visible = e.target.checked;
-        e.target.disabled = true;
-        msgEl.textContent = 'Saqlanmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/set-manager-courier-visibility', { initData, visible });
-        e.target.disabled = false;
-        if (res.ok) {
-          msgEl.textContent = visible ? 'Menejerga ko\'rinadi.' : 'Menejerdan yashirildi.';
-          msgEl.className = 'xabar ok';
-        } else {
-          e.target.checked = !visible;
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
-        }
-      });
     }
 
     loadCourierReport(isOwnerView);
@@ -4255,10 +4224,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     if (commissionInput && document.activeElement !== commissionInput) {
       commissionInput.value = res.commissionPercent;
-    }
-    const managerToggle = document.getElementById('crManagerVisibilityToggle');
-    if (managerToggle && document.activeElement !== managerToggle) {
-      managerToggle.checked = !!res.managerCourierMoneyVisible;
     }
     listEl.innerHTML = courierReportRowsHtml(res.report);
 
@@ -4280,11 +4245,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         }
       });
     });
-  }
-
-  // ---- Menejer: kuryerlar hisoboti (egasi ruxsat bergan bo'lsa ko'rinadi) ----
-  function renderManagerHomeScreen(profile) {
-    renderCourierReportScreen(profile, null, false);
   }
 
   // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
