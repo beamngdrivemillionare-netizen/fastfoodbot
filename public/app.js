@@ -462,32 +462,45 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function ownerItemHtml(o) {
     return `
-      <div class="owner-item" data-search-key="${escapeHtml(ownerSearchKey(o))}">
-        <div class="owner-avatar">${escapeHtml((((o.profile && o.profile.name) || o.username || String(o.id) || '#').trim().charAt(0) || '#').toUpperCase())}</div>
-        <div class="owner-item-main">
-          <div class="owner-item-top">
-            <span class="owner-id">${escapeHtml(o.id)}</span>
-            <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}">
-              ${o.paid ? icon('check', 'icon-xs') + " To'langan" : icon('x', 'icon-xs') + ' Qarzdor'}
-            </span>
+      <div class="owner-item owner-item-detailed" data-search-key="${escapeHtml(ownerSearchKey(o))}">
+        <div class="owner-item-head">
+          <div class="owner-avatar">${escapeHtml((((o.profile && o.profile.name) || o.username || String(o.id) || '#').trim().charAt(0) || '#').toUpperCase())}</div>
+          <div class="owner-item-heading">
+            <div class="owner-item-top">
+              <span class="owner-id">${escapeHtml(o.id)}</span>
+              <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}">
+                ${o.paid ? icon('check', 'icon-xs') + " To'langan" : icon('x', 'icon-xs') + ' Qarzdor'}
+              </span>
+            </div>
+            ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
+            ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
           </div>
-          ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
-          ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
-          <div class="owner-expiry" data-edit-expiry="${escapeHtml(o.id)}" data-expiry-current="${o.expiresAt ? escapeHtml(o.expiresAt) : ''}">
-            ${icon('clock', 'icon-xs icon-muted')} ${escapeHtml(expiryText(o))} ${icon('edit', 'icon-xs icon-muted')}
+          <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
+        </div>
+
+        <div class="owner-field-list">
+          <div class="owner-field" data-edit-expiry="${escapeHtml(o.id)}" data-expiry-current="${o.expiresAt ? escapeHtml(o.expiresAt) : ''}">
+            <span class="owner-field-icon">${icon('clock', 'icon-xs')}</span>
+            <span class="owner-field-value">${escapeHtml(expiryText(o))}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
           </div>
           ${subscriptionProgressHtml(o)}
-          <div class="owner-price" data-edit-price="${escapeHtml(o.id)}">
-            ${icon('card', 'icon-xs icon-muted')} ${o.price ? escapeHtml(String(o.price)) + " so'm/oy" : 'Narx kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
+          <div class="owner-field" data-edit-price="${escapeHtml(o.id)}">
+            <span class="owner-field-icon">${icon('card', 'icon-xs')}</span>
+            <span class="owner-field-value">${o.price ? escapeHtml(String(o.price)) + " so'm/oy" : 'Narx kiritilmagan'}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
           </div>
-          <div class="owner-price" data-edit-credentials="${escapeHtml(o.id)}">
-            ${icon('user', 'icon-xs icon-muted')} ${o.hasLogin ? `Login: ${escapeHtml(o.login)}` : 'Login/parol o\'rnatilmagan'} ${icon('edit', 'icon-xs icon-muted')}
+          <div class="owner-field" data-edit-credentials="${escapeHtml(o.id)}">
+            <span class="owner-field-icon">${icon('user', 'icon-xs')}</span>
+            <span class="owner-field-value">${o.hasLogin ? `Login: ${escapeHtml(o.login)}` : 'Login/parol o\'rnatilmagan'}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
           </div>
-          <div class="owner-price" data-edit-tariff="${escapeHtml(o.id)}">
-            ${icon('star', 'icon-xs icon-muted')} ${escapeHtml(ownerTariffLabel(o.tariffId))} ${icon('edit', 'icon-xs icon-muted')}
+          <div class="owner-field" data-edit-tariff="${escapeHtml(o.id)}">
+            <span class="owner-field-icon">${icon('star', 'icon-xs')}</span>
+            <span class="owner-field-value">${escapeHtml(ownerTariffLabel(o.tariffId))}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
           </div>
         </div>
-        <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
       </div>
     `;
   }
