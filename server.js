@@ -4571,6 +4571,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendJSON(res, 200, featureBlockedResult('audit'));
       if (!Array.isArray(entries) || !entries.length) {
         return sendJSON(res, 200, { ok: false, reason: 'Audit uchun kamida bitta mahsulot kiriting.' });
       }
@@ -4646,6 +4647,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendJSON(res, 200, featureBlockedResult('audit'));
 
       const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const pool = resolveStockPool(ctx.owner, branchId);
