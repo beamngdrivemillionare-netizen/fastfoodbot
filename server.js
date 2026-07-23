@@ -905,6 +905,7 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
   const addressLines = [
     mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
     order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
+    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
   ].filter(Boolean).join('\n');
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
   const headerEmoji = order.orderType === 'dostavka' ? '🚚' : (order.orderType === 'stol' ? '🍽' : '🥡');
@@ -3308,7 +3309,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote, requestId } = payload;
+      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote, extraPhone, requestId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -3374,8 +3375,15 @@ const server = http.createServer((req, res) => {
         if (!deliveryLocation && !addressNoteTrimmed) {
           return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
         }
+        // YANGI: dostavka buyurtmasida qo'shimcha telefon raqam majburiy —
+        // kuryer mijozga bog'lana olmay qolgan holatlar uchun zaxira aloqa.
+        const extraPhoneDigits = String(extraPhone || '').replace(/\D/g, '');
+        if (extraPhoneDigits.length < 7) {
+          return sendJSON(res, 200, { ok: false, reason: 'Qo\'shimcha telefon raqamingizni kiriting.' });
+        }
       }
       const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
+      const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
 
       const menu = (owner.menu || []).filter(m => m.available !== false);
       const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
@@ -3494,6 +3502,7 @@ const server = http.createServer((req, res) => {
         tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
         location: deliveryLocation,
         addressNote: addressNoteFinal,
+        extraPhone: extraPhoneFinal,
         paymentType,
         status: 'yangi',
         // YANGI: karta bilan to'lagan mijoz to'lov skrinshotini yubormaguncha
