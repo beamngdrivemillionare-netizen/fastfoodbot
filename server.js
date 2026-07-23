@@ -5556,7 +5556,16 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q yoki muddati tugagan' });
 
-      return sendJSON(res, 200, { ok: true, profile: owner.profile || null });
+      // 58-bosqich: do'kon egasi o'z profilida joriy tarifini ko'rishi uchun
+      // tariff nomi ham shu javobga qo'shiladi (tariffId bo'lmasa yoki
+      // o'chirilgan bo'lsa — null).
+      let tariffInfo = null;
+      if (owner.tariffId) {
+        const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+        if (tariff) tariffInfo = { id: tariff.id, name: tariff.name };
+      }
+
+      return sendJSON(res, 200, { ok: true, profile: owner.profile || null, tariff: tariffInfo });
     });
     return;
   }
@@ -5887,7 +5896,39 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: admin do'kon egasiga login+parol biriktiradi (yoki yangilaydi) ----
+  // ---- API: do'kon egasiga tarif biriktirish (faqat admin, 57-bosqich) ----
+  // tariffId — tariffs.json'dagi bitta yozuvning id'si, yoki null/bo'sh —
+  // egani tarifsiz qoldirish uchun (masalan tarif o'chirilganda ham shu
+  // holatga tushadi, qarang: /api/tariff-remove).
+  if (req.method === 'POST' && req.url === '/api/owner-set-tariff') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, tariffId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      if (tariffId) {
+        const tariffs = loadTariffs();
+        if (!tariffs.some(t => t.id === tariffId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Bunday tarif topilmadi.' });
+        }
+        owner.tariffId = tariffId;
+      } else {
+        owner.tariffId = null;
+      }
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, tariffId: owner.tariffId });
+    });
+    return;
+  }
   // Shu login/parol bilan owner Mini App'ni Telegram tashqarisida (brauzerdan)
   // ham ochib, o'z panelига kira oladi (qarang: pastdagi /api/owner-login).
   if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
