@@ -3992,10 +3992,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
     board.querySelectorAll('[data-reject-order-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
-        if (!confirm('Mijoz buyurtmani qabul qilmadimi? Buyurtma bekor qilinadi.')) return;
+        let reason = '';
+        while (true) {
+          reason = prompt('Buyurtma bekor qilinadi. Sababini yozing (majburiy):', reason || '');
+          if (reason === null) return; // foydalanuvchi bekor qildi
+          reason = reason.trim();
+          if (reason) break;
+          alert('Bekor qilish sababini yozish majburiy.');
+        }
         btn.disabled = true;
         const orderId = btn.getAttribute('data-reject-order-id');
-        const res = await apiPost('/api/reject-delivery-order', { initData, orderId });
+        const res = await apiPost('/api/reject-delivery-order', { initData, orderId, reason });
         if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
         lastOrdersSnapshot = null;
         await refreshDeliveryBoard();
