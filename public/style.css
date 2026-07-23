@@ -1582,6 +1582,28 @@
   .network-error-state .network-error-retry-btn .icon { width: 16px; height: 16px; }
   .network-error-state .network-error-retry-btn:disabled { opacity: 0.6; }
 
+  /* ---- Tarifda yo'q funksiyaga kirish bloklanganda (60-bosqich):
+     oddiy xatolikdan farqli, aniq va tushunarli — qulf ikonkasi va
+     ogohlantirish rangi bilan. Ham bitta konteyner ichida (butun bo'lim
+     bloklanganda, masalan AI tahlil), ham modal sifatida (bitta amal —
+     masalan "aksiya qo'shish" — rad etilganda) ishlatiladi. ---- */
+  .feature-blocked-state {
+    display: flex; flex-direction: column; align-items: center; text-align: center;
+    padding: var(--sp-8) var(--sp-4); color: var(--text-muted);
+    background: var(--warning-bg); border-radius: var(--radius-md);
+  }
+  .feature-blocked-state .feature-blocked-icon { width: 36px; height: 36px; margin-bottom: var(--sp-3); color: var(--warning); }
+  .feature-blocked-state .feature-blocked-title { font-size: var(--fs-body); font-weight: 700; color: var(--warning); margin-bottom: 4px; }
+  .feature-blocked-state .feature-blocked-desc { font-size: var(--fs-sm); color: var(--text-secondary); max-width: 300px; line-height: var(--lh-body); }
+  .feature-blocked-modal { text-align: center; }
+  .feature-blocked-modal .feature-blocked-icon-wrap {
+    width: 56px; height: 56px; border-radius: 50%; background: var(--warning-bg);
+    display: flex; align-items: center; justify-content: center; margin: 0 auto var(--sp-3);
+  }
+  .feature-blocked-modal .feature-blocked-icon-wrap .icon { width: 28px; height: 28px; color: var(--warning); }
+  .feature-blocked-modal .feature-blocked-title { font-size: var(--fs-body); font-weight: 700; color: var(--warning); margin-bottom: 6px; }
+  .feature-blocked-modal .feature-blocked-desc { font-size: var(--fs-sm); color: var(--text-secondary); line-height: var(--lh-body); margin-bottom: var(--sp-4); }
+
   /* ---- Mijoz ilovasi ochilganda "Xush kelibsiz" yuklanish ekrani ----
      Oshxonaning logotipi butun ekranga fon qilib qo'yiladi (xiralashtirilgan
      qorong'i qatlam ustida), o'rtada mijozga tanish logotip + "Xush
