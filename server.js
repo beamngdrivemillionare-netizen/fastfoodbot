@@ -4074,6 +4074,7 @@ const server = http.createServer((req, res) => {
       }
       const staff = (ctx.owner.staff || []).find(s => String(s.id) === userId);
       if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+      if (!ownerCanUseFeature(ctx.owner, 'shift-toggle')) return sendJSON(res, 200, featureBlockedResult('shift-toggle'));
 
       const now = new Date().toISOString();
       if (staff.shiftActive) {
