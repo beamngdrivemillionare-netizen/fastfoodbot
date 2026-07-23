@@ -817,9 +817,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="owner-item" data-tariff-id="${escapeHtml(t.id)}">
         <div>
           <div class="owner-id">${escapeHtml(t.name)}</div>
+          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'}</div>
         </div>
         <div class="btn-row" style="margin-top:0;">
-          <button class="btn ikkinchi" data-tariff-rename="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
+          <button class="btn ikkinchi" data-tariff-edit="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
           <button class="btn xavfli" data-tariff-remove="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
         </div>
       </div>
@@ -835,6 +836,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <h2>${icon('plus', 'icon-xs')} Yangi tarif qo'shish</h2>
           <label class="field-label">Tarif nomi</label>
           <input type="text" id="tariffNameInput" placeholder="Masalan: Standart">
+          <label class="field-label">Narx (so'm/oy)</label>
+          <input type="text" id="tariffPriceInput" placeholder="Masalan: 150000" inputmode="numeric">
           <button class="btn" id="tariffAddBtn" style="margin-top:10px;">Qo'shish</button>
           <div class="xabar" id="tariffAddMsg"></div>
         </div>
@@ -847,21 +850,29 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('tariffsBackBtn').addEventListener('click', () => onBack());
     document.getElementById('tariffAddBtn').addEventListener('click', async () => {
       const input = document.getElementById('tariffNameInput');
+      const priceInput = document.getElementById('tariffPriceInput');
       const msgEl = document.getElementById('tariffAddMsg');
       const name = input.value.trim();
+      const priceStr = priceInput.value.trim();
       if (!name) {
         msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
         msgEl.className = 'xabar err';
         return;
       }
+      if (priceStr && (!/^\d+$/.test(priceStr))) {
+        msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = '';
-      const res = await apiPost('/api/tariff-add', { initData, name });
+      const res = await apiPost('/api/tariff-add', { initData, name, price: priceStr || 0 });
       if (!res.ok) {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
         return;
       }
       input.value = '';
+      priceInput.value = '';
       loadTariffList();
     });
     await loadTariffList();
@@ -880,17 +891,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     el.innerHTML = res.tariffs.map(tariffItemHtml).join('');
-    el.querySelectorAll('[data-tariff-rename]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const id = btn.getAttribute('data-tariff-rename');
+    el.querySelectorAll('[data-tariff-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-tariff-edit');
         const current = res.tariffs.find(t => t.id === id);
-        const newName = prompt("Tarif nomini kiriting:", current ? current.name : '');
-        if (newName === null) return;
-        const trimmed = newName.trim();
-        if (!trimmed) return;
-        const r = await apiPost('/api/tariff-rename', { initData, id, name: trimmed });
-        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
-        loadTariffList();
+        if (current) showTariffEditModal(current);
       });
     });
     el.querySelectorAll('[data-tariff-remove]').forEach(btn => {
@@ -903,6 +908,51 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadTariffList();
       });
     });
+  }
+
+  // 52-bosqich: tarif nomi va narxini birgalikda tahrirlash oynasi
+  function showTariffEditModal(tariff) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:340px;">
+        <h3>Tarifni tahrirlash</h3>
+        <label class="field-label">Tarif nomi</label>
+        <input type="text" id="tariffEditNameInput" value="${escapeHtml(tariff.name)}">
+        <label class="field-label">Narx (so'm/oy)</label>
+        <input type="text" id="tariffEditPriceInput" value="${tariff.price || 0}" inputmode="numeric">
+        <div class="xabar" id="tariffEditMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="tariffEditCancelBtn">Bekor qilish</button>
+          <button class="btn" id="tariffEditSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('tariffEditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('tariffEditSaveBtn').onclick = async () => {
+      const nameVal = document.getElementById('tariffEditNameInput').value.trim();
+      const priceVal = document.getElementById('tariffEditPriceInput').value.trim();
+      const msgEl = document.getElementById('tariffEditMsg');
+      if (!nameVal) {
+        msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (priceVal && !/^\d+$/.test(priceVal)) {
+        msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      const res = await apiPost('/api/tariff-rename', { initData, id: tariff.id, name: nameVal, price: priceVal || 0 });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      overlay.remove();
+      loadTariffList();
+    };
   }
 
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
