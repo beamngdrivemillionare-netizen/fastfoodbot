@@ -1410,6 +1410,25 @@
   .modal p { font-size: var(--fs-body); color: var(--text-secondary); line-height: 1.4; margin-bottom: var(--sp-4); word-break: break-all; }
   .hidden { display: none !important; }
 
+  /* ---- 25/26-bosqich: To'lov isboti (skrinshot) haqidagi ogohlantirish —
+     ALOHIDA, aniq ko'rinadigan modal sifatida ochiladi (qizil ramka bilan),
+     shunda mijoz uni tasodifan ko'rmay qoldirmaydi. ---- */
+  .payment-proof-modal {
+    border: 2px solid var(--danger);
+    background: var(--danger-bg);
+  }
+  .payment-proof-modal .modal-warn-icon {
+    color: var(--danger);
+    flex-shrink: 0;
+  }
+  .payment-proof-modal h3 {
+    color: var(--danger);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+  }
+  .payment-proof-modal p { color: var(--text-primary); }
+
   @keyframes overlay-fade { from { opacity: 0; } to { opacity: 1; } }
   @keyframes modal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
