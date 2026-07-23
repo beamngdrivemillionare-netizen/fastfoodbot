@@ -1437,8 +1437,9 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
+    font-size: 20px;
   }
-  .payment-proof-modal p { color: var(--text-primary); }
+  .payment-proof-modal p { color: var(--text-primary); font-size: 17px; line-height: 1.5; }
 
   @keyframes overlay-fade { from { opacity: 0; } to { opacity: 1; } }
   @keyframes modal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
