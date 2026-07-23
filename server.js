@@ -245,6 +245,32 @@ function getFeatureCatalogGrouped() {
   }));
 }
 
+// ====== 59-bosqich: tarifda yo'q funksiyaga kirishni bloklash ======
+// Muhim: owner.tariffId belgilanmagan (yoki tarif o'chirilgan) bo'lsa —
+// CHEKLOVSIZ. Bu — eski, tarif tizimidan oldingi do'kon egalari (57-bosqich
+// hali ularga tarif biriktirmagan) ishlashda davom etishi uchun muhim.
+// Faqat admin ongli ravishda bir tarifni biriktirganda, o'sha tarifning
+// features{} xaritasi amal qila boshlaydi.
+function ownerCanUseFeature(owner, featureId) {
+  if (!owner || !owner.tariffId) return true;
+  const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+  if (!tariff) return true;
+  return !!(tariff.features && tariff.features[featureId] === true);
+}
+
+// 60-bosqich: bloklangan joyda aniq va tushunarli xabar — qaysi funksiya
+// va nima uchun yopilganini bildiradi (admin bilan bog'lanishni so'raydi).
+function featureBlockedResult(featureId) {
+  const feature = FEATURE_CATALOG.find(f => f.id === featureId);
+  const label = feature ? feature.name : 'Bu funksiya';
+  return {
+    ok: false,
+    reason: `"${label}" joriy tarifingizga kiritilmagan. Kengaytirish uchun administrator bilan bog'laning.`,
+    blockedFeature: true,
+    featureId
+  };
+}
+
 function isAdminId(userId) {
   return String(userId) === String(ADMIN_ID);
 }
@@ -2208,6 +2234,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi filial qo\'sha oladi' });
+      if (!ownerCanUseFeature(owner, 'branch-manage')) return sendJSON(res, 200, featureBlockedResult('branch-manage'));
 
       const trimmedName = String(name || '').trim();
       const trimmedAddress = String(address || '').trim();
@@ -2614,6 +2641,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi combo boshqara oladi' });
+      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
 
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
@@ -2678,6 +2706,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi combo boshqara oladi' });
+      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const combo = findCombo(owner, id);
@@ -2741,6 +2770,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.combos = (owner.combos || []).filter(c => c.id !== id);
@@ -2872,6 +2902,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi qo\'sha oladi' });
+      if (!ownerCanUseFeature(owner, 'promo-manage')) return sendJSON(res, 200, featureBlockedResult('promo-manage'));
 
       const titleTrim = String(title || '').trim();
       const percentNum = Number(discountPercent);
@@ -4137,6 +4168,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
 
       const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const pool = resolveStockPool(ctx.owner, branchId);
@@ -4617,6 +4649,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi xarajat kirita oladi' });
+      if (!ownerCanUseFeature(owner, 'expense-manage')) return sendJSON(res, 200, featureBlockedResult('expense-manage'));
 
       const amountNum = Number(amount);
       if (!Number.isFinite(amountNum) || amountNum <= 0) {
@@ -5110,6 +5143,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
 
       const dateKey = tzDateKey(new Date());
       const built = buildZReport(owner, dateKey);
@@ -5300,6 +5334,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
 
       const fromDate = resolvePeriodStart(period || 'week');
       const topItems = computeTopItems(owner, fromDate, 8);
@@ -5332,6 +5367,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       return sendJSON(res, 200, {
         ok: true,
@@ -5355,6 +5391,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       sendAiDirectorDigest(owner, true).then(() => {
         saveOwners(owners);
@@ -5377,6 +5414,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       owner.aiDirectorEnabled = !!enabled;
       saveOwners(owners);
@@ -5397,6 +5435,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
 
       const qTrim = String(question || '').trim();
       if (!qTrim) return sendJSON(res, 200, { ok: false, reason: 'Savolingizni kiriting.' });
