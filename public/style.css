@@ -789,6 +789,16 @@
   .btn.ikkinchi:hover { background: var(--surface-1); }
   .btn.xavfli { background: var(--danger); }
   .btn.xavfli:hover { background: #B8272D; }
+
+  /* ---- Smena boshlash/tugatish (49-bosqich) ---- */
+  .shift-widget { margin-top: 0; padding: var(--sp-3) var(--sp-4); }
+  .shift-widget-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+  .shift-widget-info { display: flex; align-items: center; gap: 10px; }
+  .shift-widget-info .icon { flex-shrink: 0; color: var(--text-secondary); }
+  .shift-widget-active .shift-widget-info .icon { color: var(--success); }
+  .shift-widget-time { font-size: var(--fs-small); color: var(--text-secondary); margin-top: 2px; }
+  .shift-widget-active { background: var(--success-bg); }
+  .shift-widget-btn { width: auto; min-height: 38px; padding: 8px 16px; }
   .btn-row { display: flex; gap: var(--sp-2); margin-top: 10px; }
   .btn-row .btn { flex: 1; }
 
