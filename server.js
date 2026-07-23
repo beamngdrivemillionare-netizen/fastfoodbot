@@ -311,6 +311,39 @@ function comboStockNeeds(owner, combo, comboQty) {
   return needs;
 }
 
+// 47-bosqich: sklad tugagach taom/combo avtomatik "Tugagan" deb belgilanishi
+// uchun — egasi qo'lda o'chirgan "available" belgisidan MUSTAQIL, real vaqtda
+// hisoblanadigan ko'rsatkich. Taom sklad bilan bog'lanmagan bo'lsa (na
+// directStockId, na recipe) — cheklovsiz, doim mavjud deb hisoblanadi.
+function menuItemOutOfStock(owner, menuItem) {
+  if (!menuItem) return false;
+  if (menuItem.directStockId) {
+    const stockItem = (owner.stock || []).find(s => s.id === menuItem.directStockId);
+    if (!stockItem) return false; // sklad kartochkasi topilmasa — eski xatti-harakat saqlanadi (cheklanmaydi)
+    return stockItem.qty < 1;
+  }
+  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
+  if (!recipe.length) return false;
+  return recipe.some(ing => {
+    const stockItem = (owner.stock || []).find(s => s.id === ing.stockId);
+    if (!stockItem) return false;
+    return stockItem.qty < ing.qty;
+  });
+}
+
+// Combo uchun xuddi shu qoida — tarkibidagi taomlardan BIRORTASI uchun ham
+// sklad yetarli bo'lmasa, combo ham "Tugagan" deb ko'rsatiladi (bitta
+// combo — comboQty=1 — tayyorlash uchun yetarli sklad bormi tekshiriladi).
+function comboOutOfStock(owner, combo) {
+  if (!combo) return false;
+  const needs = comboStockNeeds(owner, combo, 1);
+  return needs.some(need => {
+    const stockItem = (owner.stock || []).find(s => s.id === need.stockId);
+    if (!stockItem) return false;
+    return stockItem.qty < need.qty;
+  });
+}
+
 // ====== Sklad birliklari va buyurtma turlari (module darajasida — bir nechta joyda ishlatiladi) ======
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
 const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
@@ -2182,7 +2215,8 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId);
       if (!ctx) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q' });
 
-      return sendJSON(res, 200, { ok: true, menu: ctx.owner.menu || [], categories: sortedOwnerCategories(ctx.owner), role: ctx.role });
+      const menuWithStock = (ctx.owner.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(ctx.owner, m) }));
+      return sendJSON(res, 200, { ok: true, menu: menuWithStock, categories: sortedOwnerCategories(ctx.owner), role: ctx.role });
     });
     return;
   }
@@ -2478,7 +2512,8 @@ const server = http.createServer((req, res) => {
       if (!ctx) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q' });
 
       const combos = (ctx.owner.combos || []).map(c => Object.assign({}, c, {
-        price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price
+        price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price,
+        outOfStock: comboOutOfStock(ctx.owner, c)
       }));
       return sendJSON(res, 200, { ok: true, combos });
     });
@@ -2959,13 +2994,15 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
 
-      const menu = (owner.menu || []).filter(m => m.available !== false);
+      const menu = (owner.menu || []).filter(m => m.available !== false)
+        .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(owner, m) }));
       // 30-bosqich: combolar ham mijoz menyusiga qo'shiladi — frontend ularni
       // alohida "Combo" bo'limi sifatida ko'rsatadi (qarang: customerMenuListHtml).
       // "auto" narx rejimidagilar uchun narx shu yerda qayta hisoblanadi, shunda
       // tarkibdagi taom narxi keyinroq o'zgargan bo'lsa ham mijozga to'g'ri ko'rinadi.
       const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
-        price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price
+        price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
+        outOfStock: comboOutOfStock(owner, c)
       }));
       const promotions = (owner.promotions || []).filter(p => p.active);
       return sendJSON(res, 200, { ok: true, menu, combos, promotions, categories: sortedOwnerCategories(owner) });
