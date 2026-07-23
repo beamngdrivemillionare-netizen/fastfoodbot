@@ -34,7 +34,8 @@ const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
 const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
 // tariffs.json — admin belgilaydigan obuna tariflari katalogi (F-bo'lim,
 // 51-70-bosqich). Har bir do'kon egasiga shu ro'yxatdan bitta tarif
-// biriktiriladi (owner.tariffId — keyingi bosqichlarda qo'shiladi).
+// biriktiriladi (owner.tariffId — 55-bosqichda tarif o'chirishda tekshiriladi,
+// egaga biriktirish UI'si 57-bosqichda qo'shiladi).
 const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
 // ========================================================
 
@@ -5728,13 +5729,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tarifni o'chirish (faqat admin) — 55-bosqichda "biriktirilgan
-  // bo'lsa nima bo'ladi" degan mantiq kengaytiriladi; hozircha faqat
-  // katalogdan olib tashlaydi ----
+  // ---- API: tarifni o'chirish (faqat admin, 55-bosqich) ----
+  // Agar tarif biror do'kon egasiga biriktirilgan bo'lsa (owner.tariffId),
+  // oddiy so'rovda o'chirishga yo'l qo'yilmaydi — admin avval buni bilishi
+  // kerak. force:true yuborilsa, biriktirilgan egalar tarifsiz (tariffId:null)
+  // qoldiriladi va tarif shunday ham o'chiriladi.
   if (req.method === 'POST' && req.url === '/api/tariff-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
+      const { initData, id, force } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5743,6 +5746,21 @@ const server = http.createServer((req, res) => {
       const tariffs = loadTariffs();
       const idx = tariffs.findIndex(t => t.id === id);
       if (idx === -1) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+
+      const owners = loadOwners();
+      const assignedOwners = owners.filter(o => o.tariffId === id);
+      if (assignedOwners.length && !force) {
+        return sendJSON(res, 200, {
+          ok: false,
+          reason: `Bu tarifga ${assignedOwners.length} ta do'kon egasi biriktirilgan. Avval ularni boshqa tarifga o'tkazing, yoki tasdiqlab, ularni tarifsiz qoldirib o'chiring.`,
+          blockedCount: assignedOwners.length
+        });
+      }
+      if (assignedOwners.length && force) {
+        assignedOwners.forEach(o => { o.tariffId = null; });
+        saveOwners(owners);
+      }
+
       tariffs.splice(idx, 1);
       // Qolgan tariflarning order'ini qayta tekislaydi (ro'yxatda bo'shliq qolmasin)
       tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
