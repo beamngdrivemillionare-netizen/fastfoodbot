@@ -2809,6 +2809,14 @@ const server = http.createServer((req, res) => {
       if (orderType === 'dostavka' && paymentType === 'naqd') {
         return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
       }
+      // 21/23-bosqich: "Dostavka orqali" to'lov turi FAQAT haqiqiy Dostavka
+      // buyurtmalarida mavjud — Stolga/Olib ketish buyurtmalarida bu
+      // variant mantiqsiz (kuryer yo'q), shuning uchun backend'da ham
+      // rad etiladi (frontendda ko'rsatilmasligidan tashqari — himoya
+      // ikki qavatli bo'lishi kerak).
+      if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
+        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+      }
 
       // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - kuryer
       // mijozni topa olishi uchun kamida BITTASI bo'lishi shart: aniqlangan
@@ -3157,6 +3165,14 @@ const server = http.createServer((req, res) => {
       }
       if (orderType === 'dostavka' && paymentType === 'naqd') {
         return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+      }
+      // 21/23-bosqich: "Dostavka orqali" to'lov turi FAQAT haqiqiy Dostavka
+      // buyurtmalarida mavjud — Stolga/Olib ketish buyurtmalarida bu
+      // variant mantiqsiz (kuryer yo'q), shuning uchun backend'da ham
+      // rad etiladi (frontendda ko'rsatilmasligidan tashqari — himoya
+      // ikki qavatli bo'lishi kerak).
+      if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
+        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
       }
 
       // Narxlarni klientdan emas, serverdagi menyudan olamiz (soxtalashtirilmasligi uchun)
