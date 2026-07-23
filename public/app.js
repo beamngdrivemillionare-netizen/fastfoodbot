@@ -799,6 +799,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="xabar" id="deliveryGroupMsg"></div>
         </div>
 
+        <div class="section-label">${icon('link', 'icon-xs')} Oshxona</div>
+        <div class="kartochka">
+          <h2>Oshpazlar guruhi</h2>
+          <div class="bosh">Har bir yangi buyurtma haqida "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga ham boradi — oshpazlar shaxsiy chatni ochmagan yoki bloklagan bo'lsa ham, buyurtma guruhda ko'rinadi. Dostavka admin guruhidan mustaqil — ikkalasini bir vaqtda biriktirish mumkin.</div>
+          <div id="kitchenGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+          <div class="customer-link-hint">
+            Ulash uchun: 1) Botni oshpazlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/oshpaz_biriktir</b> buyrug'ini yuboring.<br>
+            Bekor qilish uchun guruhda <b>/oshpaz_bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+          </div>
+          <button class="btn ikkinchi xavfli hidden" id="removeKitchenGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+          <div class="xabar" id="kitchenGroupMsg"></div>
+        </div>
+
         ${(usingOwnerSession || ownerHasTelegramLogin) ? `
         <div class="section-label">${icon('user', 'icon-xs')} Hisob</div>
         <div class="kartochka">
@@ -988,10 +1001,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    document.getElementById('removeKitchenGroupBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('kitchenGroupMsg');
+      msgEl.textContent = 'Bekor qilinmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/kitchen-group-remove', { initData });
+      if (res.ok) {
+        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
+        msgEl.className = 'xabar ok';
+        loadKitchenGroupStatus();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
     loadCategoriesAndRender();
     loadPromoAndRender();
     loadBonusSettingsAndRender();
     loadDeliveryGroupStatus();
+    loadKitchenGroupStatus();
   }
 
   // ---- Do'kon egasi: birinchi marta profil to'ldirish — bosqichma-bosqich
@@ -2063,6 +2092,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
       statusEl.textContent = '— Hali admin guruhi biriktirilmagan.';
+      if (removeBtn) removeBtn.classList.add('hidden');
+    }
+  }
+
+  // 13-bosqich: Oshpazlar guruhi holatini yuklaydi — dostavka guruhidan
+  // mustaqil, alohida biriktiriladigan guruh.
+  async function loadKitchenGroupStatus() {
+    const statusEl = document.getElementById('kitchenGroupStatus');
+    const removeBtn = document.getElementById('removeKitchenGroupBtn');
+    if (!statusEl) return;
+    const res = await apiPost('/api/kitchen-group-status', { initData });
+    if (res.ok && res.bound) {
+      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    } else {
+      statusEl.textContent = '— Hali Oshpazlar guruhi biriktirilmagan.';
       if (removeBtn) removeBtn.classList.add('hidden');
     }
   }
