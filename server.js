@@ -357,6 +357,37 @@ function subscriptionBlockedJSON(owners, userId, fallbackReason) {
   return { ok: false, reason: fallbackReason };
 }
 
+// 79-BOSQICH: Telegram bot darajasida bloklash (8-bosqichdagi Mini App API
+// bloklashning bot tomonidagi jufti — hisob-kitob-bot'dagi
+// OwnerOnlyMiddleware._send_blocked_screen andozasida). Owner yoki uning
+// xodimi bot ichida biror amal (guruh biriktirish, buyurtmani "qabul
+// qilish"/"tayyor" deb belgilash, to'lovni tasdiqlash va h.k.) bajarmoqchi
+// bo'lganda, lekin obunasi (grace period bilan birga) chindan tugagan
+// bo'lsa — shu ekran chiqadi. `/start` va kelgusi "Ro'yxatdan o'tish"
+// (10-bosqich) bu tekshiruvdan MUSTASNO — ular har doim ishlaydi, chunki
+// ular handleStartCommand() ichida, bu funksiyani chaqirmasdan alohida
+// ishlaydi.
+async function sendSubscriptionBlockedScreen(chatId, access) {
+  const graceNote = access.inGrace ? '\n(Muhlat davri ham tugadi.)' : '';
+  await sendMessage(chatId,
+    `⛔ <b>Obunangiz tugagan</b>\nBotdagi va Mini App'dagi amallar vaqtincha bloklandi.${graceNote}\n` +
+    `Ma'lumotlaringiz (menyu, xodimlar, buyurtmalar tarixi) saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.`,
+    { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
+}
+
+// Berilgan ownerId (callback_data'dagi) egasi obuna sababli bloklanganmi —
+// tekshiradi, bloklangan bo'lsa callback'ga qisqa javob + shaxsiy chatga
+// to'liq bloklash ekranini yuboradi va true qaytaradi (chaqiruvchi shu
+// holda darhol `return` qilishi kerak). Bloklanmagan bo'lsa false qaytadi.
+async function guardCallbackSubscription(cq, owners, ownerId) {
+  const owner = findOwner(owners, ownerId);
+  const access = getOwnerSubscriptionAccess(owner);
+  if (access.allowed) return false;
+  await answerCallbackQuery(cq.id, '⛔ Obuna muddati tugagan.', true);
+  await sendSubscriptionBlockedScreen(cq.from.id, access);
+  return true;
+}
+
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
 // Faqat xotirada saqlanadi (server qayta ishga tushsa — 0'dan boshlanadi),
 // bazaga yozilmaydi — shunchaki joriy server holatini ko'rsatish uchun.
@@ -1763,7 +1794,9 @@ async function handleTelegramUpdate(update) {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, from.id);
       if (!isOwnerAccessValid(owner)) {
-        await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
+        const blocked = getBlockedOwnerAccess(owners, from.id);
+        if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
+        else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
         return;
       }
       if (!ownerCanUseFeature(owner, 'delivery-group')) {
@@ -1800,7 +1833,9 @@ async function handleTelegramUpdate(update) {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, from.id);
       if (!isOwnerAccessValid(owner)) {
-        await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
+        const blocked = getBlockedOwnerAccess(owners, from.id);
+        if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
+        else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
         return;
       }
       if (!ownerCanUseFeature(owner, 'kitchen-group')) {
@@ -1940,6 +1975,17 @@ async function handleTelegramUpdate(update) {
     const chatId = cq.message && cq.message.chat && cq.message.chat.id;
     const messageId = cq.message && cq.message.message_id;
 
+    // ---- 79-BOSQICH: "💳 Obunani uzaytirish" tugmasi (sendSubscriptionBlockedScreen
+    // orqali chiqadigan bloklash ekranida). To'liq tarif tanlash/to'lov oqimi
+    // 12-15-bosqichlarda qo'shiladi — hozircha faqat administrator bilan
+    // bog'lanishga yo'naltiradi, tugma "o'lik" bo'lib qolmasligi uchun. ----
+    if (data === 'obuna_menyu') {
+      await answerCallbackQuery(cq.id);
+      await sendMessage(from.id,
+        '💳 Obunani uzaytirish menyusi tez orada shu yerga qo\'shiladi.\nHozircha davom ettirish uchun administrator bilan bog\'laning.');
+      return;
+    }
+
     // ---- Mijoz "Yetkazildi" xabaridagi yulduzcha tugmasini bosib xizmatni
     // baholaydi (1-5 ball). Faqat shu buyurtmaning mijozi o'zi bosishi mumkin,
     // va har bir buyurtma faqat bir marta baholanadi. ----
@@ -2009,6 +2055,7 @@ async function handleTelegramUpdate(update) {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
       const order = (owner.orders || []).find(o => o.id === orderId);
       if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
 
@@ -2110,6 +2157,7 @@ async function handleTelegramUpdate(update) {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
       const order = (owner.orders || []).find(o => o.id === orderId);
       if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
 
