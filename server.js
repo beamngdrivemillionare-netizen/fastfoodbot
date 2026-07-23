@@ -5968,6 +5968,92 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // ====== 63/64-bosqich: obuna muddatini uzaytirish/qisqartirish/bekor qilish ======
+  // action:
+  //  - 'extend'    : joriy muddatga (yoki u tugagan/yo'q bo'lsa hozirgi vaqtga)
+  //                  `days` kun qo'shadi.
+  //  - 'setDate'   : `date` (YYYY-MM-DD) ga aniq belgilaydi — kelajakdagi sana
+  //                  uzaytirish, o'tmishdagi/bugungi sana esa qisqartirish
+  //                  bo'lib, pastdagi darhol bloklash bilan bir xil ishlaydi.
+  //  - 'unlimited' : expiresAt'ni tozalaydi (doimiy ruxsat).
+  //  - 'cancelNow' : obunani darhol bekor qiladi — checkOwnerExpirations()
+  //                  bilan bir xil xulq (owner ro'yxatdan olib tashlanadi,
+  //                  admin va egaga xabar boradi). Buyurtmalar tarixi
+  //                  owners.json'dan mustaqil saqlanadi (69-bosqich).
+  // Har ikkala holatda ham owner.reminderSentAt tozalanadi — muddat
+  // o'zgargach, "tez orada tugaydi" eslatmasi yangi muddatga nisbatan
+  // to'g'ri vaqtda qayta yuborilishi uchun (65-bosqich).
+  if (req.method === 'POST' && req.url === '/api/owner-set-expiry') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, action, days, date } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      if (action === 'extend') {
+        const n = parseInt(days, 10);
+        if (!Number.isInteger(n) || n <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak.' });
+        }
+        const currentMs = owner.expiresAt ? new Date(owner.expiresAt).getTime() : NaN;
+        const base = Number.isFinite(currentMs) && currentMs > Date.now() ? currentMs : Date.now();
+        owner.expiresAt = new Date(base + n * 86400000).toISOString();
+        owner.reminderSentAt = null;
+        saveOwners(owners);
+        return sendJSON(res, 200, { ok: true, owner });
+      }
+
+      if (action === 'setDate') {
+        const d = new Date(date);
+        if (!date || isNaN(d.getTime())) {
+          return sendJSON(res, 200, { ok: false, reason: 'Sana noto\'g\'ri.' });
+        }
+        // Kun boshidan emas, kun oxiridan (23:59:59) hisoblanadi — admin
+        // "shu kungacha" deb tanlagan kun to'liq amal qilishi uchun.
+        d.setHours(23, 59, 59, 999);
+        if (d.getTime() <= Date.now()) {
+          const remaining = owners.filter(o => o.id !== owner.id);
+          saveOwners(remaining);
+          await sendMessage(ADMIN_ID,
+            `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan yopildi.`);
+          await sendMessage(owner.id,
+            `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish yopildi.\nDavom ettirish uchun administrator bilan bog'laning.`);
+          return sendJSON(res, 200, { ok: true, removed: true });
+        }
+        owner.expiresAt = d.toISOString();
+        owner.reminderSentAt = null;
+        saveOwners(owners);
+        return sendJSON(res, 200, { ok: true, owner });
+      }
+
+      if (action === 'unlimited') {
+        owner.expiresAt = null;
+        owner.reminderSentAt = null;
+        saveOwners(owners);
+        return sendJSON(res, 200, { ok: true, owner });
+      }
+
+      if (action === 'cancelNow') {
+        const remaining = owners.filter(o => o.id !== owner.id);
+        saveOwners(remaining);
+        await sendMessage(ADMIN_ID,
+          `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan yopildi.`);
+        await sendMessage(owner.id,
+          `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish yopildi.`);
+        return sendJSON(res, 200, { ok: true, removed: true });
+      }
+
+      return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
+    });
+    return;
+  }
   // Shu login/parol bilan owner Mini App'ni Telegram tashqarisida (brauzerdan)
   // ham ochib, o'z panelига kira oladi (qarang: pastdagi /api/owner-login).
   if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
