@@ -899,6 +899,7 @@ function escapeHtmlServer(str) {
 // guruhga barcha buyurtma turlari yuboriladi, faqat dostavka emas.
 function notifyDeliveryGroup(owner, order, creatorLabel) {
   if (!owner.deliveryGroupId) return;
+  if (!ownerCanUseFeature(owner, 'delivery-group')) return; // 11-bosqich: tarif keyin o'zgartirilgan bo'lsa ham xabar ketmasin
   const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
   const mapsLink = locationMapsLink(order.location);
   const addressLines = [
@@ -948,6 +949,7 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
 // yangilanadi (qarang: syncGroupMessagesForOrder).
 function notifyKitchenGroup(owner, order, creatorLabel) {
   if (!owner.kitchenGroupId) return;
+  if (!ownerCanUseFeature(owner, 'kitchen-group')) return; // 11-bosqich: tarif keyin o'zgartirilgan bo'lsa ham xabar ketmasin
   try {
     const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
@@ -1321,6 +1323,10 @@ async function handleTelegramUpdate(update) {
         await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
         return;
       }
+      if (!ownerCanUseFeature(owner, 'delivery-group')) {
+        await sendMessage(chatId, featureBlockedResult('delivery-group').reason);
+        return;
+      }
       owner.deliveryGroupId = String(chatId);
       owner.deliveryGroupTitle = msg.chat.title || null;
       saveOwners(owners);
@@ -1352,6 +1358,10 @@ async function handleTelegramUpdate(update) {
       const owner = findOwner(owners, from.id);
       if (!isOwnerAccessValid(owner)) {
         await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
+        return;
+      }
+      if (!ownerCanUseFeature(owner, 'kitchen-group')) {
+        await sendMessage(chatId, featureBlockedResult('kitchen-group').reason);
         return;
       }
       owner.kitchenGroupId = String(chatId);
@@ -3861,6 +3871,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz', 'dostavka'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
 
       let orders = (ctx.owner.orders || [])
         .slice()
@@ -4122,6 +4133,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
 
       if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
         return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri holat.' });
@@ -4185,6 +4197,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
 
       const order = (ctx.owner.orders || []).find(o => o.id === orderId);
       if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
@@ -4223,6 +4236,7 @@ const server = http.createServer((req, res) => {
       if (!ctx || !ctxHasRole(ctx, 'egasi')) {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi bu amalni bajara oladi' });
       }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
 
       const order = (ctx.owner.orders || []).find(o => o.id === orderId);
       if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
