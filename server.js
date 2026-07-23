@@ -34,6 +34,12 @@ const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
 const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
 // ========================================================
 
+// ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
+// Faqat xotirada saqlanadi (server qayta ishga tushsa — 0'dan boshlanadi),
+// bazaga yozilmaydi — shunchaki joriy server holatini ko'rsatish uchun.
+const SERVER_STARTED_AT = new Date().toISOString();
+const webhookStats = { received: 0, errors: 0, lastAt: null };
+
 function verifyTelegramInitData(initData, botToken) {
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
@@ -5536,6 +5542,70 @@ const server = http.createServer((req, res) => {
   // ---- API: do'kon egalari ro'yxatini olish (faqat admin) ----
   // MUHIM: passwordHash/sessionToken kabi maxfiy maydonlar frontendga hech qachon
   // yuborilmaydi — faqat login mavjudligini bildiruvchi hasLogin bayrog'i qaytariladi.
+  // ---- API: 50-bosqich — admin uchun kichik "System status" paneli ----
+  // Serverning umumiy holatini (ishlash vaqti, xotira, xodimlar/buyurtmalar
+  // soni, ma'lumot fayllari hajmi, webhook statistikasi) bitta so'rovda
+  // qaytaradi — faqat admin ko'ra oladi.
+  if (req.method === 'POST' && req.url === '/api/system-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const owners = loadOwners();
+      const activeOwners = owners.filter(isOwnerAccessValid);
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      let totalStaff = 0, totalOrders = 0, todayOrders = 0, totalNotifErrors = 0;
+      owners.forEach(o => {
+        totalStaff += (o.staff || []).length;
+        const orders = o.orders || [];
+        totalOrders += orders.length;
+        todayOrders += orders.filter(ord => ord.createdAt && new Date(ord.createdAt) >= todayStart).length;
+        totalNotifErrors += (o.notificationErrors || []).length;
+      });
+
+      function fileInfo(file) {
+        try {
+          const st = fs.statSync(file);
+          return { exists: true, sizeKb: Math.round(st.size / 1024 * 10) / 10 };
+        } catch (e) {
+          return { exists: false, sizeKb: 0 };
+        }
+      }
+
+      const mem = process.memoryUsage();
+
+      return sendJSON(res, 200, {
+        ok: true,
+        status: {
+          uptimeSeconds: Math.floor(process.uptime()),
+          serverStartedAt: SERVER_STARTED_AT,
+          nodeVersion: process.version,
+          memoryRssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
+          owners: { total: owners.length, active: activeOwners.length, expired: owners.length - activeOwners.length },
+          totalStaff,
+          totalOrders,
+          todayOrders,
+          notificationErrors: totalNotifErrors,
+          webhook: webhookStats,
+          botConfigured: !!BOT_TOKEN && BOT_TOKEN !== 'BOT_TOKEN_BU_YERGA',
+          publicUrlConfigured: !!PUBLIC_URL,
+          dataFiles: {
+            owners: fileInfo(OWNERS_FILE),
+            invites: fileInfo(INVITES_FILE),
+            requests: fileInfo(REQUESTS_FILE),
+            profiles: fileInfo(PROFILES_FILE)
+          }
+        }
+      });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/owners') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5943,7 +6013,9 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{"ok":true}');
       if (err) return;
-      try { await handleTelegramUpdate(update); } catch (e) { console.error('Webhook xatosi:', e); }
+      webhookStats.received++;
+      webhookStats.lastAt = new Date().toISOString();
+      try { await handleTelegramUpdate(update); } catch (e) { webhookStats.errors++; console.error('Webhook xatosi:', e); }
     });
     return;
   }
