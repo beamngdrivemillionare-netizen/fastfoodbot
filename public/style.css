@@ -1440,6 +1440,12 @@
     padding: var(--sp-5);
     width: 100%;
     max-width: 340px;
+    /* Ba'zi modallar (masalan "Tizim holati") ekrandan balandroq bo'lishi
+       mumkin — max-height + overflow-y bo'lmasa, pastdagi "Yopish" tugmasi
+       ekrandan chiqib ketib, foydalanuvchi oynani yopa olmay qoladi. */
+    max-height: calc(100vh - var(--sp-6) * 2);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     text-align: left;
     animation: modal-rise var(--transition-base);
   }
