@@ -3232,6 +3232,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
 
       const menu = (owner.menu || []).filter(m => m.available !== false)
         .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(owner, m) }));
@@ -3262,6 +3263,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
 
       const customer = findOrCreateCustomer(owner, userId, check.user);
       const idx = customer.favorites.indexOf(itemId);
@@ -3286,6 +3288,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
 
       const orders = (owner.orders || [])
         .filter(o => String(o.customerId) === userId)
@@ -3309,6 +3312,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
 
       // Mijoz hali ism, familiya va telefon raqami bilan botga tanishtirilmagan bo'lsa,
       // buyurtma qabul qilinmaydi — avval botning shaxsiy chatida /start orqali
