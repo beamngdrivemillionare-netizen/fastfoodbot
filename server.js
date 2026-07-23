@@ -930,10 +930,27 @@ function syncGroupMessagesForOrder(owner, order) {
 
 // ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
 const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000; // har soatda tekshiradi
-const REMINDER_BEFORE_MS = 24 * 60 * 60 * 1000; // muddat tugashiga 1 kun qolganda eslatma yuboradi
+// 65-bosqich: eslatma qancha kun oldin yuborilishi endi tarifga bog'liq —
+// har bir tarif o'zining reminderDays qiymatini belgilashi mumkin (admin
+// panelida, Tarif tahrirlash oynasi). Tarif biriktirilmagan yoki
+// reminderDays ko'rsatilmagan bo'lsa — standart qiymat shu yerdan olinadi
+// (eski, tarif tizimidan oldingi umumiy 1 kunlik xulq bilan bir xil).
+const DEFAULT_REMINDER_DAYS = 1;
 
 function ownerLabel(owner) {
   return owner.username ? '@' + owner.username : `ID: ${owner.id}`;
+}
+
+// Shu do'kon egasi uchun eslatma necha kun oldin yuborilishini aniqlaydi.
+function ownerReminderBeforeMs(owner) {
+  let reminderDays = DEFAULT_REMINDER_DAYS;
+  if (owner.tariffId) {
+    const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+    if (tariff && Number.isFinite(tariff.reminderDays) && tariff.reminderDays > 0) {
+      reminderDays = tariff.reminderDays;
+    }
+  }
+  return reminderDays * 24 * 60 * 60 * 1000;
 }
 
 async function checkOwnerExpirations() {
@@ -956,7 +973,7 @@ async function checkOwnerExpirations() {
       continue;
     }
 
-    if (!owner.reminderSentAt && expiresMs - now <= REMINDER_BEFORE_MS) {
+    if (!owner.reminderSentAt && expiresMs - now <= ownerReminderBeforeMs(owner)) {
       changed = true;
       owner.reminderSentAt = new Date().toISOString();
       const daysLeft = Math.max(1, Math.ceil((expiresMs - now) / 86400000));
@@ -5732,6 +5749,10 @@ const server = http.createServer((req, res) => {
         name: nameTrim,
         order: tariffs.length,
         price: priceVal,
+        // 65-bosqich: muddat tugashiga necha kun qolganda eslatma yuborilishi —
+        // har bir tarif o'zining qiymatini belgilashi mumkin (standart: 1 kun,
+        // eski, tarif tizimidan oldingi umumiy xulq bilan bir xil).
+        reminderDays: 1,
         features: {},
         createdAt: new Date().toISOString()
       };
@@ -5749,7 +5770,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/tariff-rename') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, price } = payload;
+      const { initData, id, name, price, reminderDays } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5768,6 +5789,15 @@ const server = http.createServer((req, res) => {
         const priceVal = Number(price);
         if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
         tariff.price = priceVal;
+      }
+      // 65-bosqich: shu tarifdagi egalar uchun muddat tugashi eslatmasi
+      // necha kun oldin yuborilishi (checkOwnerExpirations() shundan foydalanadi).
+      if (reminderDays !== undefined && reminderDays !== null && String(reminderDays).trim() !== '') {
+        const reminderVal = parseInt(reminderDays, 10);
+        if (!Number.isInteger(reminderVal) || reminderVal <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Eslatma kunlari musbat butun son bo\'lishi kerak.' });
+        }
+        tariff.reminderDays = reminderVal;
       }
       tariff.name = nameTrim;
       saveTariffs(tariffs);
