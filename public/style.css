@@ -1053,6 +1053,7 @@
   .badge.unpaid { background: var(--danger-bg); color: var(--danger); }
   .badge.warning { background: var(--warning-bg); color: var(--warning); }
   .badge.danger { background: var(--danger-bg); color: var(--danger); }
+  .badge.neutral { background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border-color); }
 
   /* ---- Mini-grafik (21-bosqich): Moliya/Z-hisobot trend va Sklad qoldig'i uchun umumiy ---- */
   .chart-card h2 { display: flex; align-items: center; gap: 6px; }
