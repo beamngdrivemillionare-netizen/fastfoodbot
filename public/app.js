@@ -78,6 +78,54 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
   }
 
+  // ---- 60-bosqich: tarifda yo'q funksiyaga kirish bloklanganda ko'rsatiladigan
+  // aniq va tushunarli xabar. Server bunday holatda {ok:false, blockedFeature:true,
+  // reason, featureId} qaytaradi (qarang: server.js — ownerCanUseFeature/
+  // featureBlockedResult, 59-60-bosqich). Bu — oddiy "Xatolik yuz berdi" bilan
+  // aralashib ketmasligi uchun alohida, qulf ikonkali va ogohlantirish rangidagi
+  // ko'rinish: (1) butun bo'lim bloklanganda konteyner ichida (masalan AI tahlil),
+  // (2) bitta amal (masalan "aksiya qo'shish") rad etilganda — alohida modal.
+  function featureBlockedMarkup(message) {
+    return `
+      <div class="feature-blocked-state">
+        ${icon('lock', 'feature-blocked-icon')}
+        <div class="feature-blocked-title">Bu funksiya yopilgan</div>
+        <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
+      </div>
+    `;
+  }
+
+  function renderFeatureBlockedInline(container, message) {
+    if (!container) return;
+    container.innerHTML = featureBlockedMarkup(message);
+  }
+
+  // Bitta amal (tugma bosish) tarif tomonidan rad etilganda chaqiriladi —
+  // xuddi shu ekrandagi "xabar" matni bilan bir qatorda, ko'zga aniq
+  // tashlanadigan alohida oyna sifatida ham ko'rsatiladi.
+  function showFeatureBlockedModal(message) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal feature-blocked-modal" style="max-width:340px;">
+        <div class="feature-blocked-icon-wrap">${icon('lock')}</div>
+        <div class="feature-blocked-title">Bu funksiya yopilgan</div>
+        <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
+        <div class="btn-row"><button class="btn" id="featureBlockedOkBtn">Tushunarli</button></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('featureBlockedOkBtn').onclick = () => overlay.remove();
+  }
+
+  // Umumiy yordamchi: apiPost natijasi tarif bloklashi bo'lsa modal ko'rsatadi
+  // va true qaytaradi (chaqiruvchi joy o'zining odatiy "xabar" matnini ham
+  // pastda qoldirishi mumkin); aks holda false qaytaradi.
+  function handleFeatureBlocked(res) {
+    if (res && res.blockedFeature) { showFeatureBlockedModal(res.reason); return true; }
+    return false;
+  }
+
   // Ikonografiya (9-bosqich): #icon-sprite ichidagi <symbol>ga ishora qiluvchi
   // <svg><use> yasovchi yagona yordamchi. name — sprite'dagi "icon-" dan keyingi
   // qism (masalan 'box' → #icon-box). extraClass ixtiyoriy (masalan 'icon-lg icon-danger').
@@ -1344,6 +1392,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('promoMinInput').value = '';
         loadPromoAndRender();
       } else {
+        handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
@@ -2446,6 +2495,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('branchPhoneInput').value = '';
         loadBranchAndRender();
       } else {
+        handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
@@ -3943,6 +3993,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadStockAndRender();
         loadMovementsAndRender();
       } else {
+        handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
@@ -4385,6 +4436,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('cfNoteInput').value = '';
         loadCashflowData();
       } else {
+        handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
@@ -4644,7 +4696,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     if (!res.ok) {
-      topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      if (res.blockedFeature) {
+        renderFeatureBlockedInline(topEl, res.reason);
+      } else {
+        topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      }
       peakEl.innerHTML = '';
       forecastEl.innerHTML = '';
       return;
@@ -5274,6 +5330,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar ok';
         loadZReportList();
       } else {
+        handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
