@@ -54,6 +54,66 @@ const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
 const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
 // ========================================================
 
+// ==================== G-bo'lim: Obuna va oshxona egalari boshqaruvi ====================
+// (hisob-kitob-bot'dagi access_control.py + handlers/subscription.py bilan bir xil
+// mantiqqa o'tkazish uchun yangi reja, 71-bosqichdan boshlanadi — F-bo'lim (tarif/
+// funksiya tizimi, 51-70-bosqich) bilan almashtirilmaydi, ustiga qo'shiladi.)
+//
+// 71-BOSQICH: Obuna sxemasini kengaytirish.
+// Hozirgacha owner.expiresAt/paid/price orqali "muddat tugadimi" degan savolga
+// oddiy ha/yo'q javob berilardi va muddat tugashi bilan pruneExpiredOwners()
+// ownerni BUTUNLAY o'chirib yuborardi (menyu, xodimlar, buyurtmalar bilan birga).
+// Bu — hisob-kitob-bot'dagi yumshoq bloklash (grace period) mantig'iga zid.
+//
+// Shu bosqichda owner obyektiga quyidagi yangi maydonlar qo'shiladi (eski
+// expiresAt/paid/price maydonlari ORQAGA MOSLIK uchun saqlanadi, hozircha
+// o'chirilmaydi — ular hali boshqa joylarda ishlatilyapti):
+//   - subscriptionStatus: 'pending_trial' | 'active' | 'blocked'
+//   - subscriptionUntil: ISO sana yoki null (null = muddatsiz/doimiy ruxsat)
+//   - graceUntil: ISO sana yoki null (subscriptionUntil o'tgach ham
+//     shu sanagacha kirish hali ochiq turadi — SUBSCRIPTION_GRACE_DAYS)
+//   - trialGivenAt: ISO sana yoki null (birinchi marta sinov muddati
+//     tasdiqlangan payt, statistik/audit maqsadida)
+//
+// MUHIM: bu bosqichda hali hech qanday BLOKLASH mantig'i o'zgarmaydi —
+// isOwnerAccessValid/pruneExpiredOwners hozircha eski holicha ishlayveradi.
+// Yangi maydonlar faqat owners.json'ga "orqa fonda" qo'shib qo'yiladi va
+// keyingi bosqichlarda (grace period, obuna menyusi, to'lov oqimi) shular
+// asosida ishlatiladi. Shu tufayli bu o'zgarish TO'LIQ orqaga moslashuvchan —
+// eski kod ham, eski owners.json yozuvlari ham buzilmaydi.
+const SUBSCRIPTION_STATUS = {
+  PENDING_TRIAL: 'pending_trial',
+  ACTIVE: 'active',
+  BLOCKED: 'blocked'
+};
+
+// Bitta owner obyektida yangi obuna maydonlari yo'q bo'lsa (eski yozuv yoki
+// admin tomonidan qo'lda /api/add-owner orqali qo'shilgan yozuv), ularni
+// MAVJUD expiresAt/paid asosida "taxmin qilib" to'ldiradi — hech narsani
+// o'zgartirmaydi/saqlamaydi (faqat xotirada, o'qish paytida), shuning uchun
+// bu funksiyani xohlagancha marta chaqirish xavfsiz.
+//
+// Qoida: agar owner.expiresAt bo'lmasa (doimiy) yoki hali tugamagan bo'lsa —
+// 'active'; aks holda — 'blocked' (grace period hisobini keyingi bosqich
+// qo'shadi, hozircha faqat maydon mavjudligini ta'minlaydi).
+function ensureSubscriptionFields(owner) {
+  if (!owner) return owner;
+  if (owner.subscriptionStatus === undefined) {
+    const stillValid = !owner.expiresAt || new Date(owner.expiresAt).getTime() > Date.now();
+    owner.subscriptionStatus = stillValid ? SUBSCRIPTION_STATUS.ACTIVE : SUBSCRIPTION_STATUS.BLOCKED;
+  }
+  if (owner.subscriptionUntil === undefined) {
+    owner.subscriptionUntil = owner.expiresAt || null;
+  }
+  if (owner.graceUntil === undefined) {
+    owner.graceUntil = null;
+  }
+  if (owner.trialGivenAt === undefined) {
+    owner.trialGivenAt = null;
+  }
+  return owner;
+}
+
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
 // Faqat xotirada saqlanadi (server qayta ishga tushsa — 0'dan boshlanadi),
 // bazaga yozilmaydi — shunchaki joriy server holatini ko'rsatish uchun.
@@ -170,7 +230,12 @@ function saveJSONArray(file, arr) {
   fs.writeFileSync(file, JSON.stringify(arr, null, 2), 'utf8');
 }
 
-function loadOwners() { return loadJSONArray(OWNERS_FILE); }
+// 71-bosqich: har bir o'qishda owner obyektlariga yangi obuna maydonlarini
+// (mavjud bo'lmasa) to'ldirib beradi — shu bilan owners.json faylini qo'lda
+// migratsiya qilmasdan turib ham, kod ichida hamma joyda yangi maydonlar
+// (subscriptionStatus/subscriptionUntil/graceUntil/trialGivenAt) doim mavjud
+// bo'lishi kafolatlanadi.
+function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
 function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
 
 function loadInvites() { return loadJSONArray(INVITES_FILE); }
@@ -6805,7 +6870,15 @@ const server = http.createServer((req, res) => {
         expiresAt,
         price: priceVal,
         paid: !!paid,
-        paidAt: paid ? new Date().toISOString() : null
+        paidAt: paid ? new Date().toISOString() : null,
+        // 71-bosqich: admin qo'lda qo'shgan owner ham darhol yangi obuna
+        // sxemasiga mos keladi — expiresAt bilan sinxron holda 'active'
+        // sifatida boshlanadi (o'zi ro'yxatdan o'tgan pending_trial holati
+        // 10-bosqichda qo'shiladi, bu yerga tegishli emas).
+        subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+        subscriptionUntil: expiresAt,
+        graceUntil: null,
+        trialGivenAt: null
       };
       owners.push(newOwner);
       saveOwners(owners);
