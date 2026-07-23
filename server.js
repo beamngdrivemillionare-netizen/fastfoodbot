@@ -538,6 +538,11 @@ function customerCancelledDeliveryCount(owner, userId) {
   ).length;
 }
 function customerIsCardOnlyRestricted(owner, userId) {
+  // Egasi "Cheklangan mijozlar" ekranidan bu cheklovni qo'lda olib tashlagan
+  // bo'lishi mumkin (masalan, bekor qilishning sababi asosli bo'lgan) —
+  // shunday bo'lsa, bekor qilingan buyurtmalar soni chegaradan oshgan
+  // bo'lsa ham cheklov qo'llanmaydi.
+  if ((owner.cardOnlyOverrides || []).some(id => String(id) === String(userId))) return false;
   return customerCancelledDeliveryCount(owner, userId) >= CARD_ONLY_AFTER_CANCELLED_DELIVERIES;
 }
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
@@ -1522,6 +1527,55 @@ async function handleTelegramUpdate(update) {
     const data = cq.data || '';
     const chatId = cq.message && cq.message.chat && cq.message.chat.id;
     const messageId = cq.message && cq.message.message_id;
+
+    // ---- Mijoz "Yetkazildi" xabaridagi yulduzcha tugmasini bosib xizmatni
+    // baholaydi (1-5 ball). Faqat shu buyurtmaning mijozi o'zi bosishi mumkin,
+    // va har bir buyurtma faqat bir marta baholanadi. ----
+    if (data.startsWith('rate:')) {
+      const [, ownerId, orderId, starsRaw] = data.split(':');
+      const stars = Number(starsRaw);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+      if (String(order.customerId) !== String(from.id)) {
+        await answerCallbackQuery(cq.id, 'Bu baho boshqa mijozga tegishli.');
+        return;
+      }
+      if (order.customerRating) {
+        await answerCallbackQuery(cq.id, 'Siz bu buyurtmaga allaqachon baho bergansiz, rahmat! 🙏');
+        return;
+      }
+      if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
+        await answerCallbackQuery(cq.id, 'Noto\'g\'ri baho.');
+        return;
+      }
+
+      order.customerRating = stars;
+      order.customerRatedAt = new Date().toISOString();
+      saveOwners(owners);
+
+      const starsText = '⭐️'.repeat(stars);
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId,
+          `${cq.message.text || ''}\n\nSizning bahoyingiz: ${starsText}\nRahmat! 🙏`, null);
+      }
+      await answerCallbackQuery(cq.id, 'Bahoyingiz uchun rahmat! 🙏');
+
+      // Past baho (1-3) qo'yilsa — egasi va kassirlarga darhol xabar, shikoyatga
+      // tezroq javob berish imkoni bo'lishi uchun.
+      if (stars <= 3) {
+        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const alertText = `⚠️ <b>Past baho olindi</b> (${starsText})\n${itemsText}\n\nJami: ${order.total} so'm\nMijoz: ${orderCustomerContactLabel(order)}`;
+        const staffList = owner.staff || [];
+        const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
+        for (const targetId of new Set([owner.id, ...targetIds])) {
+          sendMessage(targetId, alertText);
+        }
+      }
+      return;
+    }
 
     // ---- Dostavka guruhi VA Oshpazlar guruhi: "Qabul qilish" / "Tayyor"
     // tugmalari (guruh a'zolari uchun, admin cheklovisiz). 13-bosqichdan
@@ -4266,6 +4320,24 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${order.total} so'm — yetkazib berildi` });
       saveOwners(owners);
 
+      // Buyurtma "Yetkazildi" deb belgilangach, mijozdan xizmatni baholashini
+      // so'raymiz (1-5 yulduz, callback_data: rate:<ownerId>:<orderId>:<ball>).
+      // Javob callback_query bo'limida ('rate:' prefiksi) qayta ishlanadi.
+      if (order.customerId) {
+        const ratingKeyboard = {
+          inline_keyboard: [[
+            { text: '1⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:1` },
+            { text: '2⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:2` },
+            { text: '3⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:3` },
+            { text: '4⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:4` },
+            { text: '5⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:5` }
+          ]]
+        };
+        sendMessage(order.customerId,
+          '✅ Buyurtmangiz yetkazib berildi!\n\nXizmatimizni qanday baholaysiz?',
+          ratingKeyboard);
+      }
+
       return sendJSON(res, 200, { ok: true, order });
     });
     return;
@@ -5342,6 +5414,84 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, collected, count });
+    });
+    return;
+  }
+
+  // ---- API: "Karta orqali to'lov"ga cheklangan mijozlar ro'yxati (faqat egasi) ----
+  // Ketma-ket bir necha marta dostavkani bekor qildirgan mijozlarga tizim
+  // avtomatik ravishda "naqd/dostavka orqali" to'lovni yopib qo'yadi (qarang:
+  // customerIsCardOnlyRestricted()). Bu ekran egasiga: (1) kimlar shu holatda
+  // ekanini, (2) har birining oxirgi bekor qilingan buyurtmalari va sababini
+  // ko'rsatadi — chunki bekor qilish har doim ham mijozning aybi bo'lmasligi
+  // mumkin (masalan, kuryer o'zi yetkaza olmagan holatlar ham shu ro'yxatga
+  // tushadi), shu sababli egasi holatni ko'rib chiqib, kerak bo'lsa cheklovni
+  // qo'lda olib tashlashi mumkin (/api/toggle-customer-restriction).
+  if (req.method === 'POST' && req.url === '/api/restricted-customers') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      const customers = [];
+      for (const c of (owner.customers || [])) {
+        const cancelledCount = customerCancelledDeliveryCount(owner, c.id);
+        if (cancelledCount < CARD_ONLY_AFTER_CANCELLED_DELIVERIES) continue;
+        const recentCancellations = (owner.orders || [])
+          .filter(o => String(o.customerId) === String(c.id) && o.orderType === 'dostavka' && o.status === 'bekor_qilindi')
+          .sort((a, b) => new Date(b.cancelledAt || b.createdAt) - new Date(a.cancelledAt || a.createdAt))
+          .slice(0, 5)
+          .map(o => ({ reason: o.cancelReason || null, cancelledAt: o.cancelledAt || o.createdAt, total: o.total || 0 }));
+        customers.push({
+          id: c.id,
+          name: c.firstName || c.username || `ID: ${c.id}`,
+          username: c.username || null,
+          cancelledCount,
+          restricted: customerIsCardOnlyRestricted(owner, c.id),
+          recentCancellations
+        });
+      }
+      customers.sort((a, b) => b.cancelledCount - a.cancelledCount);
+
+      return sendJSON(res, 200, { ok: true, customers });
+    });
+    return;
+  }
+
+  // ---- API: egasi mijozning "Faqat karta" cheklovini qo'lda olib tashlaydi/qaytaradi ----
+  if (req.method === 'POST' && req.url === '/api/toggle-customer-restriction') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, customerId, action } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
+      if (!Array.isArray(owner.cardOnlyOverrides)) owner.cardOnlyOverrides = [];
+
+      if (action === 'clear') {
+        if (!owner.cardOnlyOverrides.some(id => String(id) === String(customerId))) {
+          owner.cardOnlyOverrides.push(String(customerId));
+        }
+      } else if (action === 'restore') {
+        owner.cardOnlyOverrides = owner.cardOnlyOverrides.filter(id => String(id) !== String(customerId));
+      } else {
+        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
+      }
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, restricted: customerIsCardOnlyRestricted(owner, customerId) });
     });
     return;
   }
