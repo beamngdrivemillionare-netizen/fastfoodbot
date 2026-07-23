@@ -2375,16 +2375,28 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
 
-  // Dostavka buyurtmasida "Naqd" to'lov varianti ko'rsatilmaydi — kuryer
-  // naqd pulni mijozdan olishi "Dostavka orqali" varianti bilan ifodalanadi,
-  // shuning uchun ikkalasi bir vaqtda kerak emas (chalkashlikni oldini olish).
+  // 19/20-bosqich: "Stolga" va "Olib ketish" buyurtmalarida faqat "Naqd" va
+  // "Karta" to'lov usullari ko'rsatiladi. 21/22/23-bosqich: "Dostavka
+  // orqali" varianti (matni) FAQAT haqiqiy Dostavka buyurtmalarida
+  // ko'rinadi — ilgari bu variant barcha buyurtma turlarida (Stolga, Olib
+  // ketishda ham) chiqib, mijozlarni chalkashtirib yuborardi. Dostavka
+  // buyurtmasida esa "Naqd" ko'rsatilmaydi — kuryer naqd pulni mijozdan
+  // olishi aynan "Dostavka orqali" varianti bilan ifodalanadi, ikkalasi bir
+  // vaqtda kerak emas (chalkashlikni oldini olish).
   function visiblePaymentTypeEntries(orderType) {
-    return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => !(orderType === 'dostavka' && k === 'naqd'));
+    return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
+      if (orderType === 'dostavka') return k !== 'naqd';
+      return k !== 'dostavka_orqali';
+    });
   }
-  // orderType "dostavka"ga o'zgarganda, agar hozirgi tanlov "naqd" bo'lsa —
-  // ko'rinmaydigan variant tanlangan holda qolib ketmasligi uchun "karta"ga almashtiramiz.
+  // orderType o'zgarganda, agar hozirgi tanlov endi ko'rinmaydigan variant
+  // bo'lib qolsa (masalan "dostavka"dan "stol"ga o'tilganda "dostavka_orqali"
+  // tanlangan bo'lsa, yoki "stol"dan "dostavka"ga o'tilganda "naqd" tanlangan
+  // bo'lsa) — variant "karta"ga almashtiriladi, aks holda ko'rinmaydigan
+  // tanlov "yopishib" qolib, mijoz buni sezmasdan yuborib yuborishi mumkin edi.
   function ensureValidPaymentType(state) {
-    if (state.orderType === 'dostavka' && state.paymentType === 'naqd') {
+    const visibleKeys = visiblePaymentTypeEntries(state.orderType).map(([k]) => k);
+    if (!visibleKeys.includes(state.paymentType)) {
       state.paymentType = 'karta';
     }
   }
@@ -5065,8 +5077,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
           topMsg.innerHTML = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm).<br>` +
             `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
         } else {
-          topMsg.innerHTML = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.<br>` +
-            `Iltimos, to'lov chekining rasmini (skrinshotini) shu botning shaxsiy chatiga yuboring.`;
+          // 24-bosqich: ilgari shu joyda faqat kichik, page tepasida
+          // ko'rinadigan xabar (topMsg) bo'lgan — ayniqsa Dostavka+Karta
+          // holatida (boshqa joylashuv/manzil xabarlari orasida) mijoz
+          // buni ko'rmay qolib, skrinshot yubormasdan qolib ketishi mumkin
+          // edi. 25/26-bosqich: endi bu ALOHIDA, undov belgili, qizil
+          // ramkali modal sifatida ochiladi — mijoz uni yopmaguncha davom
+          // eta olmaydi.
+          topMsg.innerHTML = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.`;
+          showPaymentProofModal();
         }
       } else {
         topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
@@ -5077,6 +5096,29 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
       msgEl.className = 'xabar err';
     }
+  }
+
+  // 25/26-bosqich: karta bilan to'lagan mijozga - to'lov skrinshotini
+  // yuborish shartligi haqida ALOHIDA, aniq ko'rinadigan (⚠️, qizil ramkali)
+  // modal oyna. Mijoz "Tushundim" tugmasini bosmaguncha (yoki fonga
+  // bosmaguncha) yopilmaydi - shu bilan e'tiborsiz qoldirib ketish
+  // ehtimoli kamayadi. Buyurtma turi qanday bo'lishidan (Stolga, Olib
+  // ketish, Dostavka) qat'iy nazar bir xil ishlaydi.
+  function showPaymentProofModal() {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal payment-proof-modal">
+        <h3>${icon('warning', 'icon-sm modal-warn-icon')} Diqqat! To'lovni tasdiqlash kerak</h3>
+        <p>Buyurtmangiz hali <b>tasdiqlanmagan</b>. Iltimos, to'lov chekining (skrinshotning) RASMINI shu botning shaxsiy chatiga yuboring — kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.</p>
+        <div class="btn-row">
+          <button type="button" class="btn xavfli" id="paymentProofOkBtn" style="width:100%;">Tushundim</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('#paymentProofOkBtn').addEventListener('click', () => overlay.remove());
   }
 
   // ---- Ism, familiya, telefon raqam bilan ro'yxatdan o'tish (Mini App ichida,
