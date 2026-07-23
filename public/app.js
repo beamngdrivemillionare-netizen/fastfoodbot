@@ -1887,17 +1887,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // =========================================================================
-  // Bosh sahifa PASTKI navigatsiyasi — rasmdagi kabi 5 band: Bosh sahifa,
-  // Savdo, Yangi buyurtma (markazda FAB), Bildirishnomalar, Profil. Eski
-  // 4-tabli tab-bar o'rnini shu egallaydi.
+  // Bosh sahifa PASTKI navigatsiyasi — 5 band: Bosh sahifa, Savdo,
+  // Yangi buyurtma (markazda FAB), Ombor, Profil. Bildirishnomalar bandi
+  // olib tashlandi (header'dagi qo'ng'iroqcha bilan dublikat edi), o'rniga
+  // Ombor ekrani (renderStockScreen) qo'yildi. Eski 4-tabli tab-bar
+  // o'rnini shu egallaydi.
   //
   // 20-bosqich: "Menyu" (taom qo'shish / aksiya) paneli — rasmda unga aniq
   // joy yo'q edi, shu sababli Sozlamalar ekraniga (renderProfileForm)
   // ko'chirildi: do'kon egasi uchun eng yaqin mos joy shu, chunki menyu
   // tarkibi ham do'kon sozlamasi hisoblanadi.
   // =========================================================================
-  function koBottomNavHtml(activeKey, notifCount) {
-    const count = notifCount || 0;
+  function koBottomNavHtml(activeKey) {
     return `
       <div class="ko-bottom-nav" id="koBottomNav">
         <button type="button" class="ko-bottom-nav-item ${activeKey === 'bosh' ? 'active' : ''}" data-ko-nav="bosh">
@@ -1912,10 +1913,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <span class="ko-bottom-nav-fab">${icon('plus')}</span>
           <span>Yangi buyurtma</span>
         </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'bildirishnomalar' ? 'active' : ''}" data-ko-nav="bildirishnomalar">
-          ${icon('bell')}
-          ${count > 0 ? `<span class="ko-bottom-nav-badge">${count}</span>` : ''}
-          <span>Bildirishnomalar</span>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'ombor' ? 'active' : ''}" data-ko-nav="ombor">
+          ${icon('box')}
+          <span>Ombor</span>
         </button>
         <button type="button" class="ko-bottom-nav-item ${activeKey === 'profil' ? 'active' : ''}" data-ko-nav="profil">
           ${icon('user')}
@@ -1926,7 +1926,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // Barcha beshtasi ulangan: Bosh sahifa (joriy ekranning o'zi), Savdo
-  // (renderCashflowScreen), Bildirishnomalar va Profil (15-bosqichda
+  // (renderCashflowScreen), Ombor (renderStockScreen) va Profil (15-bosqichda
   // qurilgan ekranlar), va Yangi buyurtma — egasi uchun ham server
   // (/api/create-order) 'egasi' rolini qabul qiladi, shu sababli kassir
   // uchun tayyor bo'lgan renderCashierScreen shu yerda qayta ishlatiladi,
@@ -1946,7 +1946,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           renderCashierScreen(profile.name, goBack);
           return;
         }
-        if (key === 'bildirishnomalar') { renderNotificationsScreen(profile, goBack); return; }
+        if (key === 'ombor') { renderStockScreen(profile.name, 'egasi', goBack); return; }
         if (key === 'profil') { renderOwnerProfileScreen(profile, goBack); return; }
         console.log(`KitchenOS: pastki nav "${key}" (hali ulanmagan)`);
       });
@@ -1977,22 +1977,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         existing.remove();
       }
     }
-    const navBtn = document.querySelector('.ko-bottom-nav-item[data-ko-nav="bildirishnomalar"]');
-    if (navBtn) {
-      const existing = navBtn.querySelector('.ko-bottom-nav-badge');
-      if (count > 0) {
-        if (existing) {
-          existing.textContent = String(count);
-        } else {
-          const labelEl = navBtn.querySelector('span:last-child');
-          const badgeHtml = `<span class="ko-bottom-nav-badge">${count}</span>`;
-          if (labelEl) labelEl.insertAdjacentHTML('beforebegin', badgeHtml);
-          else navBtn.insertAdjacentHTML('beforeend', badgeHtml);
-        }
-      } else if (existing) {
-        existing.remove();
-      }
-    }
+    // Pastki navda "Bildirishnomalar" bandi "Ombor"ga almashtirilgani sababli,
+    // bu yerda endi faqat header'dagi bell-badge yangilanadi.
   }
 
   // =========================================================================
@@ -2588,7 +2574,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="xabar" id="customerLinkMsg"></div>
         </div>
       </div>
-      ${koBottomNavHtml('bosh', 0)}
+      ${koBottomNavHtml('bosh')}
     `);
 
     loadKoKpiGrid(profile);
