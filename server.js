@@ -4155,6 +4155,12 @@ const server = http.createServer((req, res) => {
   // Xodim ekranini ochganda joriy smena holatini (faol/faol emas, boshlangan
   // vaqti) so'raydi — holat staff yozuvida saqlanadi, shuning uchun qaysi
   // qurilmadan ochilsa ham bir xil ko'rinadi.
+  // 61-bosqich: xodim yo'q paytda egasi ham kassir/oshpaz o'rnida ishlashi
+  // mumkin bo'lishi kerak — shu sababli 'egasi' ham ruxsat etilgan rollarga
+  // qo'shildi. Egasi owner.staff ro'yxatida yo'q, shuning uchun uning smena
+  // holati to'g'ridan-to'g'ri owner yozuvining o'zida (owner.shiftActive /
+  // owner.shiftStartedAt) saqlanadi — xodimlarning alohida-alohida
+  // shiftActive maydonlari bilan aralashmaydi.
   if (req.method === 'POST' && req.url === '/api/shift-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4165,13 +4171,13 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir va oshpaz uchun' });
+      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun' });
       }
-      const staff = (ctx.owner.staff || []).find(s => String(s.id) === userId);
-      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+      const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
 
-      return sendJSON(res, 200, { ok: true, active: !!staff.shiftActive, startedAt: staff.shiftStartedAt || null });
+      return sendJSON(res, 200, { ok: true, active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
     });
     return;
   }
@@ -4183,6 +4189,9 @@ const server = http.createServer((req, res) => {
   // smena bo'yicha hisobot uchun) va umumiy amallar jurnaliga
   // (logStaffAction) tushadi — egasi buni "Xodimlar nazorati" bo'limida
   // ko'radi.
+  // 61-bosqich: egasi ham (xodim bo'lmagan paytda o'zi kassir/oshpaz
+  // o'rnida ishlaganda) smenani boshlashi/tugatishi mumkin — shift-status
+  // bilan bir xil mantiq (target: egasi bo'lsa owner yozuvining o'zi).
   if (req.method === 'POST' && req.url === '/api/shift-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4193,35 +4202,35 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir va oshpaz uchun' });
+      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun' });
       }
-      const staff = (ctx.owner.staff || []).find(s => String(s.id) === userId);
-      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+      const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
       if (!ownerCanUseFeature(ctx.owner, 'shift-toggle')) return sendJSON(res, 200, featureBlockedResult('shift-toggle'));
 
       const now = new Date().toISOString();
-      if (staff.shiftActive) {
+      if (target.shiftActive) {
         if (!ctx.owner.shiftHistory) ctx.owner.shiftHistory = [];
         ctx.owner.shiftHistory.unshift({
           id: crypto.randomBytes(4).toString('hex'),
           userId,
           role: ctx.role,
-          startedAt: staff.shiftStartedAt || now,
+          startedAt: target.shiftStartedAt || now,
           endedAt: now
         });
         if (ctx.owner.shiftHistory.length > 1000) ctx.owner.shiftHistory.length = 1000;
-        staff.shiftActive = false;
-        staff.shiftStartedAt = null;
+        target.shiftActive = false;
+        target.shiftStartedAt = null;
         logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_tugatdi', note: 'Ish smenasini tugatdi' });
       } else {
-        staff.shiftActive = true;
-        staff.shiftStartedAt = now;
+        target.shiftActive = true;
+        target.shiftStartedAt = now;
         logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_boshladi', note: 'Ish smenasini boshladi' });
       }
       saveOwners(owners);
 
-      return sendJSON(res, 200, { ok: true, active: !!staff.shiftActive, startedAt: staff.shiftStartedAt || null });
+      return sendJSON(res, 200, { ok: true, active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
     });
     return;
   }
