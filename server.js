@@ -5620,7 +5620,8 @@ const server = http.createServer((req, res) => {
   // ==================== F. Obuna (tarif) tizimi (51-70-bosqich) ====================
   // 51-bosqich: admin tariflar sonini va nomini o'zi belgilaydi — tariflar
   // umumiy katalog sifatida (tariffs.json) saqlanadi, keyingi bosqichlarda
-  // (52-narx, 53-54-funksiyalar, 57-do'kon egasiga biriktirish) shu
+  // (52-narx va 53-54-funksiyalar bosqichlari bajarildi; 57-do'kon
+  // egasiga biriktirish) shu
   // yozuvlar kengaytiriladi.
 
   // ---- API: tizimdagi barcha funksiyalar ro'yxati (faqat admin, 53-bosqich) ----
@@ -5682,6 +5683,7 @@ const server = http.createServer((req, res) => {
         name: nameTrim,
         order: tariffs.length,
         price: priceVal,
+        features: {},
         createdAt: new Date().toISOString()
       };
       tariffs.push(tariff);
@@ -5751,7 +5753,38 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 50-bosqich — admin uchun kichik "System status" paneli ----
+  // ---- API: tarifga funksiyalarni ✅/❌ belgilash (faqat admin, 54-bosqich) ----
+  // features — { featureId: true|false } ko'rinishidagi to'liq xarita;
+  // faqat FEATURE_CATALOG'da mavjud id'lar qabul qilinadi, qolgani e'tiborsiz
+  // qoldiriladi. Yuborilgan xarita tarifning eski features'ini TO'LIQ
+  // almashtiradi (checkbox'lar UI'da hammasi birga saqlanadi).
+  if (req.method === 'POST' && req.url === '/api/tariff-set-features') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, features } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
+
+      const tariffs = loadTariffs();
+      const tariff = tariffs.find(t => t.id === id);
+      if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+
+      const validIds = new Set(FEATURE_CATALOG.map(f => f.id));
+      const cleaned = {};
+      if (features && typeof features === 'object') {
+        for (const fid of Object.keys(features)) {
+          if (validIds.has(fid)) cleaned[fid] = !!features[fid];
+        }
+      }
+      tariff.features = cleaned;
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true, tariff });
+    });
+    return;
+  }
   // Serverning umumiy holatini (ishlash vaqti, xotira, xodimlar/buyurtmalar
   // soni, ma'lumot fayllari hajmi, webhook statistikasi) bitta so'rovda
   // qaytaradi — faqat admin ko'ra oladi.
