@@ -4839,6 +4839,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'cashflow')) return sendJSON(res, 200, featureBlockedResult('cashflow'));
 
       const cashflow = computeCashflow(owner);
       const recentExpenses = (owner.expenses || []).slice(0, 30);
@@ -5098,6 +5099,7 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId);
       if (!ctx || !isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
       const owner = ctx.owner;
+      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
 
       const fromDate = resolvePeriodStart(period);
       const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
@@ -5146,6 +5148,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
 
       const p = Number(percent);
       if (!Number.isFinite(p) || p < 0 || p > 100) {
@@ -5178,6 +5181,7 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId);
       if (!ctx || !isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
       const owner = ctx.owner;
+      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
 
       if (!courierId) return sendJSON(res, 200, { ok: false, reason: 'Kuryer tanlanmagan.' });
 
