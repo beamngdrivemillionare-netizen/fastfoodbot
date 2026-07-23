@@ -25,6 +25,19 @@ const DATA_DIR = process.env.DATA_DIR || __dirname;
 // Sozlanmasa, shu bo'lim tayyor qoidalar asosida (foyda, top taom, pik vaqt, kam qolgan mahsulot) javob beradi.
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
+// 72-BOSQICH: Obuna trial/grace muddatlari — ENV orqali sozlanadi, sozlanmasa
+// hisob-kitob-bot'dagidek standart qiymatlar ishlatiladi (config.py:
+// SUBSCRIPTION_TRIAL_DAYS=14, SUBSCRIPTION_GRACE_DAYS=3).
+// - SUBSCRIPTION_TRIAL_DAYS: o'zi ro'yxatdan o'tgan yangi oshxona egasiga
+//   admin tasdiqlaganda taklif qilinadigan standart sinov kunlari soni
+//   (admin buni tasdiqlash paytida boshqa songa o'zgartirishi ham mumkin —
+//   qarang: kelgusi "trial tasdiqlash oqimi" bosqichi).
+// - SUBSCRIPTION_GRACE_DAYS: subscriptionUntil o'tgandan keyin ham kirish
+//   hali ochiq turadigan "muhlat" kunlari — shu muddat ichida owner
+//   bloklanmaydi, lekin ⏳ belgisi bilan ogohlantiriladi (qarang: kelgusi
+//   "grace period va o'chirishni bekor qilish" bosqichi).
+const SUBSCRIPTION_TRIAL_DAYS = parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS, 10) || 14;
+const SUBSCRIPTION_GRACE_DAYS = parseInt(process.env.SUBSCRIPTION_GRACE_DAYS, 10) || 3;
 const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
 const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
