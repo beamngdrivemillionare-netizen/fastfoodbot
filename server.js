@@ -39,6 +39,14 @@ const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
 const SUBSCRIPTION_TRIAL_DAYS = parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS, 10) || 14;
 const SUBSCRIPTION_GRACE_DAYS = parseInt(process.env.SUBSCRIPTION_GRACE_DAYS, 10) || 3;
 const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
+// admins.json — 78-BOSQICH: bootstrap ADMIN_ID'dan tashqari qo'shimcha
+// adminlar ro'yxati (hisob-kitob-bot'dagi access_control.py'dagi
+// `_extra_admin_ids` kabi). Har bir yozuv: { id, addedAt, addedBy }.
+// Bootstrap ADMIN_ID bu faylda YO'Q — u doim ENV orqali, alohida ustuvor
+// tarzda tekshiriladi (qarang: isAdminId()). Server ishga tushganda
+// EXTRA_ADMIN_IDS xotiradagi Set'iga yuklanadi (qarang: reloadAdminsCache()),
+// shunda har bir so'rovda faylni qayta o'qishga hojat qolmaydi.
+const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
 // profiles.json — har bir bot foydalanuvchisining (mijoz, xodim, egasi — hammasi
@@ -623,8 +631,47 @@ function featureBlockedResult(featureId) {
   };
 }
 
+// 78-BOSQICH: Ko'p adminli tizim.
+// admins.json'ni o'qiydi/yozadi. Har bir yozuv: { id, addedAt, addedBy }.
+function loadAdmins() { return loadJSONArray(ADMINS_FILE); }
+function saveAdmins(admins) {
+  saveJSONArray(ADMINS_FILE, admins);
+  reloadAdminsCache(admins);
+}
+
+// Xotiradagi Set — har bir so'rovda faylni qayta o'qimaslik uchun. Server
+// ishga tushganda (server.listen ichida) va admins.json har safar
+// o'zgartirilganda (saveAdmins() orqali) yangilanadi.
+let EXTRA_ADMIN_IDS = new Set();
+function reloadAdminsCache(admins) {
+  const list = admins || loadAdmins();
+  EXTRA_ADMIN_IDS = new Set(list.map(a => String(a.id)));
+}
+
+// Qo'shimcha admin qo'shish/o'chirish (keyingi bosqichda admin panelidagi
+// "Adminlar" bo'limi shu funksiyalarni chaqiradi). Bootstrap ADMIN_ID bu
+// yerga hech qachon qo'shilmaydi — u alohida, ENV orqali ustuvor tekshiriladi.
+function addExtraAdmin(id, addedBy) {
+  const idStr = String(id);
+  if (idStr === String(ADMIN_ID)) return loadAdmins(); // bootstrap allaqachon admin — qo'shishning hojati yo'q
+  const admins = loadAdmins();
+  if (admins.some(a => String(a.id) === idStr)) return admins; // allaqachon bor
+  admins.push({ id: idStr, addedAt: new Date().toISOString(), addedBy: addedBy ? String(addedBy) : null });
+  saveAdmins(admins);
+  return admins;
+}
+function removeExtraAdmin(id) {
+  const idStr = String(id);
+  const admins = loadAdmins().filter(a => String(a.id) !== idStr);
+  saveAdmins(admins);
+  return admins;
+}
+
+// Bootstrap ADMIN_ID (ENV) YOKI admins.json'dagi (xotiraga yuklangan)
+// qo'shimcha adminlardan biri bo'lsa — admin hisoblanadi.
 function isAdminId(userId) {
-  return String(userId) === String(ADMIN_ID);
+  const idStr = String(userId);
+  return idStr === String(ADMIN_ID) || EXTRA_ADMIN_IDS.has(idStr);
 }
 
 function findOwner(owners, userId) {
@@ -7373,6 +7420,11 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
+
+  // 78-BOSQICH: admins.json'dagi qo'shimcha adminlarni xotiraga yuklash
+  // (isAdminId() shu xotiradagi ro'yxatdan foydalanadi).
+  reloadAdminsCache();
+  console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
 
   // Obuna muddatlarini tekshirish — darhol bir marta, keyin har soatda
   checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
