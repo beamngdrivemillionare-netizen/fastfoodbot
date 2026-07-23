@@ -5690,6 +5690,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'staff-performance')) return sendJSON(res, 200, featureBlockedResult('staff-performance'));
 
       const fromDate = resolvePeriodStart(period || 'month');
       const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
