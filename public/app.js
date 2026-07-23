@@ -494,10 +494,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function renderAdminPanel(owners, revenue) {
     setAppHeader(null, 'KitchenOS', 'Admin');
-    // 57-bosqich: owner qatorlarida tarif nomini ko'rsatish uchun tariflar
-    // ro'yxatini oldindan yuklab olamiz (bo'sh bo'lsa ham davom etadi).
-    const tariffRes = await apiPost('/api/tariff-list', { initData });
-    if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
     const nowMs = Date.now();
     const totalCount = owners.length;
     const activeCount = owners.filter(o => !o.expiresAt || new Date(o.expiresAt).getTime() > nowMs).length;
@@ -528,6 +524,68 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `;
 
+    // Admin panel endi bo'limlarga bo'lingan: bosh ekranda faqat umumiy
+    // statistika va bo'limlarga o'tish menyusi, har bir bo'lim (egalar
+    // ro'yxati, yangi ega qo'shish, tariflar, tizim holati) o'z alohida
+    // ekraniga ega — avvalgi bitta uzun sahifa o'rniga.
+    ekran(`
+      <div class="panel">
+        <div class="salom">Salom, admin</div>
+        <div class="bosh admin-subtitle">Quyidagi bo'limlardan birini tanlang.</div>
+
+        ${statsHtml}
+
+        <div class="ko-menu-grid admin-menu-grid">
+          ${adminMenuItemHtml({ key: 'egalar', icon: 'users', label: "Do'kon egalari" })}
+          ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
+          ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
+          ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
+        </div>
+      </div>
+    `);
+
+    const goBack = () => loadOwnersAndRender();
+    document.querySelectorAll('.admin-menu-grid [data-admin-menu-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-admin-menu-key');
+        if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
+        if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
+        if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
+        if (key === 'tizim') { loadAndShowSystemStatus(); return; }
+      });
+    });
+  }
+
+  function adminMenuItemHtml(item) {
+    return `
+      <button type="button" class="ko-menu-item" data-admin-menu-key="${item.key}">
+        <span class="ko-menu-item-icon">${icon(item.icon)}</span>
+        <span class="ko-menu-item-label">${escapeHtml(item.label)}</span>
+      </button>
+    `;
+  }
+
+  // =========================================================================
+  // Admin bo'limi: "Do'kon egalari" — ro'yxat, qidiruv va har bir ega
+  // ustidagi tahrirlash amallari (to'lov holati, muddat, narx, login/parol,
+  // tarif, o'chirish). Har qanday amaldan keyin shu ekranning o'zi qayta
+  // yuklanadi (bosh sahifaga qaytarilmaydi) — shu bilan bir nechta amalni
+  // ketma-ket bajarish qulayroq.
+  // =========================================================================
+  async function reloadAdminOwnersScreen(goBack) {
+    const res = await apiPost('/api/owners', { initData });
+    if (res.networkError) { renderNetworkErrorScreen(res.reason, () => reloadAdminOwnersScreen(goBack)); return; }
+    renderAdminOwnersScreen(res.ok ? res.owners : [], goBack);
+  }
+
+  async function renderAdminOwnersScreen(owners, goBack) {
+    setAppHeader(null, 'KitchenOS', 'Admin');
+    // 57-bosqich: owner qatorlarida tarif nomini ko'rsatish uchun tariflar
+    // ro'yxatini oldindan yuklab olamiz (bo'sh bo'lsa ham davom etadi).
+    const tariffRes = await apiPost('/api/tariff-list', { initData });
+    if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
+    const totalCount = owners.length;
+
     const ownersHtml = owners.length
       ? owners.map(ownerItemHtml).join('')
       : `
@@ -539,38 +597,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     ekran(`
       <div class="panel">
-        <div class="salom">Salom, admin</div>
-        <div class="bosh admin-subtitle">Do'kon egalarini shu yerdan boshqarasiz — havola yarating, qo'lda qo'shing yoki mavjudlarini tahrirlang.</div>
-        <div class="btn-row" style="margin-bottom:10px;">
-          <button type="button" class="btn ikkinchi" id="systemStatusBtn">${icon('settings', 'icon-xs')}<span>System status</span></button>
-          <button type="button" class="btn ikkinchi" id="tariffsBtn">${icon('star', 'icon-xs')}<span>Tariflar</span></button>
-        </div>
-
-        ${statsHtml}
-
-        <div class="kartochka">
-          <h2>${icon('link', 'icon-xs')} Bir martalik taklif havolasi</h2>
-          <div class="bosh">Havolani do'kon egasiga yuboring. U botni ochganda so'rovi sizga keladi — Telegramda tugma bosib, necha kunga ruxsat berishni tanlaysiz.</div>
-          <button class="btn" id="createInviteBtn" style="margin-top:10px;">${icon('plus', 'icon-xs')}<span>Havola yaratish</span></button>
-          <div id="inviteBoxWrap"></div>
-          <div class="xabar" id="inviteMsg"></div>
-        </div>
-
-        <div class="kartochka">
-          <h2>${icon('user', 'icon-xs')} Do'kon egasini ID orqali qo'shish</h2>
-          <label class="field-label">Telegram ID, @username yoki havola</label>
-          <input type="text" id="ownerInput" placeholder="Masalan: 123456789 yoki @username">
-          <label class="field-label">Muddat (kun)</label>
-          <input type="text" id="ownerDaysInput" placeholder="Bo'sh qoldirsangiz — doimiy" inputmode="numeric">
-          <label class="field-label">Obuna narxi</label>
-          <input type="text" id="ownerPriceInput" placeholder="So'm/oy (ixtiyoriy)" inputmode="numeric">
-          <label class="check-label" for="ownerPaidInput">
-            <input type="checkbox" id="ownerPaidInput"> To'lov qabul qilindi
-          </label>
-          <button class="btn" id="addOwnerBtn">${icon('plus', 'icon-xs')}<span>Do'kon egasi qo'shish</span></button>
-          <div class="xabar" id="addMsg"></div>
-        </div>
-
+        <button class="btn ikkinchi" id="adminOwnersBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <div class="kartochka">
           <div class="admin-list-header">
             <h2>${icon('users', 'icon-xs')} Ruxsat berilgan do'kon egalari</h2>
@@ -586,17 +613,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="bosh admin-no-results hidden" id="ownerNoResults">Hech narsa topilmadi.</div>
         </div>
       </div>
-      <div class="overlay hidden" id="confirmOverlay">
-        <div class="modal">
-          <h3>Tasdiqlaysizmi?</h3>
-          <p id="confirmText"></p>
-          <div class="btn-row">
-            <button class="btn ikkinchi" id="confirmCancel">Yo'q</button>
-            <button class="btn" id="confirmOk">Ha, qo'shish</button>
-          </div>
-        </div>
-      </div>
     `);
+
+    document.getElementById('adminOwnersBackBtn').addEventListener('click', goBack);
 
     const searchInput = document.getElementById('ownerSearchInput');
     if (searchInput) {
@@ -614,104 +633,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
       });
     }
 
-    document.getElementById('systemStatusBtn').addEventListener('click', () => {
-      loadAndShowSystemStatus();
-    });
-    document.getElementById('tariffsBtn').addEventListener('click', () => {
-      renderTariffsScreen(() => loadOwnersAndRender());
-    });
-
-    document.getElementById('createInviteBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('inviteMsg');
-      const wrap = document.getElementById('inviteBoxWrap');
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/create-invite', { initData });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        wrap.innerHTML = '';
-        return;
-      }
-      msgEl.textContent = '';
-      wrap.innerHTML = `
-        <div class="link-box">
-          <span id="inviteLinkText">${escapeHtml(res.link)}</span>
-          <button id="copyInviteBtn">${icon('link', 'icon-xs')}<span>Nusxalash</span></button>
-        </div>
-      `;
-      document.getElementById('copyInviteBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
-        }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
-        });
-      });
-    });
-
-    document.getElementById('addOwnerBtn').addEventListener('click', () => {
-      const val = document.getElementById('ownerInput').value.trim();
-      const daysVal = document.getElementById('ownerDaysInput').value.trim();
-      const priceVal = document.getElementById('ownerPriceInput').value.trim();
-      const paidVal = document.getElementById('ownerPaidInput').checked;
-      const msgEl = document.getElementById('addMsg');
-      msgEl.textContent = '';
-      msgEl.className = 'xabar';
-      if (!val) {
-        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (daysVal && (!/^\d+$/.test(daysVal) || parseInt(daysVal, 10) <= 0)) {
-        msgEl.textContent = 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (priceVal && (!/^\d+$/.test(priceVal) || parseInt(priceVal, 10) < 0)) {
-        msgEl.textContent = 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
-      const narxMatn = priceVal ? `, obuna narxi ${priceVal} so'm/oy` : '';
-      document.getElementById('confirmText').textContent =
-        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi${narxMatn}?`;
-      document.getElementById('confirmOverlay').classList.remove('hidden');
-
-      document.getElementById('confirmCancel').onclick = () => {
-        document.getElementById('confirmOverlay').classList.add('hidden');
-      };
-      document.getElementById('confirmOk').onclick = async () => {
-        document.getElementById('confirmOverlay').classList.add('hidden');
-        msgEl.textContent = 'Qo\'shilmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/add-owner', {
-          initData, input: val, days: daysVal || null,
-          price: priceVal || null, paid: paidVal
-        });
-        if (res.ok) {
-          msgEl.textContent = 'Muvaffaqiyatli qo\'shildi.';
-          msgEl.className = 'xabar ok';
-          document.getElementById('ownerInput').value = '';
-          document.getElementById('ownerDaysInput').value = '';
-          document.getElementById('ownerPriceInput').value = '';
-          document.getElementById('ownerPaidInput').checked = false;
-          loadOwnersAndRender();
-        } else {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
-        }
-      };
-    });
-
     document.getElementById('ownerList').addEventListener('click', async (e) => {
       const removeBtn = e.target.closest('[data-remove-id]');
       if (removeBtn) {
         removeBtn.disabled = true;
         await apiPost('/api/remove-owner', { initData, id: removeBtn.getAttribute('data-remove-id') });
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
@@ -719,7 +646,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (toggleEl) {
         const current = toggleEl.getAttribute('data-paid') === '1';
         await apiPost('/api/update-owner-billing', { initData, id: toggleEl.getAttribute('data-toggle-paid'), paid: !current });
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
@@ -800,7 +727,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           return;
         }
         await apiPost('/api/update-owner-billing', { initData, id: saveId, price: val || 0 });
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
@@ -815,14 +742,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
           return;
         }
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
       const removeCredId = e.target.getAttribute('data-remove-credentials');
       if (removeCredId) {
         await apiPost('/api/remove-owner-credentials', { initData, id: removeCredId });
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
@@ -835,7 +762,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
           return;
         }
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
@@ -868,9 +795,144 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
           return;
         }
-        loadOwnersAndRender();
+        reloadAdminOwnersScreen(goBack);
         return;
       }
+    });
+  }
+
+  // =========================================================================
+  // Admin bo'limi: "Yangi ega qo'shish" — bir martalik taklif havolasi
+  // yaratish va ID/username orqali qo'lda qo'shish, ikkalasi shu bitta
+  // ekranda. Muvaffaqiyatli qo'shilgandan so'ng ekranning o'zida qoladi
+  // (bosh sahifaga qaytarilmaydi) — shu bilan ketma-ket bir nechta ega
+  // qo'shish qulayroq.
+  // =========================================================================
+  function renderAdminAddOwnerScreen(goBack) {
+    setAppHeader(null, 'KitchenOS', 'Admin');
+    ekran(`
+      <div class="panel">
+        <button class="btn ikkinchi" id="adminAddBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+
+        <div class="kartochka">
+          <h2>${icon('link', 'icon-xs')} Bir martalik taklif havolasi</h2>
+          <div class="bosh">Havolani do'kon egasiga yuboring. U botni ochganda so'rovi sizga keladi — Telegramda tugma bosib, necha kunga ruxsat berishni tanlaysiz.</div>
+          <button class="btn" id="createInviteBtn" style="margin-top:10px;">${icon('plus', 'icon-xs')}<span>Havola yaratish</span></button>
+          <div id="inviteBoxWrap"></div>
+          <div class="xabar" id="inviteMsg"></div>
+        </div>
+
+        <div class="kartochka">
+          <h2>${icon('user', 'icon-xs')} Do'kon egasini ID orqali qo'shish</h2>
+          <label class="field-label">Telegram ID, @username yoki havola</label>
+          <input type="text" id="ownerInput" placeholder="Masalan: 123456789 yoki @username">
+          <label class="field-label">Muddat (kun)</label>
+          <input type="text" id="ownerDaysInput" placeholder="Bo'sh qoldirsangiz — doimiy" inputmode="numeric">
+          <label class="field-label">Obuna narxi</label>
+          <input type="text" id="ownerPriceInput" placeholder="So'm/oy (ixtiyoriy)" inputmode="numeric">
+          <label class="check-label" for="ownerPaidInput">
+            <input type="checkbox" id="ownerPaidInput"> To'lov qabul qilindi
+          </label>
+          <button class="btn" id="addOwnerBtn">${icon('plus', 'icon-xs')}<span>Do'kon egasi qo'shish</span></button>
+          <div class="xabar" id="addMsg"></div>
+        </div>
+      </div>
+      <div class="overlay hidden" id="confirmOverlay">
+        <div class="modal">
+          <h3>Tasdiqlaysizmi?</h3>
+          <p id="confirmText"></p>
+          <div class="btn-row">
+            <button class="btn ikkinchi" id="confirmCancel">Yo'q</button>
+            <button class="btn" id="confirmOk">Ha, qo'shish</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('adminAddBackBtn').addEventListener('click', goBack);
+
+    document.getElementById('createInviteBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('inviteMsg');
+      const wrap = document.getElementById('inviteBoxWrap');
+      msgEl.textContent = 'Yaratilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/create-invite', { initData });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        wrap.innerHTML = '';
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span id="inviteLinkText">${escapeHtml(res.link)}</span>
+          <button id="copyInviteBtn">${icon('link', 'icon-xs')}<span>Nusxalash</span></button>
+        </div>
+      `;
+      document.getElementById('copyInviteBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          msgEl.textContent = 'Havola nusxalandi.';
+          msgEl.className = 'xabar ok';
+        }).catch(() => {
+          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
+          msgEl.className = 'xabar err';
+        });
+      });
+    });
+
+    document.getElementById('addOwnerBtn').addEventListener('click', () => {
+      const val = document.getElementById('ownerInput').value.trim();
+      const daysVal = document.getElementById('ownerDaysInput').value.trim();
+      const priceVal = document.getElementById('ownerPriceInput').value.trim();
+      const paidVal = document.getElementById('ownerPaidInput').checked;
+      const msgEl = document.getElementById('addMsg');
+      msgEl.textContent = '';
+      msgEl.className = 'xabar';
+      if (!val) {
+        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (daysVal && (!/^\d+$/.test(daysVal) || parseInt(daysVal, 10) <= 0)) {
+        msgEl.textContent = 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (priceVal && (!/^\d+$/.test(priceVal) || parseInt(priceVal, 10) < 0)) {
+        msgEl.textContent = 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
+      const narxMatn = priceVal ? `, obuna narxi ${priceVal} so'm/oy` : '';
+      document.getElementById('confirmText').textContent =
+        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi${narxMatn}?`;
+      document.getElementById('confirmOverlay').classList.remove('hidden');
+
+      document.getElementById('confirmCancel').onclick = () => {
+        document.getElementById('confirmOverlay').classList.add('hidden');
+      };
+      document.getElementById('confirmOk').onclick = async () => {
+        document.getElementById('confirmOverlay').classList.add('hidden');
+        msgEl.textContent = 'Qo\'shilmoqda...';
+        msgEl.className = 'xabar';
+        const res = await apiPost('/api/add-owner', {
+          initData, input: val, days: daysVal || null,
+          price: priceVal || null, paid: paidVal
+        });
+        if (res.ok) {
+          msgEl.textContent = 'Muvaffaqiyatli qo\'shildi.';
+          msgEl.className = 'xabar ok';
+          document.getElementById('ownerInput').value = '';
+          document.getElementById('ownerDaysInput').value = '';
+          document.getElementById('ownerPriceInput').value = '';
+          document.getElementById('ownerPaidInput').checked = false;
+        } else {
+          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+          msgEl.className = 'xabar err';
+        }
+      };
     });
   }
 
