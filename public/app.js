@@ -363,6 +363,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       .toLowerCase();
   }
 
+  // 57-bosqich: do'kon egasiga biriktirilgan tarifni ko'rsatish/tanlash
+  // uchun oxirgi yuklangan tariflar ro'yxati shu yerda keshlanadi (owner
+  // qatoridagi select shundan to'ldiriladi).
+  let tariffCacheForOwners = [];
+  function ownerTariffLabel(tariffId) {
+    if (!tariffId) return 'Tarif belgilanmagan';
+    const t = tariffCacheForOwners.find(x => x.id === tariffId);
+    return t ? t.name : 'Tarif belgilanmagan';
+  }
+
   function ownerItemHtml(o) {
     return `
       <div class="owner-item" data-search-key="${escapeHtml(ownerSearchKey(o))}">
@@ -384,14 +394,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="owner-price" data-edit-credentials="${escapeHtml(o.id)}">
             ${icon('user', 'icon-xs icon-muted')} ${o.hasLogin ? `Login: ${escapeHtml(o.login)}` : 'Login/parol o\'rnatilmagan'} ${icon('edit', 'icon-xs icon-muted')}
           </div>
+          <div class="owner-price" data-edit-tariff="${escapeHtml(o.id)}">
+            ${icon('star', 'icon-xs icon-muted')} ${escapeHtml(ownerTariffLabel(o.tariffId))} ${icon('edit', 'icon-xs icon-muted')}
+          </div>
         </div>
         <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
       </div>
     `;
   }
 
-  function renderAdminPanel(owners) {
+  async function renderAdminPanel(owners) {
     setAppHeader(null, 'KitchenOS', 'Admin');
+    // 57-bosqich: owner qatorlarida tarif nomini ko'rsatish uchun tariflar
+    // ro'yxatini oldindan yuklab olamiz (bo'sh bo'lsa ham davom etadi).
+    const tariffRes = await apiPost('/api/tariff-list', { initData });
+    if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
     const nowMs = Date.now();
     const totalCount = owners.length;
     const activeCount = owners.filter(o => !o.expiresAt || new Date(o.expiresAt).getTime() > nowMs).length;
@@ -626,6 +643,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${hasLoginNow ? `<button data-remove-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">O'chirish</button>` : ''}
         `;
       }
+
+      const tariffEl = e.target.closest('[data-edit-tariff]');
+      if (tariffEl && !tariffEl.querySelector('select')) {
+        const editId = tariffEl.getAttribute('data-edit-tariff');
+        const owner = owners.find(o => String(o.id) === String(editId));
+        const currentTariffId = owner ? owner.tariffId : null;
+        const optionsHtml = [`<option value="">Tarif belgilanmagan</option>`]
+          .concat(tariffCacheForOwners.map(t => `<option value="${escapeHtml(t.id)}" ${t.id === currentTariffId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`))
+          .join('');
+        tariffEl.innerHTML = `
+          <select data-tariff-field="${escapeHtml(editId)}" style="margin:0; padding:6px 8px; font-size:13px;">${optionsHtml}</select>
+          <button data-save-tariff="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+        `;
+      }
     });
 
     document.getElementById('ownerList').addEventListener('click', async (e) => {
@@ -660,6 +691,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const removeCredId = e.target.getAttribute('data-remove-credentials');
       if (removeCredId) {
         await apiPost('/api/remove-owner-credentials', { initData, id: removeCredId });
+        loadOwnersAndRender();
+        return;
+      }
+
+      const saveTariffId = e.target.getAttribute('data-save-tariff');
+      if (saveTariffId) {
+        const select = document.querySelector(`select[data-tariff-field="${saveTariffId}"]`);
+        const val = select ? select.value : '';
+        const res = await apiPost('/api/owner-set-tariff', { initData, id: saveTariffId, tariffId: val || null });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+          return;
+        }
         loadOwnersAndRender();
         return;
       }
@@ -1079,6 +1123,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom">Profilni tahrirlash</div>
         <div class="bosh">Ma'lumotlaringizni yangilang.</div>
         <div class="kartochka">
+          <h2>${icon('star', 'icon-xs')} Joriy tarif</h2>
+          <div id="profileTariffInfo" class="owner-username">Yuklanmoqda...</div>
+        </div>
+        <div class="kartochka">
           <label class="field-label">Oshxona nomi *</label>
           <input type="text" id="pName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(p.name || '')}">
           <label class="field-label">Manzil *</label>
@@ -1371,6 +1419,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadBonusSettingsAndRender();
     loadDeliveryGroupStatus();
     loadKitchenGroupStatus();
+    loadOwnerTariffInfo();
+  }
+
+  // 58-bosqich: do'kon egasi o'z profilida joriy tarifini ko'rishi.
+  async function loadOwnerTariffInfo() {
+    const el = document.getElementById('profileTariffInfo');
+    if (!el) return;
+    const res = await apiPost('/api/my-profile', { initData });
+    if (!res.ok) {
+      el.textContent = 'Yuklab bo\'lmadi.';
+      return;
+    }
+    el.textContent = res.tariff ? res.tariff.name : 'Tarif belgilanmagan';
   }
 
   // ---- Do'kon egasi: birinchi marta profil to'ldirish — bosqichma-bosqich
