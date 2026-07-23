@@ -1330,6 +1330,7 @@
   .status-badge.yangi { background: var(--danger-bg); color: var(--danger); }
   .status-badge.tayyorlanmoqda { background: var(--warning-bg); color: var(--warning); }
   .status-badge.tayyor { background: var(--success-bg); color: var(--success); }
+  .status-badge.bekor_qilindi { background: var(--surface-3, #eee); color: var(--text-secondary); }
 
   .order-card .order-action-btn {
     border: none; border-radius: var(--radius-md); padding: 9px 16px; min-height: 44px;
