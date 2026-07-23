@@ -65,6 +65,15 @@ const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
 // removedAt, orders: [...] }. owners.json'dan o'chirilgandan keyin ham
 // buyurtmalar tarixi shu faylda saqlanib qoladi.
 const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
+// subscription_plans.json — 73-bosqich: TARIFFS_FILE'dan ATAYLAB ajratilgan.
+// tariffs.json (F-bo'lim) — "qaysi FUNKSIYALAR ochiq" katalogi (owner.tariffId
+// orqali biriktiriladi, admin qo'lda belgilaydi). subscription_plans.json esa —
+// "necha oyga qancha to'lash kerak" narxlar ro'yxati (hisob-kitob-bot'dagi
+// config.SUBSCRIPTION_PLANS bilan bir xil vazifa): owner "💳 Obuna" bo'limida
+// shu ro'yxatdan birini tanlab, TO'LOV qilib, subscriptionUntil'ni o'zi
+// uzaytiradi. Ikkalasi mustaqil: bitta owner istalgan funksiya-tarifda
+// bo'lishi mumkin, obuna reja narxi esa faqat muddatga ta'sir qiladi.
+const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
 // ========================================================
 
 // ==================== G-bo'lim: Obuna va oshxona egalari boshqaruvi ====================
@@ -125,6 +134,48 @@ function ensureSubscriptionFields(owner) {
     owner.trialGivenAt = null;
   }
   return owner;
+}
+
+// 73-BOSQICH: Obuna rejalari (1/3/12 oylik narxlar).
+// hisob-kitob-bot'dagi config.SUBSCRIPTION_PLANS'ga o'xshab, kalit sifatida
+// barqaror id ('1m'/'3m'/'12m') ishlatiladi — kelgusi bosqichlarda owner
+// tanlagan reja shu id orqali eslab qolinadi (narx keyin o'zgarsa ham,
+// tanlangan paytdagi narxdan to'laydi, xuddi hisob-kitob'dagidek).
+// Narxlar so'mda, admin panelidan keyinchalik o'zgartirilishi mumkin bo'ladi
+// (hozircha faqat standart qiymatlar — sozlash UI'si keyingi bosqichda).
+const DEFAULT_SUBSCRIPTION_PLANS = {
+  '1m': { id: '1m', label: '1 oy', days: 30, price: 50000, discountNote: null, order: 0 },
+  '3m': { id: '3m', label: '3 oy', days: 90, price: 135000, discountNote: 'chegirmali', order: 1 },
+  '12m': { id: '12m', label: '12 oy', days: 365, price: 480000, discountNote: 'chegirmali', order: 2 }
+};
+
+// Fayl hali mavjud bo'lmasa (birinchi ishga tushirish) — standart rejalar
+// bilan avtomatik yaratadi, shunda admin hech narsa qo'lda sozlamasa ham
+// "💳 Obuna" bo'limi bo'sh qolib ketmaydi.
+function loadSubscriptionPlans() {
+  try {
+    if (!fs.existsSync(SUBSCRIPTION_PLANS_FILE)) {
+      saveSubscriptionPlans(DEFAULT_SUBSCRIPTION_PLANS);
+      return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
+    }
+    const raw = fs.readFileSync(SUBSCRIPTION_PLANS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+      return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
+    }
+    return parsed;
+  } catch (e) {
+    console.error('subscription_plans.json o\'qishda xatolik:', e.message);
+    return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
+  }
+}
+
+function saveSubscriptionPlans(plans) {
+  try {
+    fs.writeFileSync(SUBSCRIPTION_PLANS_FILE, JSON.stringify(plans, null, 2));
+  } catch (e) {
+    console.error('subscription_plans.json yozishda xatolik:', e.message);
+  }
 }
 
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
