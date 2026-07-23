@@ -3552,6 +3552,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">${icon('scooter', 'icon-xs')} Kuryerlar hisoboti</button>
         <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
+        <button class="btn ikkinchi" id="cfOrderHistoryBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Buyurtmalar tarixi</button>
         <div class="tab-row">
           <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
           <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
@@ -3589,6 +3590,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
     document.getElementById('cfZReportBtn').addEventListener('click', () => {
       renderZReportScreen(profile, () => renderCashflowScreen(profile, onBack));
+    });
+    document.getElementById('cfOrderHistoryBtn').addEventListener('click', () => {
+      renderOrderHistoryScreen(profile, () => renderCashflowScreen(profile, onBack));
     });
 
     document.querySelector('.tab-row').addEventListener('click', (e) => {
@@ -4279,6 +4283,163 @@ const tg = window.Telegram && window.Telegram.WebApp;
         }
       });
     });
+  }
+
+  // ---- Egasi: Buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
+  let orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
+  let orderHistoryEmployeesCache = null;
+
+  function orderHistoryStatusLabel(status) {
+    return ORDER_STATUS_LABELS[status] || status;
+  }
+
+  function orderHistoryRowsHtml(orders) {
+    if (!orders.length) return `<div class="bosh">Bu filtrga mos buyurtma topilmadi.</div>`;
+    return orders.map(o => {
+      const d = new Date(o.createdAt);
+      const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const itemsText = (o.items || []).map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
+      return `
+        <div class="owner-item">
+          <div>
+            <div class="owner-id">${sana}${o.tableNumber ? ' · stol ' + escapeHtml(o.tableNumber) : ''}</div>
+            <div class="owner-username">${escapeHtml(ORDER_TYPE_LABELS[o.orderType] || o.orderType)} · ${escapeHtml(PAYMENT_TYPE_LABELS[o.paymentType] || o.paymentType)} · ${escapeHtml(orderHistoryStatusLabel(o.status))}</div>
+            <div class="owner-expiry">${itemsText}</div>
+            <div class="owner-expiry">Xodim: ${escapeHtml(o.createdByName || '—')}</div>
+          </div>
+          <div class="rating-badge">${cfFormatSum(o.total)}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function orderHistoryEmployeeOptionsHtml(employees) {
+    const opts = ['<option value="">Barcha xodimlar</option>']
+      .concat((employees || []).map(e => `<option value="${escapeHtml(e.id)}">${escapeHtml(e.name)}</option>`));
+    return opts.join('');
+  }
+
+  function renderOrderHistoryScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Buyurtmalar tarixi</div>
+        <button class="btn ikkinchi" id="ohBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>Filtr</h2>
+          <div class="profile-row"><b>Sana (dan)</b></div>
+          <input type="date" id="ohDateFrom" value="${escapeHtml(orderHistoryState.dateFrom)}">
+          <div class="profile-row"><b>Sana (gacha)</b></div>
+          <input type="date" id="ohDateTo" value="${escapeHtml(orderHistoryState.dateTo)}">
+          <div class="profile-row"><b>Xodim</b></div>
+          <select id="ohEmployee"><option value="">Yuklanmoqda...</option></select>
+          <div class="profile-row"><b>To'lov turi</b></div>
+          <select id="ohPaymentType">
+            <option value="">Barcha to'lov turlari</option>
+            <option value="naqd">Naqd</option>
+            <option value="karta">Karta</option>
+            <option value="dostavka_orqali">Dostavka orqali</option>
+          </select>
+          <div class="profile-row"><b>Buyurtma turi</b></div>
+          <select id="ohOrderType">
+            <option value="">Barcha turlar</option>
+            <option value="stol">Stolga</option>
+            <option value="olib_ketish">Olib ketish</option>
+            <option value="dostavka">Dostavka</option>
+          </select>
+          <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
+          <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
+        </div>
+        <div class="kartochka">
+          <div id="ohSummary" class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div class="kartochka">
+          <h2>Buyurtmalar</h2>
+          <div id="ohList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
+          <div id="ohPagination" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('ohBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.getElementById('ohApplyBtn').addEventListener('click', () => {
+      orderHistoryState.dateFrom = document.getElementById('ohDateFrom').value;
+      orderHistoryState.dateTo = document.getElementById('ohDateTo').value;
+      orderHistoryState.employeeId = document.getElementById('ohEmployee').value;
+      orderHistoryState.paymentType = document.getElementById('ohPaymentType').value;
+      orderHistoryState.orderType = document.getElementById('ohOrderType').value;
+      orderHistoryState.page = 1;
+      loadOrderHistory();
+    });
+
+    document.getElementById('ohResetBtn').addEventListener('click', () => {
+      orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
+      renderOrderHistoryScreen(profile, onBack);
+    });
+
+    fillOrderHistoryEmployeeSelect();
+    loadOrderHistory();
+  }
+
+  async function fillOrderHistoryEmployeeSelect() {
+    const selectEl = document.getElementById('ohEmployee');
+    if (!selectEl) return;
+    if (orderHistoryEmployeesCache) {
+      selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
+      selectEl.value = orderHistoryState.employeeId;
+    }
+  }
+
+  async function loadOrderHistory() {
+    const listEl = document.getElementById('ohList');
+    const summaryEl = document.getElementById('ohSummary');
+    const pagEl = document.getElementById('ohPagination');
+    if (!listEl) return;
+    const res = await apiPost('/api/order-history', {
+      initData,
+      dateFrom: orderHistoryState.dateFrom || undefined,
+      dateTo: orderHistoryState.dateTo || undefined,
+      employeeId: orderHistoryState.employeeId || undefined,
+      paymentType: orderHistoryState.paymentType || undefined,
+      orderType: orderHistoryState.orderType || undefined,
+      page: orderHistoryState.page
+    });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadOrderHistory()); return; }
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      if (summaryEl) summaryEl.innerHTML = '';
+      if (pagEl) pagEl.innerHTML = '';
+      return;
+    }
+
+    orderHistoryEmployeesCache = res.employees || [];
+    const selectEl = document.getElementById('ohEmployee');
+    if (selectEl) {
+      selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
+      selectEl.value = orderHistoryState.employeeId;
+    }
+
+    if (summaryEl) {
+      summaryEl.innerHTML = `Topildi: <b>${res.totalCount}</b> ta buyurtma · Jami summa: <b>${cfFormatSum(res.totalSum)}</b>`;
+    }
+
+    listEl.innerHTML = orderHistoryRowsHtml(res.orders);
+
+    if (pagEl) {
+      if (res.totalPages > 1) {
+        pagEl.innerHTML = `
+          <button class="btn ikkinchi" id="ohPrevBtn" ${res.page <= 1 ? 'disabled' : ''} style="flex:1; margin-right:6px;">← Oldingi</button>
+          <span class="bosh" style="white-space:nowrap; padding:0 8px;">${res.page} / ${res.totalPages}</span>
+          <button class="btn ikkinchi" id="ohNextBtn" ${res.page >= res.totalPages ? 'disabled' : ''} style="flex:1; margin-left:6px;">Keyingi →</button>
+        `;
+        const prevBtn = document.getElementById('ohPrevBtn');
+        const nextBtn = document.getElementById('ohNextBtn');
+        if (prevBtn) prevBtn.addEventListener('click', () => { orderHistoryState.page = Math.max(1, res.page - 1); loadOrderHistory(); });
+        if (nextBtn) nextBtn.addEventListener('click', () => { orderHistoryState.page = Math.min(res.totalPages, res.page + 1); loadOrderHistory(); });
+      } else {
+        pagEl.innerHTML = '';
+      }
+    }
   }
 
   // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
