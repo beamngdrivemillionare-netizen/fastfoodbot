@@ -45,6 +45,13 @@ const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
 // bu fayl esa — vaqt bo'yicha to'liq jurnal (owner o'chirilsa ham saqlanadi,
 // 69-bosqich talabiga mos).
 const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
+// archived_orders.json — 69-bosqich: do'kon egasi (obunachi) admin tomonidan
+// o'chirilganda, egasi bilan birga owner.orders massivi ham yo'qolib
+// ketmasligi uchun, o'chirishdan OLDIN shu yerga arxivlanadi. Bitta yozuv —
+// bitta o'chirilgan egaga tegishli barcha buyurtmalar: { ownerId, ownerLabel,
+// removedAt, orders: [...] }. owners.json'dan o'chirilgandan keyin ham
+// buyurtmalar tarixi shu faylda saqlanib qoladi.
+const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
 // ========================================================
 
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
@@ -191,6 +198,23 @@ function recordPayment(owner, amount) {
     at: new Date().toISOString()
   });
   savePayments(payments);
+}
+
+// ====== Buyurtmalar arxivi (69-bosqich) — obunachi (do'kon egasi) o'chirilganda
+// owner.orders shu yerga ko'chiriladi, shunda buyurtmalar tarixi yo'qolmaydi ======
+function loadArchivedOrders() { return loadJSONArray(ARCHIVED_ORDERS_FILE); }
+function saveArchivedOrders(list) { saveJSONArray(ARCHIVED_ORDERS_FILE, list); }
+function archiveOwnerOrders(owner) {
+  const orders = owner && owner.orders;
+  if (!orders || !orders.length) return; // buyurtmasi bo'lmagan egani arxivlashning hojati yo'q
+  const archive = loadArchivedOrders();
+  archive.push({
+    ownerId: owner.id,
+    ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
+    removedAt: new Date().toISOString(),
+    orders
+  });
+  saveArchivedOrders(archive);
 }
 
 // ====== Shaxsiy profil (ism, familiya, telefon) — har bir bot foydalanuvchisi
@@ -6483,6 +6507,11 @@ const server = http.createServer((req, res) => {
 
       let owners = loadOwners();
       const before = owners.length;
+      const target = findOwner(owners, id);
+      // 69-bosqich: owner o'chirilishidan OLDIN uning buyurtmalar tarixini
+      // arxivga ko'chiramiz — aks holda owner.orders owner bilan birga
+      // butunlay yo'qolib ketardi.
+      if (target) archiveOwnerOrders(target);
       owners = owners.filter(o => String(o.id) !== String(id));
       saveOwners(owners);
 
