@@ -235,6 +235,71 @@ function savePaymentRequisites(requisites) {
   return current.paymentRequisites;
 }
 
+// 75-BOSQICH: "hozir botga/Mini App'ga kirish mumkinmi" degan YAGONA tekshiruv
+// (hisob-kitob-bot'dagi access_control.check_subscription_access() bilan bir
+// xil vazifa). Bitta owner obyekti uchun holatni hisoblaydi:
+//   - pending_trial — admin hali trial muddatini tasdiqlamagan (kirish yo'q).
+//   - subscriptionUntil yo'q (null) — muddatsiz/doimiy ruxsat.
+//   - subscriptionUntil hali o'tmagan — faol, daysLeft bilan.
+//   - subscriptionUntil o'tgan, lekin graceUntil (yoki standart
+//     SUBSCRIPTION_GRACE_DAYS) ichida — hali ruxsat bor, lekin inGrace:true
+//     (⏳ ogohlantirish uchun, keyingi bosqichda ishlatiladi).
+//   - graceUntil ham o'tgan — bloklangan.
+// DIQQAT: bu funksiya hali hech qayerdan CHAQIRILMAYDI — faqat tayyorlab
+// qo'yilyapti. Haqiqiy bloklash (Mini App API va bot xabarlari darajasida)
+// keyingi ikkita bosqichda ulanadi.
+function getOwnerSubscriptionAccess(owner) {
+  if (!owner) return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
+
+  if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+    return { allowed: false, status: SUBSCRIPTION_STATUS.PENDING_TRIAL, daysLeft: null, inGrace: false };
+  }
+
+  if (!owner.subscriptionUntil) {
+    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: null, inGrace: false };
+  }
+
+  const untilMs = new Date(owner.subscriptionUntil).getTime();
+  const now = Date.now();
+  if (Number.isFinite(untilMs) && untilMs > now) {
+    const daysLeft = Math.ceil((untilMs - now) / 86400000);
+    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft, inGrace: false };
+  }
+
+  // Muddat tugagan — graceUntil belgilangan bo'lsa shundan, bo'lmasa
+  // SUBSCRIPTION_GRACE_DAYS asosida standart muhlat hisoblanadi.
+  const graceMs = owner.graceUntil
+    ? new Date(owner.graceUntil).getTime()
+    : (Number.isFinite(untilMs) ? untilMs + SUBSCRIPTION_GRACE_DAYS * 86400000 : NaN);
+  if (Number.isFinite(graceMs) && graceMs > now) {
+    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: 0, inGrace: true };
+  }
+
+  return { allowed: false, status: SUBSCRIPTION_STATUS.BLOCKED, daysLeft: null, inGrace: false };
+}
+
+// Foydalanuvchi ID bo'yicha (admin/owner/xodim — kim bo'lishidan qat'iy
+// nazar) yagona tekshiruv. `owners` ixtiyoriy — chaqiruvchi allaqachon
+// loadOwners() qilgan bo'lsa, qayta o'qimaslik uchun uzatilishi mumkin.
+function checkSubscriptionAccess(userId, owners) {
+  if (isAdminId(userId)) {
+    return { allowed: true, status: 'admin', daysLeft: null, inGrace: false };
+  }
+
+  const list = owners || loadOwners();
+
+  const owner = findOwner(list, userId);
+  if (owner) return getOwnerSubscriptionAccess(owner);
+
+  const staffInfo = findStaffInfo(list, userId);
+  if (staffInfo) {
+    const staffOwner = list.find(o => String(o.id) === String(staffInfo.ownerId));
+    return getOwnerSubscriptionAccess(staffOwner);
+  }
+
+  return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
+}
+
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
 // Faqat xotirada saqlanadi (server qayta ishga tushsa — 0'dan boshlanadi),
 // bazaga yozilmaydi — shunchaki joriy server holatini ko'rsatish uchun.
