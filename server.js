@@ -140,6 +140,11 @@ function ensureSubscriptionFields(owner) {
   if (owner.trialGivenAt === undefined) {
     owner.trialGivenAt = null;
   }
+  // 76-bosqich: "bloklandi" xabari faqat bir marta yuborilishi uchun
+  // (checkOwnerExpirations() ishlatadi) — qarang shu funksiya izohi.
+  if (owner.blockedNotifiedAt === undefined) {
+    owner.blockedNotifiedAt = null;
+  }
   return owner;
 }
 
@@ -582,19 +587,51 @@ function findOwner(owners, userId) {
   return owners.find(o => String(o.id) === String(userId));
 }
 
-// Muddati o'tgan-o'tmaganini tekshiradi (expiresAt=null bo'lsa — doimiy ruxsat)
+// 76-BOSQICH: MUHIM TUZATISH. Ilgari bu funksiya faqat owner.expiresAt'ga
+// qarab ha/yo'q javob berardi — grace period (muhlat) tushunchasi umuman
+// yo'q edi. Endi 75-bosqichda tayyorlangan getOwnerSubscriptionAccess()'ga
+// ishlaydi: muddat tugagan bo'lsa ham, SUBSCRIPTION_GRACE_DAYS ichida hali
+// kirish ruxsat etiladi (hisob-kitob-bot'dagi trial+grace mantig'i bilan bir
+// xil). owner.expiresAt endi to'g'ridan-to'g'ri ishlatilmaydi — buning
+// o'rniga owner.subscriptionUntil/subscriptionStatus (71-bosqichda
+// ensureSubscriptionFields orqali expiresAt'dan hosil qilingan) ishlatiladi.
 function isOwnerAccessValid(owner) {
-  if (!owner) return false;
-  if (!owner.expiresAt) return true;
-  return new Date(owner.expiresAt).getTime() > Date.now();
+  return getOwnerSubscriptionAccess(owner).allowed;
 }
 
-// Muddati o'tgan do'kon egalarini ro'yxatdan avtomatik tozalaydi
+// 76-BOSQICH: MUHIM TUZATISH. Ilgari bu funksiya nomiga mos ravishda
+// muddati tugagan (isOwnerAccessValid()===false) egalarni owners.json'dan
+// BUTUNLAY O'CHIRIB YUBORARDI — menyu, xodimlar, buyurtmalar tarixi bilan
+// birga. Bu hisob-kitob-bot'dagi yumshoq bloklash (grace period, ma'lumot
+// hech qachon o'chmasligi) mantig'iga ZID edi va eng jiddiy farq shu edi.
+//
+// ENDI BU FUNKSIYA HECH KIMNI O'CHIRMAYDI. Vazifasi: muddati (grace period
+// bilan birga) chindan tugagan egalarning subscriptionStatus maydonini
+// 'blocked' deb belgilab qo'yish (va aksincha — to'lov/uzaytirish natijasida
+// yana faol bo'lib qolganlarni 'active'ga qaytarish), so'ng owners.json'ga
+// saqlash va TO'LIQ ro'yxatni (bloklanganlar ham ichida) qaytarish.
+//
+// Funksiya nomi ATAYLAB eskicha qoldirilgan (pruneExpiredOwners) — bu nom
+// kod bo'ylab 40dan ortiq joyda "joriy owners ro'yxatini olib kelish"
+// ma'nosida chaqirilgan; ularning barchasini qayta yozib, xato qilib
+// qo'yish xavfi o'rniga, xulq shu YAGONA joyda xavfsiz tarzda o'zgartirildi.
+// pending_trial holatidagi egalarga tegilmaydi — ular hali obuna
+// boshlamagan, ularning statusini admin trial tasdiqlash oqimi o'zgartiradi.
 function pruneExpiredOwners() {
   const owners = loadOwners();
-  const fresh = owners.filter(isOwnerAccessValid);
-  if (fresh.length !== owners.length) saveOwners(fresh);
-  return fresh;
+  let changed = false;
+  owners.forEach(owner => {
+    if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) return;
+    const nextStatus = getOwnerSubscriptionAccess(owner).allowed
+      ? SUBSCRIPTION_STATUS.ACTIVE
+      : SUBSCRIPTION_STATUS.BLOCKED;
+    if (owner.subscriptionStatus !== nextStatus) {
+      owner.subscriptionStatus = nextStatus;
+      changed = true;
+    }
+  });
+  if (changed) saveOwners(owners);
+  return owners;
 }
 
 // ====== Xodimlar (kassir, oshpaz, sklad, dostavka) — har bir egasining o'z ro'yxati ichida saqlanadi ======
@@ -1317,40 +1354,73 @@ function ownerReminderBeforeMs(owner) {
   return reminderDays * 24 * 60 * 60 * 1000;
 }
 
+// 76-BOSQICH (davomi): Bu funksiya YUQORIDAGI pruneExpiredOwners()dan
+// MUSTAQIL, alohida yo'l bilan har soatda (setInterval, server.listen
+// ichida) ishga tushadi va u ham xuddi shunday muddati tugagan egalarni
+// owners.json'dan BUTUNLAY o'chirib yuborardi (stillActive massivi orqali).
+// Ya'ni faqat pruneExpiredOwners()ni tuzatish YETARLI EMAS edi — bu funksiya
+// ham xuddi shu muammoga ega edi. Endi ikkalasi ham bir xil: hech kimni
+// o'chirmaydi, faqat subscriptionStatus'ni yangilaydi.
+//
+// "Bloklandi" xabari endi FAQAT BIR MARTA yuboriladi (owner.blockedNotifiedAt
+// orqali kuzatiladi) — aks holda har soat qayta-qayta kelaverardi. Owner
+// qayta faol bo'lib qolsa (to'lov/uzaytirish natijasida), shu maydon
+// tozalanadi — keyingi safar chindan bloklansa, xabar yana yuboriladi.
 async function checkOwnerExpirations() {
   const owners = loadOwners();
-  const now = Date.now();
   let changed = false;
-  const stillActive = [];
 
   for (const owner of owners) {
-    if (!owner.expiresAt) { stillActive.push(owner); continue; }
-    const expiresMs = new Date(owner.expiresAt).getTime();
+    // O'zi ro'yxatdan o'tib, admin hali trial muddatini tasdiqlamagan
+    // egalarga bu yerda tegilmaydi — ularning holati faqat admin
+    // tasdiqlash/rad etish oqimi orqali o'zgaradi.
+    if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) continue;
 
-    if (expiresMs <= now) {
-      // Muddati tugadi — ro'yxatdan chiqariladi (stillActive'ga qo'shilmaydi) va xabar beriladi
-      changed = true;
-      await sendMessage(ADMIN_ID,
-        `⏰ <b>Obuna muddati tugadi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish avtomatik yopildi.`);
-      await sendMessage(owner.id,
-        `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish yopildi.\nDavom ettirish uchun administrator bilan bog'laning.`);
+    const access = getOwnerSubscriptionAccess(owner);
+
+    if (!access.allowed) {
+      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.BLOCKED) {
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+        changed = true;
+      }
+      if (!owner.blockedNotifiedAt) {
+        owner.blockedNotifiedAt = new Date().toISOString();
+        changed = true;
+        await sendMessage(ADMIN_ID,
+          `⏰ <b>Obuna muddati tugadi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish bloklandi.\nMa'lumotlari (menyu, xodimlar, buyurtmalar) saqlanib qolyapti — obuna uzaytirilsa, kirish avtomatik tiklanadi.`);
+        await sendMessage(owner.id,
+          `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.\nDavom ettirish uchun administrator bilan bog'laning.`);
+      }
       continue;
     }
 
-    if (!owner.reminderSentAt && expiresMs - now <= ownerReminderBeforeMs(owner)) {
+    // Hali ruxsat bor (faol yoki grace davrida) — status shunga mos
+    // yangilanadi va eski bloklanish belgisi tozalanadi.
+    if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.ACTIVE) {
+      owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
       changed = true;
-      owner.reminderSentAt = new Date().toISOString();
-      const daysLeft = Math.max(1, Math.ceil((expiresMs - now) / 86400000));
-      await sendMessage(ADMIN_ID,
-        `🔔 <b>Obuna tugashiga oz qoldi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) — taxminan ${daysLeft} kundan keyin tugaydi.`);
-      await sendMessage(owner.id,
-        `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun administrator bilan bog'laning.`);
+    }
+    if (owner.blockedNotifiedAt) {
+      owner.blockedNotifiedAt = null;
+      changed = true;
     }
 
-    stillActive.push(owner);
+    if (owner.subscriptionUntil && !owner.reminderSentAt) {
+      const expiresMs = new Date(owner.subscriptionUntil).getTime();
+      const now = Date.now();
+      if (Number.isFinite(expiresMs) && expiresMs > now && expiresMs - now <= ownerReminderBeforeMs(owner)) {
+        changed = true;
+        owner.reminderSentAt = new Date().toISOString();
+        const daysLeft = Math.max(1, Math.ceil((expiresMs - now) / 86400000));
+        await sendMessage(ADMIN_ID,
+          `🔔 <b>Obuna tugashiga oz qoldi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) — taxminan ${daysLeft} kundan keyin tugaydi.`);
+        await sendMessage(owner.id,
+          `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun administrator bilan bog'laning.`);
+      }
+    }
   }
 
-  if (changed) saveOwners(stillActive);
+  if (changed) saveOwners(owners);
 }
 
 // ====== Bir martalik taklif havolalari (invites) ======
@@ -6686,21 +6756,30 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  // ====== 63/64-bosqich: obuna muddatini uzaytirish/qisqartirish/bekor qilish ======
+  // ====== 63/64-bosqich + 76-bosqich tuzatishi: obuna muddatini uzaytirish/qisqartirish/bekor qilish ======
   // action:
   //  - 'extend'    : joriy muddatga (yoki u tugagan/yo'q bo'lsa hozirgi vaqtga)
   //                  `days` kun qo'shadi.
   //  - 'setDate'   : `date` (YYYY-MM-DD) ga aniq belgilaydi — kelajakdagi sana
-  //                  uzaytirish, o'tmishdagi/bugungi sana esa qisqartirish
-  //                  bo'lib, pastdagi darhol bloklash bilan bir xil ishlaydi.
-  //  - 'unlimited' : expiresAt'ni tozalaydi (doimiy ruxsat).
-  //  - 'cancelNow' : obunani darhol bekor qiladi — checkOwnerExpirations()
-  //                  bilan bir xil xulq (owner ro'yxatdan olib tashlanadi,
-  //                  admin va egaga xabar boradi). Buyurtmalar tarixi
-  //                  owners.json'dan mustaqil saqlanadi (69-bosqich).
-  // Har ikkala holatda ham owner.reminderSentAt tozalanadi — muddat
-  // o'zgargach, "tez orada tugaydi" eslatmasi yangi muddatga nisbatan
-  // to'g'ri vaqtda qayta yuborilishi uchun (65-bosqich).
+  //                  uzaytirish, o'tmishdagi/bugungi sana esa DARHOL BLOKLASH
+  //                  bilan bir xil (pastga qarang).
+  //  - 'unlimited' : muddatni tozalaydi (doimiy ruxsat).
+  //  - 'cancelNow' : obunani darhol bloklaydi.
+  //
+  // 76-BOSQICH TUZATISHI: ilgari 'setDate' (o'tmish sana) va 'cancelNow'
+  // ownerni owners.json'dan BUTUNLAY O'CHIRIB YUBORARDI (checkOwnerExpirations()
+  // bilan bir xil xato). Endi ikkalasi ham FAQAT bloklaydi (subscriptionStatus:
+  // 'blocked') — menyu, xodimlar, buyurtmalar tarixi saqlanib qoladi, admin
+  // istalgan vaqt qayta uzaytirishi mumkin. Ownerni HAQIQATAN butunlay
+  // o'chirish kerak bo'lsa, buning uchun alohida /api/remove-owner mavjud
+  // (u ataylab, admin ongli ravishda "ro'yxatdan chiqarish"ni tanlaganda
+  // ishlatiladi — bu yerdagi kabi obuna muddati sabab emas).
+  //
+  // Barcha amallarda ham subscriptionUntil (yangi sxema) VA expiresAt (eski,
+  // frontend hali shuni o'qiydigan bo'lishi mumkin — moslik uchun) birga
+  // yangilanadi. owner.reminderSentAt/blockedNotifiedAt ham tozalanadi —
+  // muddat o'zgargach, eslatma/bloklanish xabari yangi holatga nisbatan
+  // to'g'ri vaqtda qayta hisoblansin uchun.
   if (req.method === 'POST' && req.url === '/api/owner-set-expiry') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6720,10 +6799,15 @@ const server = http.createServer((req, res) => {
         if (!Number.isInteger(n) || n <= 0) {
           return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak.' });
         }
-        const currentMs = owner.expiresAt ? new Date(owner.expiresAt).getTime() : NaN;
+        const currentMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
         const base = Number.isFinite(currentMs) && currentMs > Date.now() ? currentMs : Date.now();
-        owner.expiresAt = new Date(base + n * 86400000).toISOString();
+        const untilIso = new Date(base + n * 86400000).toISOString();
+        owner.subscriptionUntil = untilIso;
+        owner.expiresAt = untilIso;
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+        owner.graceUntil = null;
         owner.reminderSentAt = null;
+        owner.blockedNotifiedAt = null;
         saveOwners(owners);
         return sendJSON(res, 200, { ok: true, owner });
       }
@@ -6737,35 +6821,52 @@ const server = http.createServer((req, res) => {
         // "shu kungacha" deb tanlagan kun to'liq amal qilishi uchun.
         d.setHours(23, 59, 59, 999);
         if (d.getTime() <= Date.now()) {
-          const remaining = owners.filter(o => o.id !== owner.id);
-          saveOwners(remaining);
+          owner.subscriptionUntil = d.toISOString();
+          owner.expiresAt = d.toISOString();
+          owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+          owner.graceUntil = null;
+          owner.blockedNotifiedAt = new Date().toISOString();
+          saveOwners(owners);
           await sendMessage(ADMIN_ID,
-            `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan yopildi.`);
+            `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
           await sendMessage(owner.id,
-            `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish yopildi.\nDavom ettirish uchun administrator bilan bog'laning.`);
-          return sendJSON(res, 200, { ok: true, removed: true });
+            `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti. Davom ettirish uchun administrator bilan bog'laning.`);
+          return sendJSON(res, 200, { ok: true, owner, blocked: true });
         }
+        owner.subscriptionUntil = d.toISOString();
         owner.expiresAt = d.toISOString();
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+        owner.graceUntil = null;
         owner.reminderSentAt = null;
+        owner.blockedNotifiedAt = null;
         saveOwners(owners);
         return sendJSON(res, 200, { ok: true, owner });
       }
 
       if (action === 'unlimited') {
+        owner.subscriptionUntil = null;
         owner.expiresAt = null;
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+        owner.graceUntil = null;
         owner.reminderSentAt = null;
+        owner.blockedNotifiedAt = null;
         saveOwners(owners);
         return sendJSON(res, 200, { ok: true, owner });
       }
 
       if (action === 'cancelNow') {
-        const remaining = owners.filter(o => o.id !== owner.id);
-        saveOwners(remaining);
+        const nowIso = new Date().toISOString();
+        owner.subscriptionUntil = nowIso;
+        owner.expiresAt = nowIso;
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+        owner.graceUntil = null;
+        owner.blockedNotifiedAt = nowIso;
+        saveOwners(owners);
         await sendMessage(ADMIN_ID,
-          `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan yopildi.`);
+          `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
         await sendMessage(owner.id,
-          `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish yopildi.`);
-        return sendJSON(res, 200, { ok: true, removed: true });
+          `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti.`);
+        return sendJSON(res, 200, { ok: true, owner, blocked: true });
       }
 
       return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
