@@ -434,7 +434,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
           ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
-          <div class="owner-expiry">${icon('clock', 'icon-xs icon-muted')} ${escapeHtml(expiryText(o))}</div>
+          <div class="owner-expiry" data-edit-expiry="${escapeHtml(o.id)}" data-expiry-current="${o.expiresAt ? escapeHtml(o.expiresAt) : ''}">
+            ${icon('clock', 'icon-xs icon-muted')} ${escapeHtml(expiryText(o))} ${icon('edit', 'icon-xs icon-muted')}
+          </div>
           ${subscriptionProgressHtml(o)}
           <div class="owner-price" data-edit-price="${escapeHtml(o.id)}">
             ${icon('card', 'icon-xs icon-muted')} ${o.price ? escapeHtml(String(o.price)) + " so'm/oy" : 'Narx kiritilmagan'} ${icon('edit', 'icon-xs icon-muted')}
@@ -705,6 +707,37 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button data-save-tariff="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
         `;
       }
+
+      // 63/64-bosqich: obuna muddatini uzaytirish/qisqartirish/bekor qilish —
+      // amal turiga qarab kerakli maydon (kun soni yoki aniq sana) ko'rsatiladi
+      // (qarang: pastdagi 'change' tinglovchisi va 'data-save-expiry' saqlash).
+      const expiryEl = e.target.closest('[data-edit-expiry]');
+      if (expiryEl && !expiryEl.querySelector('select')) {
+        const editId = expiryEl.getAttribute('data-edit-expiry');
+        expiryEl.innerHTML = `
+          <select data-expiry-action="${escapeHtml(editId)}" style="margin:0; padding:6px 8px; font-size:13px;">
+            <option value="extend">+ kun qo'shish</option>
+            <option value="setDate">Aniq sanani belgilash</option>
+            <option value="unlimited">Doimiy qilish</option>
+            <option value="cancelNow">Hoziroq bekor qilish</option>
+          </select>
+          <input type="text" inputmode="numeric" placeholder="Necha kun" style="margin:0; padding:6px 8px; font-size:13px; width:80px;" data-expiry-days="${escapeHtml(editId)}">
+          <input type="date" style="margin:0; padding:6px 8px; font-size:13px; display:none;" data-expiry-date="${escapeHtml(editId)}">
+          <button data-save-expiry="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+        `;
+      }
+    });
+
+    // Amal turi almashtirilganda faqat shu amalga tegishli maydonni (kun
+    // soni yoki sana) ko'rsatadi — qolganini yashiradi.
+    document.getElementById('ownerList').addEventListener('change', (e) => {
+      const sel = e.target.closest('[data-expiry-action]');
+      if (!sel) return;
+      const editId = sel.getAttribute('data-expiry-action');
+      const daysInput = document.querySelector(`input[data-expiry-days="${editId}"]`);
+      const dateInput = document.querySelector(`input[data-expiry-date="${editId}"]`);
+      if (daysInput) daysInput.style.display = sel.value === 'extend' ? '' : 'none';
+      if (dateInput) dateInput.style.display = sel.value === 'setDate' ? '' : 'none';
     });
 
     document.getElementById('ownerList').addEventListener('click', async (e) => {
@@ -748,6 +781,39 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const select = document.querySelector(`select[data-tariff-field="${saveTariffId}"]`);
         const val = select ? select.value : '';
         const res = await apiPost('/api/owner-set-tariff', { initData, id: saveTariffId, tariffId: val || null });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+          return;
+        }
+        loadOwnersAndRender();
+        return;
+      }
+
+      const saveExpiryId = e.target.getAttribute('data-save-expiry');
+      if (saveExpiryId) {
+        const actionSelect = document.querySelector(`select[data-expiry-action="${saveExpiryId}"]`);
+        const action = actionSelect ? actionSelect.value : '';
+        const body = { initData, id: saveExpiryId, action };
+        if (action === 'extend') {
+          const daysInput = document.querySelector(`input[data-expiry-days="${saveExpiryId}"]`);
+          const days = daysInput ? daysInput.value.trim() : '';
+          if (!days || !/^\d+$/.test(days) || parseInt(days, 10) <= 0) {
+            alert('Kun sonini musbat butun son sifatida kiriting.');
+            return;
+          }
+          body.days = days;
+        } else if (action === 'setDate') {
+          const dateInput = document.querySelector(`input[data-expiry-date="${saveExpiryId}"]`);
+          const date = dateInput ? dateInput.value : '';
+          if (!date) {
+            alert('Sanani tanlang.');
+            return;
+          }
+          body.date = date;
+        } else if (action === 'cancelNow') {
+          if (!confirm("Obunani hoziroq bekor qilasizmi? Do'kon egasining Mini App'ga kirishi darhol yopiladi.")) return;
+        }
+        const res = await apiPost('/api/owner-set-expiry', body);
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
           return;
