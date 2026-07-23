@@ -2577,6 +2577,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
         ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         ${cashierTabRowHtml()}
+        ${soundToggleBtnHtml()}
         ${cashierStatusChipsHtml()}
         <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
@@ -2600,6 +2601,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       lastOrdersSnapshot = null; // filtr o'zgardi — taxtani majburiy qayta chizamiz
       refreshOrdersBoard('kassir');
     });
+    attachSoundToggleHandler();
     startOrdersPolling('kassir');
   }
 
@@ -2837,6 +2839,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
   let ordersPollTimer = null;
   let lastOrdersSnapshot = null;
+  let knownOrderIds = null; // 46-bosqich: yangi buyurtmani aniqlash uchun oldingi ID'lar to'plami
 
   // 19-bosqich: kassir uchun "Buyurtmalar holati" ekranida chip-filtr —
   // faqat kassir roli uchun (oshpaz/kuryer ekranlariga tegmaydi),
@@ -2860,6 +2863,58 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function stopOrdersPolling() {
     if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
     lastOrdersSnapshot = null;
+    knownOrderIds = null; // keyingi safar ochilganda mavjud buyurtmalar "eski" deb hisoblansin
+  }
+
+  // ---- Yangi buyurtma kelganda ovozli bildirishnoma (46-bosqich) ----
+  // Har bir xodim (shu qurilmada) ovozni o'chirib/yoqib qo'ya oladi —
+  // localStorage'da saqlanadi, standart holat: yoqilgan.
+  const SOUND_NOTIF_STORAGE_KEY = 'kitchenOsSoundNotif';
+  function soundNotifEnabled() {
+    return localStorage.getItem(SOUND_NOTIF_STORAGE_KEY) !== 'off';
+  }
+  function setSoundNotifEnabled(on) {
+    localStorage.setItem(SOUND_NOTIF_STORAGE_KEY, on ? 'on' : 'off');
+  }
+  let sharedAudioCtx = null;
+  function playNewOrderBeep() {
+    if (!soundNotifEnabled()) return;
+    try {
+      if (!sharedAudioCtx) sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = sharedAudioCtx;
+      if (ctx.state === 'suspended') ctx.resume();
+      // Ikkita qisqa "bip" — e'tiborni tortish uchun yetarli, lekin bezovta qilmaydigan darajada
+      [0, 0.22].forEach(delay => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + delay + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + 0.18);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + 0.2);
+      });
+    } catch (e) {
+      // Audio ishlamasa (masalan brauzer bloklagan bo'lsa) — jim o'tkazib yuboriladi, ilova buzilmaydi
+    }
+  }
+  function soundToggleBtnHtml() {
+    const on = soundNotifEnabled();
+    return `<button class="btn ikkinchi" id="soundNotifToggleBtn" style="margin-bottom:12px;">${on ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan'}</button>`;
+  }
+  function attachSoundToggleHandler() {
+    const btn = document.getElementById('soundNotifToggleBtn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      setSoundNotifEnabled(!soundNotifEnabled());
+      btn.textContent = soundNotifEnabled() ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan';
+      // Yoqishda o'zi bosgan tugma bosilishi (user gesture) AudioContext'ni
+      // ba'zi brauzerlarda "qulflab" ochib beradi — shu bois kichik sinov bipi.
+      if (soundNotifEnabled()) playNewOrderBeep();
+    });
   }
 
   function timeAgo(iso) {
@@ -2978,6 +3033,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       return;
     }
+
+    // 46-bosqich: yangi ("yangi" holatidagi) buyurtma paydo bo'lsa — ovozli
+    // bildirishnoma. Birinchi yuklanishda (knownOrderIds hali yo'q) beep
+    // chalinmaydi — aks holda ekran ochilgan zahoti barcha mavjud
+    // buyurtmalar uchun bir vaqtda ovoz chiqib ketardi.
+    const currentIds = new Set((res.orders || []).map(o => o.id));
+    if (knownOrderIds && (role === 'oshpaz' || role === 'kassir')) {
+      const hasNew = (res.orders || []).some(o => o.status === 'yangi' && !knownOrderIds.has(o.id));
+      if (hasNew) playNewOrderBeep();
+    }
+    knownOrderIds = currentIds;
+
     const snapshot = JSON.stringify(res.orders);
     if (snapshot === lastOrdersSnapshot) return; // o'zgarish yo'q — qayta chizmaymiz
     lastOrdersSnapshot = snapshot;
@@ -3004,6 +3071,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
         ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <button class="btn ikkinchi" id="kitchenStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
+        ${soundToggleBtnHtml()}
         <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
@@ -3013,6 +3081,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       stopOrdersPolling();
       renderMyStatsScreen(() => renderKitchenScreen(restaurantName, onBack));
     });
+    attachSoundToggleHandler();
     startOrdersPolling('oshpaz');
   }
 
@@ -3080,6 +3149,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       return;
     }
+
+    // 46-bosqich: kuryerga yetkazish uchun yangi tayyor buyurtma chiqsa — ovozli bildirishnoma
+    const relevant = (res.orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
+    const currentIds = new Set(relevant.map(o => o.id));
+    if (knownOrderIds) {
+      const hasNew = relevant.some(o => !knownOrderIds.has(o.id));
+      if (hasNew) playNewOrderBeep();
+    }
+    knownOrderIds = currentIds;
+
     const snapshot = JSON.stringify(res.orders);
     if (snapshot === lastOrdersSnapshot) return;
     lastOrdersSnapshot = snapshot;
@@ -3103,6 +3182,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">Yetkazib berish</div>
         ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <button class="btn ikkinchi" id="deliveryStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
+        ${soundToggleBtnHtml()}
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
@@ -3112,6 +3192,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       stopOrdersPolling();
       renderMyStatsScreen(() => renderDeliveryScreen(restaurantName, onBack));
     });
+    attachSoundToggleHandler();
     startDeliveryPolling();
   }
 
