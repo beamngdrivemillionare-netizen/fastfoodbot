@@ -3106,6 +3106,30 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Kuryer: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
+  // ---- Kuryer: bitta tugma bilan Google Maps marshruti (48-bosqich) ----
+  // Mijoz buyurtma berayotganda joylashuvini (location: {lat,lng}) yuborgan
+  // bo'lsa — to'g'ridan-to'g'ri o'sha nuqtagacha navigatsiya (marshrut)
+  // ochiladi. Joylashuv bo'lmasa, mijoz yozgan manzil izohi (addressNote)
+  // bo'yicha Google Maps qidiruvi ochiladi — hech biri bo'lmasa tugma umuman
+  // ko'rsatilmaydi.
+  function deliveryRouteUrl(order) {
+    const loc = order.location;
+    if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') {
+      return `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}&travelmode=driving`;
+    }
+    if (order.addressNote && order.addressNote.trim()) {
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.addressNote.trim())}`;
+    }
+    return null;
+  }
+  function openExternalLink(url) {
+    if (tg && typeof tg.openLink === 'function') {
+      tg.openLink(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+
   function deliveryCardHtml(order) {
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
     // 20-bosqich: yetkazib bo'lingan buyurtmaning holati (status) hali ham
@@ -3114,6 +3138,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     // "Tayyor" o'rniga "Yetkazildi" deb yoziladi, tugma esa endi bosilmaydigan
     // holatga o'tadi (qayta bosilib xato chiqarmasligi uchun).
     const isDelivered = !!order.deliveredBy;
+    const routeUrl = deliveryRouteUrl(order);
     return `
       <div class="order-card">
         <div class="order-top">
@@ -3123,6 +3148,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
         </div>
+        ${order.addressNote ? `<div class="order-time">📝 ${escapeHtml(order.addressNote)}</div>` : ''}
+        ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
         <div class="order-items">${itemsHtml}</div>
         <div class="order-bottom">
           <span class="order-total">${order.total} so'm (${PAYMENT_TYPE_LABELS[order.paymentType] || order.paymentType})</span>
@@ -3134,12 +3161,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  let lastDeliveryOrdersById = new Map();
   function deliveryBoardHtml(orders) {
     // 20-bosqich: bu taxta FAQAT dostavka turidagi va "tayyor" holatidagi
     // buyurtmalarni ko'rsatishi kerak — avval bu yerda hech qanday filtr
     // yo'q edi, shuning uchun stol/olib ketish buyurtmalari ham xato
     // ravishda "Dostavka"/"Tayyor" deb chiqib, tugmasi doim yoniq ko'rinardi.
     const relevant = (orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor');
+    lastDeliveryOrdersById = new Map(relevant.map(o => [o.id, o]));
     if (!relevant.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
     return relevant.map(o => deliveryCardHtml(o)).join('');
   }
@@ -3155,6 +3184,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (!res.ok) alert(res.reason || 'Xatolik yuz berdi.');
         lastOrdersSnapshot = null;
         await refreshDeliveryBoard();
+      });
+    });
+    board.querySelectorAll('[data-route-order-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const orderId = btn.getAttribute('data-route-order-id');
+        const order = lastDeliveryOrdersById.get(orderId);
+        const url = order ? deliveryRouteUrl(order) : null;
+        if (url) openExternalLink(url);
       });
     });
   }
