@@ -3910,6 +3910,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
+  // 17-bosqich: Telegramga yetib bormagan bildirishnomalar ro'yxati.
+  function notificationErrorLogHtml(entries) {
+    if (!entries || !entries.length) return `<div class="bosh">Hammasi joyida — yaqinda yetkazilmagan bildirishnoma yo'q.</div>`;
+    return entries.map(e => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(e.targetName || ('ID: ' + e.targetId))}</div>
+          <div class="owner-username">${escapeHtml(e.context || '')}</div>
+          <div class="owner-expiry" style="color:var(--danger);">${escapeHtml(e.reason)} · ${timeAgo(e.createdAt)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
   function staffActivityLogHtml(entries) {
     if (!entries || !entries.length) return `<div class="bosh">Hali amal qayd etilmagan.</div>`;
     return entries.map(e => `
@@ -3967,6 +3981,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka">
           <h2>So'nggi amallar (jurnal)</h2>
           <div id="scLog"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Bildirishnoma xatolari</h2>
+          <div class="staff-hint">Xodimga Telegram orqali xabar yetib bormagan holatlar (odatda xodim botga hali <code>/start</code> bosmagan yoki uni block qilgan bo'lsa yuz beradi).</div>
+          <div id="scNotifErrors" style="margin-top:8px;"><div class="bosh">Yuklanmoqda...</div></div>
+          <button class="btn ikkinchi" id="clearNotifErrorsBtn" style="margin-top:8px;">Jurnalni tozalash</button>
         </div>
       </div>
     `);
@@ -4078,6 +4098,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    document.getElementById('clearNotifErrorsBtn').addEventListener('click', async () => {
+      if (!confirm('Bildirishnoma xatolari jurnalini tozalamoqchimisiz?')) return;
+      await apiPost('/api/notification-error-log-clear', { initData });
+      loadStaffControlData();
+    });
+
     loadBranchAndRender().then(loadStaffAndRender);
     loadStaffControlData();
   }
@@ -4104,6 +4130,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     logEl.innerHTML = logRes.ok
       ? staffActivityLogHtml(logRes.entries)
       : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
+
+    const notifErrEl = document.getElementById('scNotifErrors');
+    if (notifErrEl) {
+      const notifRes = await apiPost('/api/notification-error-log', { initData });
+      notifErrEl.innerHTML = notifRes.ok
+        ? notificationErrorLogHtml(notifRes.entries)
+        : `<div class="xabar err">${escapeHtml((notifRes.reason) || 'Xatolik yuz berdi.')}</div>`;
+    }
   }
 
   // ---- Egasi: Kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
