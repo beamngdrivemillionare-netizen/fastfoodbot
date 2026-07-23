@@ -529,7 +529,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     // ro'yxati, yangi ega qo'shish, tariflar, tizim holati) o'z alohida
     // ekraniga ega — avvalgi bitta uzun sahifa o'rniga.
     ekran(`
-      <div class="panel">
+      <div class="panel has-ko-bottom-nav">
         <div class="salom">Salom, admin</div>
         <div class="bosh admin-subtitle">Quyidagi bo'limlardan birini tanlang.</div>
 
@@ -542,12 +542,61 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
         </div>
       </div>
+      ${adminBottomNavHtml('bosh')}
     `);
 
     const goBack = () => loadOwnersAndRender();
     document.querySelectorAll('.admin-menu-grid [data-admin-menu-key]').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.getAttribute('data-admin-menu-key');
+        if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
+        if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
+        if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
+        if (key === 'tizim') { loadAndShowSystemStatus(); return; }
+      });
+    });
+    wireAdminBottomNav(owners, goBack);
+  }
+
+  // Admin panelning pastki navigatsiyasi — Bosh sahifadagi katakchalar bilan
+  // bir xil 4 bo'limga o'tadi (egalar, yangi ega, tariflar, tizim), lekin
+  // do'kon egasi ekranidagi (ko-bottom-nav) kabi doimiy, katta iconli va
+  // markazda FAB'li panel ko'rinishida — bir xil CSS klasslar qayta
+  // ishlatiladi, shu sababli icon o'lchamlari bir xil "katta" bo'ladi.
+  function adminBottomNavHtml(activeKey) {
+    return `
+      <div class="ko-bottom-nav" id="adminBottomNav">
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'bosh' ? 'active' : ''}" data-admin-nav="bosh">
+          ${icon('home')}
+          <span>Bosh sahifa</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'egalar' ? 'active' : ''}" data-admin-nav="egalar">
+          ${icon('users')}
+          <span>Egalar</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ko-bottom-nav-fab-item" data-admin-nav="yangiEga">
+          <span class="ko-bottom-nav-fab">${icon('plus')}</span>
+          <span>Yangi ega</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'tariflar' ? 'active' : ''}" data-admin-nav="tariflar">
+          ${icon('star')}
+          <span>Tariflar</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'tizim' ? 'active' : ''}" data-admin-nav="tizim">
+          ${icon('settings')}
+          <span>Tizim</span>
+        </button>
+      </div>
+    `;
+  }
+
+  function wireAdminBottomNav(owners, goBack) {
+    const nav = document.getElementById('adminBottomNav');
+    if (!nav) return;
+    nav.querySelectorAll('[data-admin-nav]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-admin-nav');
+        if (key === 'bosh') return;
         if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
         if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
