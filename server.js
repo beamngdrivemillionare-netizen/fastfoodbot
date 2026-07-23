@@ -177,6 +177,73 @@ function isRegisteredUser(userId) {
 function loadTariffs() { return loadJSONArray(TARIFFS_FILE); }
 function saveTariffs(list) { saveJSONArray(TARIFFS_FILE, list); }
 
+// ====== 53-bosqich: tizimdagi barcha funksiyalar ro'yxati ======
+// Bu — kod ichida qattiq belgilangan (hardcoded) katalog, chunki bular
+// tizimning haqiqiy imkoniyatlari (kod bo'limlari), admin ularni
+// qo'shmaydi/o'chirmaydi — faqat har bir tarifga qaysi funksiyalar
+// kirishini (54-bosqich, ✅/❌ jadval) belgilaydi. Har bir yozuv:
+//  - id: barqaror kalit — tariff.features{} ichida shu kalit bilan
+//        ✅/❌ saqlanadi (54-bosqich), va bloklash tekshiruvida (59-60)
+//        shu id orqali ruxsat so'raladi.
+//  - name: admin panelida ko'rinadigan o'zbekcha nom.
+//  - group: 54-bosqichdagi jadvalni guruhlab ko'rsatish uchun.
+const FEATURE_GROUPS = [
+  { id: 'boshqaruv', name: "Boshqaruv va xodimlar" },
+  { id: 'menyu', name: "Menyu va mahsulotlar" },
+  { id: 'buyurtma', name: "Buyurtmalar va yetkazish" },
+  { id: 'ombor_moliya', name: "Ombor va moliya" },
+  { id: 'statistika', name: "Statistika va AI" },
+  { id: 'mijoz', name: "Mijozlar (mini-ilova)" },
+  { id: 'tizim', name: "Tizim va xavfsizlik" }
+];
+const FEATURE_CATALOG = [
+  // Boshqaruv va xodimlar
+  { id: 'manager-panel', name: "Menejer paneli", group: 'boshqaruv' },
+  { id: 'cashier-panel', name: "Kassir paneli", group: 'boshqaruv' },
+  { id: 'courier-panel', name: "Kuryer paneli", group: 'boshqaruv' },
+  { id: 'kitchen-panel', name: "Oshpaz paneli", group: 'boshqaruv' },
+  { id: 'staff-invite', name: "Xodim taklifnomalari", group: 'boshqaruv' },
+  { id: 'staff-roles', name: "Xodim rollari va huquqlari", group: 'boshqaruv' },
+  { id: 'branch-manage', name: "Filiallar boshqaruvi", group: 'boshqaruv' },
+  { id: 'shift-toggle', name: "Smena boshlash/tugatish", group: 'boshqaruv' },
+  // Menyu va mahsulotlar
+  { id: 'menu-manage', name: "Menyu boshqaruvi", group: 'menyu' },
+  { id: 'category-manage', name: "Kategoriyalar boshqaruvi", group: 'menyu' },
+  { id: 'combo-manage', name: "Combo boshqaruvi", group: 'menyu' },
+  { id: 'promo-manage', name: "Aksiya/promo boshqaruvi", group: 'menyu' },
+  // Buyurtmalar va yetkazish
+  { id: 'orders-manage', name: "Buyurtmalarni boshqarish", group: 'buyurtma' },
+  { id: 'delivery-group', name: "Dostavka guruh xabarnomasi", group: 'buyurtma' },
+  { id: 'kitchen-group', name: "Oshxona guruh xabarnomasi", group: 'buyurtma' },
+  { id: 'courier-report', name: "Kuryer hisoboti", group: 'buyurtma' },
+  // Ombor va moliya
+  { id: 'stock-manage', name: "Ombor boshqaruvi", group: 'ombor_moliya' },
+  { id: 'expense-manage', name: "Xarajatlar", group: 'ombor_moliya' },
+  { id: 'cashflow', name: "Kassa oqimi", group: 'ombor_moliya' },
+  { id: 'z-report', name: "Z-hisobot", group: 'ombor_moliya' },
+  { id: 'bonus-settings', name: "Bonus sozlamalari", group: 'ombor_moliya' },
+  // Statistika va AI
+  { id: 'dashboard', name: "Boshqaruv paneli (Dashboard)", group: 'statistika' },
+  { id: 'staff-performance', name: "Xodimlar statistikasi", group: 'statistika' },
+  { id: 'ai-analytics', name: "AI tahlil", group: 'statistika' },
+  { id: 'ai-director', name: "AI Direktor", group: 'statistika' },
+  { id: 'audit', name: "Auditlar", group: 'statistika' },
+  // Mijozlar (mini-ilova)
+  { id: 'customer-menu', name: "Mijoz uchun menyu va buyurtma", group: 'mijoz' },
+  { id: 'customer-account', name: "Mijoz profili va tarixi", group: 'mijoz' },
+  // Tizim va xavfsizlik
+  { id: 'restaurant-brand', name: "Restoran brendi (logo, nom)", group: 'tizim' },
+  { id: 'system-status', name: "Tizim holati paneli", group: 'tizim' },
+  { id: 'notification-log', name: "Xatolik jurnali", group: 'tizim' }
+];
+function getFeatureCatalogGrouped() {
+  return FEATURE_GROUPS.map(g => ({
+    id: g.id,
+    name: g.name,
+    features: FEATURE_CATALOG.filter(f => f.group === g.id).map(f => ({ id: f.id, name: f.name }))
+  }));
+}
+
 function isAdminId(userId) {
   return String(userId) === String(ADMIN_ID);
 }
@@ -5555,6 +5622,22 @@ const server = http.createServer((req, res) => {
   // umumiy katalog sifatida (tariffs.json) saqlanadi, keyingi bosqichlarda
   // (52-narx, 53-54-funksiyalar, 57-do'kon egasiga biriktirish) shu
   // yozuvlar kengaytiriladi.
+
+  // ---- API: tizimdagi barcha funksiyalar ro'yxati (faqat admin, 53-bosqich) ----
+  // 54-bosqichda shu ro'yxat asosida "Funksiya × Tarif" jadvali chiziladi;
+  // hozircha faqat guruhlangan katalogni qaytaradi.
+  if (req.method === 'POST' && req.url === '/api/feature-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      return sendJSON(res, 200, { ok: true, groups: getFeatureCatalogGrouped() });
+    });
+    return;
+  }
 
   // ---- API: tariflar ro'yxati (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/tariff-list') {
