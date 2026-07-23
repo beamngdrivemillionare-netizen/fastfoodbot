@@ -3950,6 +3950,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">Yetkazib berish</div>
         ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <button class="btn ikkinchi" id="deliveryStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
+        ${onBack ? `<button class="btn ikkinchi" id="restrictedCustomersBtn" style="margin-bottom:12px;">🚫 Cheklangan mijozlar</button>` : ''}
         ${soundToggleBtnHtml()}
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
@@ -3960,8 +3961,83 @@ const tg = window.Telegram && window.Telegram.WebApp;
       stopOrdersPolling();
       renderMyStatsScreen(() => renderDeliveryScreen(restaurantName, onBack));
     });
+    // 60-bosqich: bu tugma faqat egasi bu ekranga "Yetkazib berish" menyusi
+    // orqali kirganda (onBack mavjud bo'lganda) ko'rinadi — kuryerning o'zi
+    // (o'z asosiy ekrani, onBack yo'q) mijozlarni boshqara olmasligi kerak.
+    const restrictedBtn = document.getElementById('restrictedCustomersBtn');
+    if (restrictedBtn) {
+      restrictedBtn.addEventListener('click', () => {
+        stopOrdersPolling();
+        renderRestrictedCustomersScreen(() => renderDeliveryScreen(restaurantName, onBack));
+      });
+    }
     attachSoundToggleHandler();
     startDeliveryPolling();
+  }
+
+  // ---- Egasi: "Faqat karta" bilan cheklangan mijozlar ro'yxati (60-bosqich) ----
+  // Ketma-ket bir necha marta dostavkani bekor qildirgan mijozlarga tizim
+  // avtomatik "naqd/dostavka orqali" to'lovni yopib qo'yadi. Bu ekranda
+  // egasi kimlar shu holatda ekanini, nima sababdan bekor qilinganini
+  // ko'radi va kerak bo'lsa cheklovni qo'lda olib tashlaydi/qaytaradi.
+  function restrictedCustomerCardHtml(c) {
+    const cancelsHtml = (c.recentCancellations || []).map(rc => `
+      <div class="order-time" style="margin-top:4px;">
+        ${timeAgo(rc.cancelledAt)} — ${rc.total} so'm${rc.reason ? ' · ' + escapeHtml(rc.reason) : ''}
+      </div>
+    `).join('');
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${escapeHtml(c.name)}${c.username ? ' · @' + escapeHtml(c.username) : ''}</div>
+            <div class="order-time">Bekor qilingan dostavkalar: ${c.cancelledCount} ta</div>
+          </div>
+          <span class="status-badge ${c.restricted ? 'yangi' : 'tayyor'}">${c.restricted ? 'Cheklangan' : 'Cheklov olib tashlangan'}</span>
+        </div>
+        ${cancelsHtml}
+        <button type="button" class="btn ikkinchi" style="width:100%; margin-top:10px;"
+          data-toggle-restriction-id="${escapeHtml(String(c.id))}"
+          data-toggle-restriction-action="${c.restricted ? 'clear' : 'restore'}">
+          ${c.restricted ? '✅ Cheklovni olib tashlash' : '🚫 Cheklovni qayta tiklash'}
+        </button>
+      </div>
+    `;
+  }
+
+  async function renderRestrictedCustomersScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Cheklangan mijozlar</div>
+        <button class="btn ikkinchi" id="restrictedBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="bosh">Ketma-ket 2 marta yoki ko'proq dostavkani bekor qildirgan mijozlarga tizim avtomatik ravishda faqat "Karta" bilan to'lashni taklif qiladi. Sabab asosli bo'lsa, cheklovni bu yerdan olib tashlashingiz mumkin.</div>
+        <div id="restrictedList" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('restrictedBackBtn').addEventListener('click', onBack);
+
+    const listEl = document.getElementById('restrictedList');
+    const res = await apiPost('/api/restricted-customers', { initData });
+    if (!res.ok) {
+      if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => renderRestrictedCustomersScreen(onBack)); return; }
+      listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (!res.customers.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha cheklangan mijozlar yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.customers.map(restrictedCustomerCardHtml).join('');
+    listEl.querySelectorAll('[data-toggle-restriction-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const customerId = btn.getAttribute('data-toggle-restriction-id');
+        const action = btn.getAttribute('data-toggle-restriction-action');
+        const res2 = await apiPost('/api/toggle-customer-restriction', { initData, customerId, action });
+        if (!res2.ok) { alert(res2.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        renderRestrictedCustomersScreen(onBack);
+      });
+    });
   }
 
   // ---- Sklad: birliklar, ro'yxat, kirim formasi, harakatlar tarixi, kunlik audit ----
