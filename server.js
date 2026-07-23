@@ -252,7 +252,6 @@ const FEATURE_GROUPS = [
 ];
 const FEATURE_CATALOG = [
   // Boshqaruv va xodimlar
-  { id: 'manager-panel', name: "Menejer paneli", group: 'boshqaruv' },
   { id: 'cashier-panel', name: "Kassir paneli", group: 'boshqaruv' },
   { id: 'courier-panel', name: "Kuryer paneli", group: 'boshqaruv' },
   { id: 'kitchen-panel', name: "Oshpaz paneli", group: 'boshqaruv' },
