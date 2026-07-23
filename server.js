@@ -3709,6 +3709,66 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: xodim uchun shaxsiy kunlik/haftalik/oylik statistika (45-bosqich) ----
+  // Har bir rol o'ziga tegishli ko'rsatkichni ko'radi: kassir — yaratgan
+  // buyurtmalari, oshpaz — tayyorlagan buyurtmalari, kuryer — yetkazgan
+  // buyurtmalari (va komissiyasi), sklad — kiritgan sklad harakatlari.
+  if (req.method === 'POST' && req.url === '/api/my-stats') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'dostavka', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat xodimlarga ko\'rinadi' });
+      }
+
+      const fromDate = resolvePeriodStart(period);
+      const orders = ctx.owner.orders || [];
+      const stats = { period: period || 'today' };
+
+      if (ctxHasRole(ctx, 'kassir')) {
+        const mine = orders.filter(o => String(o.createdBy) === userId && new Date(o.createdAt) >= fromDate);
+        stats.kassir = {
+          orderCount: mine.length,
+          totalAmount: mine.reduce((sum, o) => sum + (o.total || 0), 0)
+        };
+      }
+      if (ctxHasRole(ctx, 'oshpaz')) {
+        // "Tayyor" deb belgilagan (oxirgi holat o'zgartiruvchi shu xodim bo'lgan) buyurtmalar
+        const mine = orders.filter(o => o.status === 'tayyor' && String(o.updatedBy) === userId && o.readyAt && new Date(o.readyAt) >= fromDate);
+        stats.oshpaz = {
+          orderCount: mine.length
+        };
+      }
+      if (ctxHasRole(ctx, 'dostavka')) {
+        const mine = orders.filter(o => o.orderType === 'dostavka' && String(o.deliveredBy) === userId && new Date(o.deliveredAt || o.createdAt) >= fromDate);
+        const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
+        const commissionPercent = Number.isFinite(ctx.owner.courierCommissionPercent) ? ctx.owner.courierCommissionPercent : 10;
+        stats.dostavka = {
+          orderCount: mine.length,
+          totalAmount,
+          commission: Math.round(totalAmount * commissionPercent / 100)
+        };
+      }
+      if (ctxHasRole(ctx, 'sklad')) {
+        const movements = (ctx.owner.stockMovements || []).filter(m => String(m.userId) === userId && new Date(m.createdAt) >= fromDate);
+        stats.sklad = {
+          movementCount: movements.length,
+          kirimCount: movements.filter(m => m.type === 'kirim').length,
+          chiqimCount: movements.filter(m => m.type === 'chiqim').length
+        };
+      }
+
+      return sendJSON(res, 200, { ok: true, stats });
+    });
+    return;
+  }
+
   // ---- API: buyurtma holatini o'zgartirish (Yangi -> Tayyorlanmoqda -> Tayyor) ----
   if (req.method === 'POST' && req.url === '/api/update-order-status') {
     readBody(req, async (err, payload) => {
