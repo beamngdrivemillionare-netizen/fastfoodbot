@@ -5715,7 +5715,12 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
 
-      const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+      // 68-bosqich: tarif bo'yicha statistika — har bir tarifda nechta
+      // do'kon egasi borligini ham shu yerda hisoblab qo'shamiz, frontend
+      // qayta so'rov yubormasligi uchun.
+      const owners = loadOwners();
+      const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map(t => ({ ...t, ownerCount: owners.filter(o => o.tariffId === t.id).length }));
       return sendJSON(res, 200, { ok: true, tariffs });
     });
     return;
