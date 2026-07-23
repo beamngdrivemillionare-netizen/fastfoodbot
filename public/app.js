@@ -1396,16 +1396,186 @@ const tg = window.Telegram && window.Telegram.WebApp;
       loadTariffList();
     };
   }
+  // =========================================================================
+  // Bosiladigan (accordion) bo'lim komponenti — renderProfileForm() ichida
+  // kamdan-kam o'zgartiriladigan bo'limlarni (kategoriyalar, aksiyalar,
+  // bonus, dostavka/oshxona guruhlari, xavfsizlik) yig'ib turadi. Har bir
+  // bo'lim boshida yopiq holda keladi, bosilganda ochiladi/yopiladi —
+  // shu bilan sahifa cheksiz uzun bo'lib ko'rinmaydi.
+  // =========================================================================
+  function accSectionHtml(section) {
+    return `
+      <div class="acc-item" data-acc-key="${section.key}">
+        <button type="button" class="acc-header" data-acc-toggle="${section.key}">
+          <span class="acc-header-icon">${icon(section.icon)}</span>
+          <span class="acc-header-text">
+            <span class="acc-header-title">${escapeHtml(section.title)}</span>
+            ${section.hint ? `<span class="acc-header-hint">${escapeHtml(section.hint)}</span>` : ''}
+          </span>
+          <span class="acc-chevron">${icon('chevron-down')}</span>
+        </button>
+        <div class="acc-body">${section.body}</div>
+      </div>
+    `;
+  }
+
+  function wireAccSections() {
+    document.querySelectorAll('[data-acc-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const item = btn.closest('.acc-item');
+        if (item) item.classList.toggle('open');
+      });
+    });
+  }
+
   function renderProfileForm(existing) {
     if (!existing) { renderProfileOnboarding(); return; }
     const p = existing;
     let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
     let pendingLogo = p.logoUrl || '';
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
+    const accSections = [
+      {
+        key: 'categories', icon: 'restaurant', title: "Menyu bo'limlari",
+        hint: 'Kategoriyalar tartibi',
+        body: `
+          <div class="kartochka">
+            <div class="bosh">Menyuga taom qo'shish va mavjud taomlarni boshqarish endi <b>"Ombor"</b> bo'limiga ko'chirildi (chunki taomni sklad mahsulotiga bog'lash shu yerda qulayroq).</div>
+          </div>
+          <div class="kartochka">
+            <h2>Bo'limlar (kategoriyalar)</h2>
+            <div class="bosh">Taomlarni bo'limlarga ajratish uchun ro'yxat. Shu yerdagi tartib mijozlar va kassir menyusida ko'rinadigan tartibni belgilaydi.</div>
+            <input type="text" id="categoryNameInput" placeholder="Bo'lim nomi (masalan: Issiq taomlar)" style="margin-top:10px;">
+            <button class="btn" id="addCategoryBtn" style="margin-top:8px;">Bo'lim qo'shish</button>
+            <div class="xabar" id="categoryMsg"></div>
+            <div class="owner-list" id="categoryList" style="margin-top:12px;"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'promos', icon: 'star', title: 'Aksiyalar va chegirmalar',
+        hint: "Yangi aksiya qo'shish, ro'yxat",
+        body: `
+          <div class="kartochka">
+            <h2>Aksiya/chegirma qo'shish</h2>
+            <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
+            <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
+            <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
+            <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
+            <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
+            <div class="xabar" id="promoMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Aksiyalar ro'yxati</h2>
+            <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'bonus', icon: 'trophy', title: 'Bonus tizimi',
+        hint: "Mijozlarni rag'batlantirish",
+        body: `
+          <div class="kartochka">
+            <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
+            <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
+              <input type="checkbox" id="bonusEnabledInput">
+              Bonus tizimini yoqish
+            </label>
+            <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
+            <button class="btn" id="saveBonusBtn">Saqlash</button>
+            <div class="xabar" id="bonusMsg"></div>
+          </div>
+        `
+      },
+      {
+        key: 'delivery', icon: 'scooter', title: 'Dostavka guruhi',
+        hint: 'Kuryerlar guruhini biriktirish',
+        body: `
+          <div class="kartochka">
+            <h2>Dostavka admin guruhi</h2>
+            <div class="bosh">Mijoz istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+            <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+            <div class="customer-link-hint">
+              Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
+              Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+            </div>
+            <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+            <div class="xabar" id="deliveryGroupMsg"></div>
+          </div>
+        `
+      },
+      {
+        key: 'kitchen', icon: 'chef-hat', title: 'Oshpazlar guruhi',
+        hint: 'Oshxona buyurtma xabarlari',
+        body: `
+          <div class="kartochka">
+            <h2>Oshpazlar guruhi</h2>
+            <div class="bosh">Har bir yangi buyurtma haqida "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga ham boradi — oshpazlar shaxsiy chatni ochmagan yoki bloklagan bo'lsa ham, buyurtma guruhda ko'rinadi. Dostavka admin guruhidan mustaqil — ikkalasini bir vaqtda biriktirish mumkin.</div>
+            <div id="kitchenGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+            <div class="customer-link-hint">
+              Ulash uchun: 1) Botni oshpazlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/oshpaz_biriktir</b> buyrug'ini yuboring.<br>
+              Bekor qilish uchun guruhda <b>/oshpaz_bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+            </div>
+            <button class="btn ikkinchi xavfli hidden" id="removeKitchenGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+            <div class="xabar" id="kitchenGroupMsg"></div>
+          </div>
+        `
+      },
+      (usingOwnerSession || ownerHasTelegramLogin) ? {
+        key: 'account', icon: 'lock', title: 'Hisob va xavfsizlik',
+        hint: 'Parol, chiqish',
+        body: `
+          <div class="kartochka">
+            <div class="bosh">${usingOwnerSession ? 'Siz login/parol orqali kirgansiz.' : 'Bu qurilmada parol eslab qolingan.'}</div>
+            <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
+
+            <h2 style="margin-top:18px;">Xavfsizlik</h2>
+            <button class="btn ikkinchi" id="togglePwChangeBtn">Parolni almashtirish</button>
+            <div id="pwChangeForm" class="hidden" style="margin-top:10px;">
+              <label class="field-label">Joriy parol</label>
+              <input type="password" id="pwCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
+              <label class="field-label">Yangi parol</label>
+              <input type="password" id="pwNewInput" autocomplete="new-password" placeholder="Kamida 6 belgi">
+              <label class="field-label">Yangi parolni takrorlang</label>
+              <input type="password" id="pwNewRepeatInput" autocomplete="new-password" placeholder="Yangi parolni qayta kiriting">
+              <div class="btn-row">
+                <button class="btn ikkinchi" id="pwChangeCancelBtn">Bekor qilish</button>
+                <button class="btn" id="pwChangeSaveBtn">Saqlash</button>
+              </div>
+              <div class="xabar" id="pwChangeMsg"></div>
+            </div>
+
+            ${tg ? `
+            <button class="btn ikkinchi xavfli" id="togglePwRemoveBtn" style="margin-top:14px;">Parolni o'chirish</button>
+            <div id="pwRemoveForm" class="hidden" style="margin-top:10px;">
+              <div class="bosh">Parol o'chirilsa, bundan buyon faqat Telegram orqali kirish imkoni qoladi. Tasdiqlash uchun joriy parolingizni kiriting.</div>
+              <label class="field-label">Joriy parol</label>
+              <input type="password" id="pwRemoveCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
+              <div class="btn-row">
+                <button class="btn ikkinchi" id="pwRemoveCancelBtn">Bekor qilish</button>
+                <button class="btn xavfli" id="pwRemoveConfirmBtn">Parolni o'chirish</button>
+              </div>
+              <div class="xabar" id="pwRemoveMsg"></div>
+            </div>
+            ` : ''}
+          </div>
+        `
+      } : null
+    ].filter(Boolean);
+
     ekran(`
       <div class="panel">
         <div class="salom">Profilni tahrirlash</div>
         <div class="bosh">Ma'lumotlaringizni yangilang.</div>
+
+        <div class="profile-hero">
+          <div class="profile-hero-avatar">${p.logoUrl ? `<img src="${escapeHtml(p.logoUrl)}" alt="">` : icon('restaurant')}</div>
+          <div>
+            <div class="profile-hero-title">${escapeHtml(p.name || "Oshxona nomi ko'rsatilmagan")}</div>
+            <div class="profile-hero-subtitle">${escapeHtml(p.address || 'Manzil kiritilmagan')}</div>
+          </div>
+        </div>
+
         <div class="kartochka">
           <h2>${icon('star', 'icon-xs')} Joriy tarif</h2>
           <div id="profileTariffInfo" class="owner-username">Yuklanmoqda...</div>
@@ -1429,110 +1599,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="xabar" id="profileMsg"></div>
         </div>
 
-        <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
-        <div class="kartochka">
-          <div class="bosh">Menyuga taom qo'shish va mavjud taomlarni boshqarish endi <b>"Ombor"</b> bo'limiga ko'chirildi (chunki taomni sklad mahsulotiga bog'lash shu yerda qulayroq).</div>
+        <div class="section-label">${icon('settings', 'icon-xs')} Qo'shimcha sozlamalar</div>
+        <div class="acc-list">
+          ${accSections.map(s => accSectionHtml(s)).join('')}
         </div>
-        <div class="kartochka">
-          <h2>Bo'limlar (kategoriyalar)</h2>
-          <div class="bosh">Taomlarni bo'limlarga ajratish uchun ro'yxat. Shu yerdagi tartib mijozlar va kassir menyusida ko'rinadigan tartibni belgilaydi.</div>
-          <input type="text" id="categoryNameInput" placeholder="Bo'lim nomi (masalan: Issiq taomlar)" style="margin-top:10px;">
-          <button class="btn" id="addCategoryBtn" style="margin-top:8px;">Bo'lim qo'shish</button>
-          <div class="xabar" id="categoryMsg"></div>
-          <div class="owner-list" id="categoryList" style="margin-top:12px;"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Aksiya/chegirma qo'shish</h2>
-          <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
-          <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
-          <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
-          <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
-          <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
-          <div class="xabar" id="promoMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Aksiyalar ro'yxati</h2>
-          <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-
-        <div class="section-label">${icon('star', 'icon-xs')} Mijozlarni rag'batlantirish</div>
-        <div class="kartochka">
-          <h2>Bonus tizimi</h2>
-          <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
-          <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
-            <input type="checkbox" id="bonusEnabledInput">
-            Bonus tizimini yoqish
-          </label>
-          <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
-          <button class="btn" id="saveBonusBtn">Saqlash</button>
-          <div class="xabar" id="bonusMsg"></div>
-        </div>
-
-        <div class="section-label">${icon('link', 'icon-xs')} Dostavka</div>
-        <div class="kartochka">
-          <h2>Dostavka admin guruhi</h2>
-          <div class="bosh">Mijoz istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
-          <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
-          <div class="customer-link-hint">
-            Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
-            Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
-          </div>
-          <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
-          <div class="xabar" id="deliveryGroupMsg"></div>
-        </div>
-
-        <div class="section-label">${icon('link', 'icon-xs')} Oshxona</div>
-        <div class="kartochka">
-          <h2>Oshpazlar guruhi</h2>
-          <div class="bosh">Har bir yangi buyurtma haqida "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga ham boradi — oshpazlar shaxsiy chatni ochmagan yoki bloklagan bo'lsa ham, buyurtma guruhda ko'rinadi. Dostavka admin guruhidan mustaqil — ikkalasini bir vaqtda biriktirish mumkin.</div>
-          <div id="kitchenGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
-          <div class="customer-link-hint">
-            Ulash uchun: 1) Botni oshpazlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/oshpaz_biriktir</b> buyrug'ini yuboring.<br>
-            Bekor qilish uchun guruhda <b>/oshpaz_bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
-          </div>
-          <button class="btn ikkinchi xavfli hidden" id="removeKitchenGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
-          <div class="xabar" id="kitchenGroupMsg"></div>
-        </div>
-
-        ${(usingOwnerSession || ownerHasTelegramLogin) ? `
-        <div class="section-label">${icon('user', 'icon-xs')} Hisob</div>
-        <div class="kartochka">
-          <div class="bosh">${usingOwnerSession ? 'Siz login/parol orqali kirgansiz.' : 'Bu qurilmada parol eslab qolingan.'}</div>
-          <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
-
-          <h2 style="margin-top:18px;">Xavfsizlik</h2>
-          <button class="btn ikkinchi" id="togglePwChangeBtn">Parolni almashtirish</button>
-          <div id="pwChangeForm" class="hidden" style="margin-top:10px;">
-            <label class="field-label">Joriy parol</label>
-            <input type="password" id="pwCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
-            <label class="field-label">Yangi parol</label>
-            <input type="password" id="pwNewInput" autocomplete="new-password" placeholder="Kamida 6 belgi">
-            <label class="field-label">Yangi parolni takrorlang</label>
-            <input type="password" id="pwNewRepeatInput" autocomplete="new-password" placeholder="Yangi parolni qayta kiriting">
-            <div class="btn-row">
-              <button class="btn ikkinchi" id="pwChangeCancelBtn">Bekor qilish</button>
-              <button class="btn" id="pwChangeSaveBtn">Saqlash</button>
-            </div>
-            <div class="xabar" id="pwChangeMsg"></div>
-          </div>
-
-          ${tg ? `
-          <button class="btn ikkinchi xavfli" id="togglePwRemoveBtn" style="margin-top:14px;">Parolni o'chirish</button>
-          <div id="pwRemoveForm" class="hidden" style="margin-top:10px;">
-            <div class="bosh">Parol o'chirilsa, bundan buyon faqat Telegram orqali kirish imkoni qoladi. Tasdiqlash uchun joriy parolingizni kiriting.</div>
-            <label class="field-label">Joriy parol</label>
-            <input type="password" id="pwRemoveCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
-            <div class="btn-row">
-              <button class="btn ikkinchi" id="pwRemoveCancelBtn">Bekor qilish</button>
-              <button class="btn xavfli" id="pwRemoveConfirmBtn">Parolni o'chirish</button>
-            </div>
-            <div class="xabar" id="pwRemoveMsg"></div>
-          </div>
-          ` : ''}
-        </div>
-        ` : ''}
       </div>
     `);
+
+    wireAccSections();
 
     if (usingOwnerSession) {
       const logoutBtn = document.getElementById('ownerLogoutBtn');
