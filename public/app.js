@@ -845,6 +845,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <h2>${icon('star', 'icon-xs')} Mavjud tariflar</h2>
           <div id="tariffList"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
+        <div class="kartochka">
+          <h2>${icon('clipboard', 'icon-xs')} Tizim funksiyalari</h2>
+          <div class="owner-username" style="margin-bottom:8px;">Har bir tarifga qaysi funksiyalar kirishini belgilash keyingi bosqichda shu ro'yxat asosida qo'shiladi.</div>
+          <div id="featureCatalogList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
       </div>
     `);
     document.getElementById('tariffsBackBtn').addEventListener('click', () => onBack());
@@ -876,6 +881,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
       loadTariffList();
     });
     await loadTariffList();
+    await loadFeatureCatalog();
+  }
+
+  // ---- Admin: tizim funksiyalari katalogi (53-bosqich) ----
+  // Hozircha faqat guruhlangan ro'yxatni ko'rsatadi — har bir tarif uchun
+  // ✅/❌ belgilash imkoniyati 54-bosqichda shu bloknnig ustiga qo'shiladi.
+  async function loadFeatureCatalog() {
+    const el = document.getElementById('featureCatalogList');
+    if (!el) return;
+    const res = await apiPost('/api/feature-list', { initData });
+    if (!res.ok) {
+      el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    el.innerHTML = res.groups.map(g => `
+      <div style="margin-bottom:10px;">
+        <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
+        <div>${g.features.map(f => `<span class="badge neutral" style="margin:2px 4px 2px 0;">${escapeHtml(f.name)}</span>`).join('')}</div>
+      </div>
+    `).join('');
   }
 
   async function loadTariffList() {
