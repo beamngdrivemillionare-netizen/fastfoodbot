@@ -354,6 +354,26 @@ const STAFF_ROLES = {
   dostavka: 'Kuryer'
 };
 
+// 2-4-bosqich: har bir xodim roliga mos "panel" funksiyasi (tarif orqali
+// yopilishi mumkin bo'lgan FEATURE_CATALOG id'si). `sklad` bu yerda yo'q —
+// uning kirishi allaqachon 'stock-manage' funksiyasi orqali cheklanadi.
+const ROLE_PANEL_FEATURE = {
+  kassir: 'cashier-panel',
+  oshpaz: 'kitchen-panel',
+  dostavka: 'courier-panel'
+};
+
+// Xodimning barcha rollaridan FAQAT egasining joriy tarifida ochiq bo'lganlarini
+// qaytaradi. Tarifda mos panel funksiyasi ❌ qilingan bo'lsa — o'sha rol
+// ro'yxatdan olib tashlanadi (xodim o'sha panelga umuman kira olmaydi).
+function allowedStaffRoles(owner, roles) {
+  return (roles || []).filter(r => {
+    const featureId = ROLE_PANEL_FEATURE[r];
+    if (!featureId) return true; // bu rol uchun alohida panel-funksiyasi yo'q (masalan sklad) — cheklanmaydi
+    return ownerCanUseFeature(owner, featureId);
+  });
+}
+
 // ====== Filiallar (G. Filiallar tizimi) — har bir egasi bir nechta filial ocha oladi ======
 function findBranch(owner, branchId) {
   return (owner.branches || []).find(b => String(b.id) === String(branchId));
@@ -613,19 +633,27 @@ function rolesLabel(roles) {
   return (roles || []).map(r => STAFF_ROLES[r] || r).join(', ') || '—';
 }
 
-// Berilgan userId qaysi egasining xodimi ekanini (va rol(lar)ini) topadi
+// Berilgan userId qaysi egasining xodimi ekanini (va rol(lar)ini) topadi.
+// 2-4-bosqich: xodimga biriktirilgan rollardan FAQAT tarifda ochiq bo'lgan
+// panellarga mos keladiganlari qaytariladi (masalan owner kassir panelini
+// tarifda yopib qo'ygan bo'lsa — kassir xodimi endi kassir sifatida hech
+// narsaga kira olmaydi, garchi owner.staff'da rol hali ham saqlanayotgan
+// bo'lsa ham). Owner o'z xodimlarini boshqarishda (staff-list) baribir
+// RAW (filtrlanmagan) rollarni ko'radi — u yerda findStaffInfo ishlatilmaydi.
 function findStaffInfo(owners, userId) {
   for (const owner of owners) {
     const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
     if (staff) {
-      const roles = normalizeStaffRoles(staff);
+      const rawRoles = normalizeStaffRoles(staff);
+      const roles = allowedStaffRoles(owner, rawRoles);
       return {
         ownerId: owner.id,
         ownerName: (owner.profile && owner.profile.name) || null,
         ownerLogoUrl: (owner.profile && owner.profile.logoUrl) || null,
         ownerBrandColor: (owner.profile && owner.profile.brandColor) || null,
-        role: roles[0] || staff.role || null,
+        role: roles[0] || null,
         roles,
+        rawRoles,
         staff
       };
     }
@@ -1986,7 +2014,12 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       const ownerOk = isOwnerAccessValid(owner);
       const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
-      const ok = admin || ownerOk || !!staffInfo;
+      // 2-4-bosqich: xodimga rol(lar) biriktirilgan, lekin ULARNING BARCHASI
+      // joriy tarifda yopilgan bo'lsa (findStaffInfo.roles bo'sh massiv
+      // qaytaradi) — bu xodimni "ok:false" deb hisoblaymiz, aks holda u
+      // rolsiz (bo'sh panel) holatda kirib qolardi.
+      const staffBlocked = !!(staffInfo && staffInfo.rawRoles.length > 0 && staffInfo.roles.length === 0);
+      const ok = admin || ownerOk || !!(staffInfo && !staffBlocked);
 
       return sendJSON(res, 200, {
         ok,
@@ -2004,7 +2037,11 @@ const server = http.createServer((req, res) => {
         // (qarang: frontend'dagi owner password-gate va /api/owner-confirm-password).
         hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
         personRegistered: admin || isRegisteredUser(userId),
-        reason: ok ? null : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.'
+        reason: ok
+          ? null
+          : (staffBlocked
+              ? 'Lavozimingiz (' + rolesLabel(staffInfo.rawRoles) + ') joriy tarifda yopilgan. Administrator bilan bog\'laning.'
+              : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.')
       });
     });
     return;
