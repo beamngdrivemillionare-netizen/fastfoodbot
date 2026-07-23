@@ -627,7 +627,87 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
         saveOwners(owners2);
       }
     }
+  }).catch(err => {
+    console.error(`[notifyDeliveryGroup xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
   });
+}
+
+// 13-bosqich: "Oshpazga buyurtma tushmayapti" muammosining bir qismi — ba'zi
+// oshxonalarda oshpazlar bot bilan shaxsiy chatni ochmagan/bloklagan bo'ladi,
+// shu sababli ularga individual (staff.id bo'yicha) xabar UMUMAN yetib
+// bormaydi. Yechim: dostavka admin guruhiga o'xshab, oshxona egasi alohida
+// bir Telegram guruhini ("Oshpazlar guruhi") ham biriktira oladi — shu
+// guruhga HAR BIR yangi buyurtma (turi qanday bo'lishidan qat'iy nazar)
+// alohida, "✅ Qabul qilish" / "🏁 Tayyor" tugmalari bilan yuboriladi. Bu
+// dostavka guruhidan MUSTAQIL — ikkalasi bir vaqtda biriktirilgan bo'lishi
+// mumkin (masalan, kassirlar bitta guruhda, oshpazlar boshqa guruhda
+// ishlaydi).
+//
+// 14-bosqich: ikkalasi (dostavka guruhi + oshpazlar guruhi) BIR XIL
+// order.status maydonidan foydalanadi — shu sababli qaysi guruhda birinchi
+// bosilishidan qat'iy nazar, ikkinchi guruhdagi tugma "allaqachon bajarilgan"
+// deb javob beradi (dublikat yo'q), va ikkala guruhdagi xabar ham
+// yangilanadi (qarang: syncGroupMessagesForOrder).
+function notifyKitchenGroup(owner, order, creatorLabel) {
+  if (!owner.kitchenGroupId) return;
+  try {
+    const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
+    const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
+    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm`;
+    sendMessage(owner.kitchenGroupId, text, {
+      inline_keyboard: [[
+        { text: '✅ Qabul qilish', callback_data: `kgaccept:${owner.id}:${order.id}` },
+        { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
+      ]]
+    }).then(result => {
+      if (result && result.ok && result.result && result.result.message_id) {
+        const owners2 = loadOwners();
+        const o2 = findOwner(owners2, owner.id);
+        const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+        if (ord2) {
+          ord2.kitchenGroupMsgId = result.result.message_id;
+          saveOwners(owners2);
+        }
+      }
+    }).catch(err => {
+      console.error(`[notifyKitchenGroup xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+    });
+  } catch (err) {
+    console.error(`[notifyKitchenGroup kutilmagan xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+  }
+}
+
+// 14/15-bosqich: dostavka guruhi va oshpazlar guruhidagi xabarlarni (agar
+// ikkalasi ham biriktirilgan bo'lsa), shuningdek buyurtma holati Mini App
+// orqali (kassir/oshpaz/egasi tomonidan, guruh tugmalarisiz) o'zgarganda ham
+// ikkala guruh xabaridagi tugmalarni joriy holatga mos ravishda yangilaydi —
+// shu bilan "bir joyda qabul qilindi, boshqa joyda hali ham eski tugma
+// ko'rinadi" kabi chalkashliklarning oldi olinadi.
+function syncGroupMessagesForOrder(owner, order) {
+  const targets = [
+    { chatId: owner.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
+    { chatId: owner.kitchenGroupId, msgId: order.kitchenGroupMsgId, prefix: 'kg' }
+  ].filter(t => t.chatId && t.msgId);
+  if (!targets.length) return;
+
+  for (const t of targets) {
+    let kb = { inline_keyboard: [] };
+    if (order.status === 'yangi') {
+      kb = { inline_keyboard: [[
+        { text: '✅ Qabul qilish', callback_data: `${t.prefix}accept:${owner.id}:${order.id}` },
+        { text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }
+      ]] };
+    } else if (order.status === 'tayyorlanmoqda') {
+      kb = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }]] };
+    }
+    telegramApi('editMessageReplyMarkup', {
+      chat_id: t.chatId, message_id: t.msgId,
+      reply_markup: JSON.stringify(kb)
+    }).catch(err => {
+      console.error(`[syncGroupMessagesForOrder xatosi] owner=${owner.id} order=${order.id} chat=${t.chatId}: ${(err && err.message) || err}`);
+    });
+  }
 }
 
 // ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
@@ -948,6 +1028,40 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
+    // ---- 13-bosqich: Guruhda /oshpaz_biriktir — shu guruhni "Oshpazlar
+    // guruhi" sifatida bog'laydi. Dostavka guruhidan MUSTAQIL — ikkalasi
+    // bir vaqtda biriktirilgan bo'lishi mumkin (masalan, kassirlar bitta
+    // guruhda, oshpazlar boshqa guruhda ishlashi uchun). ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?$/.test(text)) {
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, from.id);
+      if (!isOwnerAccessValid(owner)) {
+        await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
+        return;
+      }
+      owner.kitchenGroupId = String(chatId);
+      owner.kitchenGroupTitle = msg.chat.title || null;
+      saveOwners(owners);
+      await sendMessage(chatId,
+        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun Oshpazlar guruhi sifatida biriktirildi.\n` +
+        `Endi har bir yangi buyurtma (Stolga, Olib ketish yoki Dostavka) shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.`);
+      return;
+    }
+
+    // ---- 13-bosqich: Guruhda /oshpaz_bekor_biriktir — Oshpazlar guruhi
+    // bog'lanishini bekor qilish ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_bekor_biriktir(@\S+)?$/.test(text)) {
+      const owners = loadOwners();
+      const owner = findOwner(owners, from.id);
+      if (owner && String(owner.kitchenGroupId) === String(chatId)) {
+        owner.kitchenGroupId = null;
+        owner.kitchenGroupTitle = null;
+        saveOwners(owners);
+        await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
+      }
+      return;
+    }
+
     // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
     if (isAdminId(from.id) && !text.startsWith('/')) {
       const awaiting = getAwaitingCustom();
@@ -1058,41 +1172,57 @@ async function handleTelegramUpdate(update) {
     const chatId = cq.message && cq.message.chat && cq.message.chat.id;
     const messageId = cq.message && cq.message.message_id;
 
-    // ---- Dostavka guruhi: "Qabul qilish" / "Tayyor" tugmalari (guruh a'zolari uchun, admin cheklovisiz) ----
-    if (data.startsWith('dgaccept:') || data.startsWith('dgready:')) {
+    // ---- Dostavka guruhi VA Oshpazlar guruhi: "Qabul qilish" / "Tayyor"
+    // tugmalari (guruh a'zolari uchun, admin cheklovisiz). 13-bosqichdan
+    // boshlab ikkala guruh turi ("dg" = dostavka, "kg" = oshpaz) bir xil
+    // mantiq bilan, umumiy holda ishlanadi. 14-bosqich: ikkalasi ham
+    // ORDER.STATUS'NI umumiy manba sifatida ishlatadi — shu sababli qaysi
+    // guruhda birinchi bosilishidan qat'iy nazar, ikkinchisida bosilsa
+    // "allaqachon bajarilgan" javobi qaytadi (dublikat status o'zgarishi
+    // bo'lmaydi), va syncGroupMessagesForOrder orqali ikkala guruhdagi
+    // xabar tugmalari ham yangilanadi. ----
+    if (data.startsWith('dgaccept:') || data.startsWith('dgready:') || data.startsWith('kgaccept:') || data.startsWith('kgready:')) {
       const [action, ownerId, orderId] = data.split(':');
+      const isKitchen = action.startsWith('kg');
+      const stageField = isKitchen ? 'kitchenGroupStage' : 'deliveryGroupStage';
+      const acceptedByField = isKitchen ? 'kitchenAcceptedBy' : 'deliveryAcceptedBy';
+      const acceptedAtField = isKitchen ? 'kitchenAcceptedAt' : 'deliveryAcceptedAt';
+      const readyByField = isKitchen ? 'kitchenReadyBy' : 'deliveryReadyBy';
+      const readyAtField = isKitchen ? 'kitchenReadyAt' : 'deliveryReadyAt';
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
       const order = (owner.orders || []).find(o => o.id === orderId);
       if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
 
-      if (action === 'dgaccept') {
-        if (order.deliveryGroupStage === 'qabul_qilindi' || order.deliveryGroupStage === 'tayyor') {
+      if (action === 'dgaccept' || action === 'kgaccept') {
+        if (order.status !== 'yangi') {
+          // Boshqa guruhda (yoki Mini App'da) allaqachon qabul qilingan —
+          // dublikat qilib qayta ishlanmaydi, faqat shu haqda xabar beriladi.
           await answerCallbackQuery(cq.id, 'Allaqachon qabul qilingan.');
+          syncGroupMessagesForOrder(owner, order);
           return;
         }
-        order.deliveryGroupStage = 'qabul_qilindi';
-        order.deliveryAcceptedBy = from.id;
-        order.deliveryAcceptedAt = new Date().toISOString();
+        order[stageField] = 'qabul_qilindi';
+        order[acceptedByField] = from.id;
+        order[acceptedAtField] = new Date().toISOString();
         // Guruhdagi "Qabul qilish" bosilganda buyurtmaning asosiy status'i ham
         // yangilanadi ("tayyorlanmoqda"), aks holda u Mini App bosqichlaridan
         // uzilib qoladi (masalan, keyinroq "tayyor" belgilanganda kuryerga
         // ko'rinmay qoladi — chunki kuryer ro'yxati order.status'ga qarab
-        // filtrlanadi, deliveryGroupStage'ga emas).
-        if (order.status === 'yangi') {
-          order.status = 'tayyorlanmoqda';
-          order.updatedAt = new Date().toISOString();
-          order.updatedBy = String(from.id);
-          if (!order.startedAt) order.startedAt = order.updatedAt;
-        }
+        // filtrlanadi, *GroupStage maydoniga emas).
+        order.status = 'tayyorlanmoqda';
+        order.updatedAt = new Date().toISOString();
+        order.updatedBy = String(from.id);
+        if (!order.startedAt) order.startedAt = order.updatedAt;
         saveOwners(owners);
 
         if (chatId && messageId) {
           await editMessageText(chatId, messageId,
             `${cq.message.text || ''}\n\n✅ Qabul qilindi — ${displayName(from)}`,
-            { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `dgready:${ownerId}:${orderId}` }]] });
+            { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${isKitchen ? 'kgready' : 'dgready'}:${ownerId}:${orderId}` }]] });
         }
+        syncGroupMessagesForOrder(owner, order);
         if (order.customerId) {
           await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi, tez orada tayyorlanadi!');
         }
@@ -1100,21 +1230,22 @@ async function handleTelegramUpdate(update) {
         return;
       }
 
-      if (action === 'dgready') {
-        if (order.deliveryGroupStage === 'tayyor') {
+      if (action === 'dgready' || action === 'kgready') {
+        if (order.status === 'tayyor') {
           await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
+          syncGroupMessagesForOrder(owner, order);
           return;
         }
         // "Tayyor" tugmasi faqat "Qabul qilish" bosilgandan keyin ishlashi kerak —
         // aks holda ketma-ketlik buzilib, buyurtma hech kim qabul qilmasdan
         // tayyor deb belgilanib qolar edi.
-        if (order.deliveryGroupStage !== 'qabul_qilindi') {
+        if (order.status !== 'tayyorlanmoqda') {
           await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
           return;
         }
-        order.deliveryGroupStage = 'tayyor';
-        order.deliveryReadyBy = from.id;
-        order.deliveryReadyAt = new Date().toISOString();
+        order[stageField] = 'tayyor';
+        order[readyByField] = from.id;
+        order[readyAtField] = new Date().toISOString();
         // Asosiy status ham "tayyor"ga o'tkaziladi — shu maydon orqali
         // kuryerlarga buyurtmalar ro'yxati (/api/orders-list) filtrlanadi,
         // shu jumladan guruhga yangi qo'shilgan kuryer uchun ham.
@@ -1128,6 +1259,7 @@ async function handleTelegramUpdate(update) {
           await editMessageText(chatId, messageId,
             `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
         }
+        syncGroupMessagesForOrder(owner, order);
         if (order.customerId) {
           const readyMsg = order.orderType === 'dostavka'
             ? '🏁 Buyurtmangiz tayyor, kuryer yo\'lda!'
@@ -1205,6 +1337,7 @@ async function handleTelegramUpdate(update) {
           sendMessage(targetId, notifyText);
         }
         notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        notifyKitchenGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
 
         if (order.customerId) {
           const okText = order.paymentConfirmMethod === 'naqd_kassa'
@@ -2307,6 +2440,43 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- 13-bosqich API: Oshpazlar guruhi biriktirilgan-yo'qligini olish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/kitchen-group-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+      return sendJSON(res, 200, {
+        ok: true,
+        bound: !!owner.kitchenGroupId,
+        groupTitle: owner.kitchenGroupTitle || null
+      });
+    });
+    return;
+  }
+
+  // ---- 13-bosqich API: Oshpazlar guruhini bog'lanishdan chiqarish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/kitchen-group-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
+      owner.kitchenGroupId = null;
+      owner.kitchenGroupTitle = null;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- API: aksiyalar ro'yxati (egasi) ----
   if (req.method === 'POST' && req.url === '/api/promo-list') {
     readBody(req, (err, payload) => {
@@ -2825,6 +2995,7 @@ const server = http.createServer((req, res) => {
           sendMessage(targetId, notifyText);
         }
         notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        notifyKitchenGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
       }
 
       const successResponse = {
@@ -3073,6 +3244,7 @@ const server = http.createServer((req, res) => {
         sendMessage(targetId, notifyText);
       }
       notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
+      notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
 
       const successResponse = { ok: true, orderId: order.id, total };
       setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
@@ -3146,6 +3318,12 @@ const server = http.createServer((req, res) => {
 
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
       saveOwners(owners);
+
+      // 15-bosqich: holat Mini App orqali (guruh tugmalarisiz) o'zgarganda ham
+      // dostavka/oshpazlar guruhidagi xabar tugmalari joriy holatga mos
+      // yangilanadi — aks holda guruh a'zolari eski "Qabul qilish"/"Tayyor"
+      // tugmasini bosib, chalkash javob olishlari mumkin edi.
+      syncGroupMessagesForOrder(ctx.owner, order);
 
       // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga avtomatik bildirishnoma
       if (status === 'tayyor') {
