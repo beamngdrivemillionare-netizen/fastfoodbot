@@ -820,6 +820,19 @@
   input[type="text"]:focus, input[type="tel"]:focus, input[type="number"]:focus, textarea:focus, select:focus {
     border-color: var(--brand-primary);
   }
+  /* Dostavka uchun qo'shimcha telefon raqam maydoni — odatdagi input'lardan
+     ham kattaroq va aniqroq ko'rinishi uchun (mijozlar buni ko'zdan
+     qochirib, bo'sh qoldirib yubormasligi kerak). */
+  input.phone-input-lg {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 52px;
+    padding: 14px 16px;
+    font-size: 17px;
+    font-weight: 600;
+    margin-top: 8px;
+    border-width: 2px;
+  }
   textarea { resize: vertical; min-height: 60px; }
   label.field-label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); margin: 4px 0 6px; }
 
@@ -1405,7 +1418,7 @@
     align-items: center;
     justify-content: center;
     padding: var(--sp-6);
-    z-index: 10;
+    z-index: 100;
     animation: overlay-fade var(--transition-base);
   }
   .modal {
