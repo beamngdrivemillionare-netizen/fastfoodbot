@@ -3640,6 +3640,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
         </div>
+        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ' · 📞 ' + escapeHtml(order.customerPhone) : ''}</div>` : ''}
         ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)}</div>` : ''}
         <div class="order-items">${itemsHtml}</div>
         ${deliveredNote}
@@ -3804,8 +3805,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
         </div>
+        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ' · 📞 ' + escapeHtml(order.customerPhone) : ''}</div>` : ''}
         ${order.addressNote ? `<div class="order-time">📝 ${escapeHtml(order.addressNote)}</div>` : ''}
-        ${order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)}</div>` : ''}
+        ${order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)} (qo'shimcha)</div>` : ''}
         ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
         <div class="order-items">${itemsHtml}</div>
         <div class="order-bottom">
@@ -5949,7 +5951,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </button>
         <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
         <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
-        <input type="tel" id="cExtraPhoneInput" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel" style="margin-top:6px;">
+        <input type="tel" id="cExtraPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel">
       </div>
       <div class="type-row" id="cPaymentTypeRow">
         ${visiblePaymentTypeEntries(customerState.orderType).map(([k, label]) => `
@@ -5973,11 +5975,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function openCustomerCheckoutModal() {
     if (!customerCartQty()) return;
+    const fabBar = document.getElementById('cCartFab');
+    if (fabBar) fabBar.classList.add('hidden');
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
     overlay.innerHTML = `<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`;
     document.body.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); updateCustomerCartFab(); } });
     renderCheckoutModalBody(overlay);
   }
 
@@ -5990,7 +5994,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function wireCheckoutModal(overlay) {
     const modalEl = overlay.querySelector('.modal');
 
-    modalEl.querySelector('#cCloseCheckoutBtn').addEventListener('click', () => overlay.remove());
+    modalEl.querySelector('#cCloseCheckoutBtn').addEventListener('click', () => { overlay.remove(); updateCustomerCartFab(); });
 
     modalEl.querySelector('#cOrderTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-corder-type');
@@ -6014,7 +6018,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const locationStatusEl = modalEl.querySelector('#cLocationStatus');
     if (locationBtn) locationBtn.addEventListener('click', () => {
       if (!navigator.geolocation) {
-        locationStatusEl.textContent = 'Kechirasiz, bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni yozib qoldiring.';
+        locationStatusEl.textContent = 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Joylashuv (GPS) sozlamalarini tekshiring yoki manzilni pastga yozib qoldiring.';
         locationStatusEl.className = 'xabar err';
         return;
       }
@@ -6027,8 +6031,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
           locationStatusEl.className = 'xabar ok';
           locationBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
         },
-        () => {
-          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo'lmadi (ruxsat berilmagan bo'lishi mumkin). Iltimos, manzilni yozib qoldiring.`;
+        (geoErr) => {
+          let hint = 'Iltimos, telefoningizda joylashuv (GPS/geolokatsiya) yoqilganini va brauzerga ruxsat berilganini tekshiring, so\'ng qayta urinib ko\'ring — yoki manzilni pastga yozib qoldiring.';
+          if (geoErr && geoErr.code === 3) {
+            hint = 'Joylashuvni aniqlash vaqti tugadi. Telefoningizda joylashuv (GPS) yoqilganini tekshirib, qayta urinib ko\'ring — yoki manzilni pastga yozib qoldiring.';
+          }
+          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo'lmadi. ${hint}`;
           locationStatusEl.className = 'xabar err';
         },
         { enableHighAccuracy: true, timeout: 10000 }
