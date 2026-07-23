@@ -873,6 +873,15 @@ function customerDisplayName(userId, tgUser) {
   return displayName(tgUser);
 }
 
+// Xodimlarga (kassir/oshpaz/dostavka guruhi) yuboriladigan xabarlarda mijoz
+// ism-familiyasi VA telefon raqami har doim birga ko'rsatilishi uchun —
+// order.customerPhone mavjud bo'lsa qo'shimcha qator qo'shiladi.
+function orderCustomerContactLabel(order) {
+  const lines = [`Mijoz: ${escapeHtmlServer(order.customerName)}`];
+  if (order.customerPhone) lines.push(`Tel: ${escapeHtmlServer(order.customerPhone)}`);
+  return lines.join('\n');
+}
+
 // 1-bosqich: xodimlar hisobotlarida (reyting, amallar jurnali) F.I.Sh
 // (to'liq ism-familiya) ko'rsatish uchun. Xodim /api/profile-register orqali
 // (mijozlar bilan bir xil umumiy ro'yxatdan o'tish oqimi — profiles.json)
@@ -1476,7 +1485,7 @@ async function handleTelegramUpdate(update) {
 
     const itemsText = targetOrder.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const caption = `💳 <b>To'lov tasdiqlash so'raladi</b>\n` +
-      `Mijoz: ${escapeHtmlServer(targetOrder.customerName)}\n${itemsText}\n\n` +
+      `${orderCustomerContactLabel(targetOrder)}\n${itemsText}\n\n` +
       `Jami: ${targetOrder.total} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}` +
       `${targetOrder.tableNumber ? ' — stol ' + escapeHtmlServer(targetOrder.tableNumber) : ''}`;
     const approveKb = {
@@ -1658,12 +1667,12 @@ async function handleTelegramUpdate(update) {
         // dostavka guruhiga xabar ketadi (customer-order'dagi bilan bir xil).
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
-          `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${order.total}\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${order.total}\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`);
         saveOwners(owners);
-        notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
-        notifyKitchenGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
 
         if (order.customerId) {
           const okText = order.paymentConfirmMethod === 'naqd_kassa'
@@ -3530,6 +3539,7 @@ const server = http.createServer((req, res) => {
         branchId: null,
         customerId: userId,
         customerName: customerDisplayName(userId, check.user),
+        customerPhone: (findProfile(userId) || {}).phone || null,
         source: 'customer',
         createdAt: new Date().toISOString(),
         createdBy: userId
@@ -3560,7 +3570,7 @@ const server = http.createServer((req, res) => {
 
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const confirmCaption = `💵 <b>Naqd to'lov tasdiqlash kerak</b>\n` +
-          `Stol: ${escapeHtmlServer(order.tableNumber || '-')}\nMijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\n` +
+          `Stol: ${escapeHtmlServer(order.tableNumber || '-')}\n${orderCustomerContactLabel(order)}\n${itemsText}\n\n` +
           `Jami: ${total} so'm\n\nMijoz kassaga to'lov qilgach, shu yerda tasdiqlang - shundan keyin oshpazga ketadi.`;
         const confirmKb = {
           inline_keyboard: [[
@@ -3575,11 +3585,11 @@ const server = http.createServer((req, res) => {
       } else {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
-          `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`);
-        notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
-        notifyKitchenGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
         saveOwners(owners);
       }
 
