@@ -1886,6 +1886,96 @@
   .section-label:first-of-type { margin-top: var(--sp-4); }
   .section-label .icon { color: var(--brand-primary); }
 
+  /* =========================================================================
+     Profil sahifasi (renderProfileForm) qayta ishlandi: ilgari bir uzun,
+     to'xtovsiz "kartochka" ro'yxati sifatida ko'rinar edi (kategoriyalar,
+     aksiyalar, bonus, dostavka, oshxona guruhi, xavfsizlik — hammasi bir
+     vaqtda ochiq), bu esa navigatsiyani noqulay va bosim beruvchi qilardi.
+     Endi asosiy ma'lumotlar (nomi/manzil/telefon/logo/rang) doim ochiq
+     qoladi, qolgan kamdan-kam o'zgartiriladigan bo'limlar bosiladigan
+     (accordion) kartochkalarga yig'ildi — bir vaqtning o'zida faqat kerakli
+     bo'lim ochiladi.
+     ========================================================================= */
+  .profile-hero {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-4);
+    margin-top: var(--sp-5);
+  }
+  .profile-hero-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: var(--radius-pill);
+    background: var(--kpi-icon-bg);
+    color: var(--brand-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .profile-hero-avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .profile-hero-avatar .icon { width: 26px; height: 26px; }
+  .profile-hero-title { font-size: var(--fs-h2, 17px); font-weight: 700; color: var(--text-primary); }
+  .profile-hero-subtitle { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
+
+  .acc-list { margin-top: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
+  .acc-item {
+    background: var(--surface-0);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+  .acc-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    box-sizing: border-box;
+  }
+  .acc-header-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-pill);
+    background: var(--kpi-icon-bg);
+    color: var(--brand-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .acc-header-icon .icon { width: 18px; height: 18px; }
+  .acc-header-text { flex: 1 1 auto; min-width: 0; }
+  .acc-header-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+  .acc-header-hint {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .acc-chevron {
+    color: var(--text-muted);
+    display: flex;
+    flex-shrink: 0;
+    transition: transform var(--transition-fast, 0.15s ease);
+  }
+  .acc-chevron .icon { width: 18px; height: 18px; }
+  .acc-item.open .acc-chevron { transform: rotate(180deg); }
+  .acc-item.open .acc-header { padding-bottom: var(--sp-2); }
+  .acc-body { padding: 0 var(--sp-4) var(--sp-4); }
+  .acc-item:not(.open) .acc-body { display: none; }
+  .acc-body .kartochka { background: var(--surface-1); }
+  .acc-body .kartochka:first-child { margin-top: 0; }
+
   /* ---- Logotip galereyadan tanlash ---- */
   .logo-picker {
     display: flex;
