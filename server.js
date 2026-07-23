@@ -74,6 +74,13 @@ const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
 // uzaytiradi. Ikkalasi mustaqil: bitta owner istalgan funksiya-tarifda
 // bo'lishi mumkin, obuna reja narxi esa faqat muddatga ta'sir qiladi.
 const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
+// settings.json — 74-bosqich: obuna to'lovlari uchun rekvizitlar (karta,
+// Click, Payme raqamlari) — hisob-kitob-bot'dagi db.get_payment_requisites()
+// bilan bir xil vazifa. Owner "💳 Obuna" bo'limida tarif tanlaganda shu
+// rekvizitlar ko'rsatiladi. Admin panelidan o'zgartirilishi mumkin bo'ladi
+// (UI keyingi bosqichda qo'shiladi) — hozircha faqat standart qiymatlar bilan
+// avtomatik yaratiladi.
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 // ========================================================
 
 // ==================== G-bo'lim: Obuna va oshxona egalari boshqaruvi ====================
@@ -176,6 +183,56 @@ function saveSubscriptionPlans(plans) {
   } catch (e) {
     console.error('subscription_plans.json yozishda xatolik:', e.message);
   }
+}
+
+// 74-BOSQICH: To'lov rekvizitlari (karta/Click/Payme).
+// Owner chek/skrinshot yubormasdan oldin shu ma'lumotlarni ko'radi. Admin
+// haqiqiy rekvizitlarni sozlagunga qadar "***" bilan boshlangan ko'rinishda
+// turadi — bu admin hali sozlamaganini bildiradi (tasodifan soxta/bo'sh
+// karta raqami ko'rsatilib qolmasligi uchun).
+const DEFAULT_PAYMENT_REQUISITES = {
+  cardNumber: '**** **** **** ****',
+  cardHolder: 'ADMIN ISM FAMILIYA',
+  clickNumber: '+998 90 000 00 00',
+  paymeNumber: '+998 90 000 00 00'
+};
+
+function loadPaymentRequisites() {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE)) {
+      const initial = { paymentRequisites: DEFAULT_PAYMENT_REQUISITES };
+      fs.writeFileSync(SETTINGS_FILE, JSON.stringify(initial, null, 2));
+      return Object.assign({}, DEFAULT_PAYMENT_REQUISITES);
+    }
+    const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Object.assign({}, DEFAULT_PAYMENT_REQUISITES, (parsed && parsed.paymentRequisites) || {});
+  } catch (e) {
+    console.error('settings.json (paymentRequisites) o\'qishda xatolik:', e.message);
+    return Object.assign({}, DEFAULT_PAYMENT_REQUISITES);
+  }
+}
+
+// MUHIM: settings.json kelgusida boshqa umumiy sozlamalarni ham saqlashi
+// mumkin bo'lgani uchun, bu funksiya butun faylni EMAS, faqat
+// paymentRequisites bo'limini almashtiradi — mavjud boshqa kalitlar (agar
+// bo'lsa) saqlanib qoladi.
+function savePaymentRequisites(requisites) {
+  let current = {};
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      current = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) || {};
+    }
+  } catch (e) {
+    console.error('settings.json o\'qishda xatolik (saqlashdan oldin):', e.message);
+  }
+  current.paymentRequisites = Object.assign({}, DEFAULT_PAYMENT_REQUISITES, current.paymentRequisites || {}, requisites || {});
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(current, null, 2));
+  } catch (e) {
+    console.error('settings.json yozishda xatolik:', e.message);
+  }
+  return current.paymentRequisites;
 }
 
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
