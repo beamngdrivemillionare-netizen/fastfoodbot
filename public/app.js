@@ -453,7 +453,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  async function renderAdminPanel(owners) {
+  async function renderAdminPanel(owners, revenue) {
     setAppHeader(null, 'KitchenOS', 'Admin');
     // 57-bosqich: owner qatorlarida tarif nomini ko'rsatish uchun tariflar
     // ro'yxatini oldindan yuklab olamiz (bo'sh bo'lsa ham davom etadi).
@@ -468,11 +468,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return ms > 0 && ms <= 3 * 86400000;
     }).length;
     const unpaidCount = owners.filter(o => !o.paid).length;
-    // 67-bosqich: admin dashboardida umumiy daromad — hozircha to'lagan
-    // egalarning obuna narxlari yig'indisi (oylik takrorlanuvchi daromad).
-    // Alohida to'lovlar tarixi saqlanmagani uchun bu joriy holatning
-    // hisob-kitobi (snapshot), tarixiy jami emas.
-    const totalRevenue = owners.filter(o => o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+    // 67-bosqich: admin dashboardida umumiy daromad — payments.json (to'liq
+    // to'lovlar tarixi) asosida hisoblanadi (server, /api/owners), shu bilan
+    // "Bu oy" va "Jami" haqiqiy tarixiy summalar (owner o'chirilgan/tarifi
+    // o'zgargan taqdirda ham to'g'ri qoladi). "Kutilmoqda" — hozirgi
+    // qarzdorlarning obuna narxlari yig'indisi (kelgusi kutilayotgan tushum).
+    const thisMonthRevenue = revenue ? revenue.thisMonth : 0;
+    const lifetimeRevenue = revenue ? revenue.totalLifetime : 0;
     const pendingRevenue = owners.filter(o => !o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 
     const statsHtml = `
@@ -481,7 +483,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${koKpiCardHtml('check-circle', 'Faol', String(activeCount), null)}
         ${koKpiCardHtml('clock', 'Muddati yaqin', String(expiringSoonCount), null)}
         ${koKpiCardHtml('wallet', "Qarzdor", String(unpaidCount), null)}
-        ${koKpiCardHtml('card', "Oylik daromad", cfFormatSum(totalRevenue), null)}
+        ${koKpiCardHtml('card', "Bu oy daromad", cfFormatSum(thisMonthRevenue), null)}
+        ${koKpiCardHtml('trending-up', "Jami daromad", cfFormatSum(lifetimeRevenue), null)}
         ${koKpiCardHtml('warning', "Kutilmoqda (qarzdor)", cfFormatSum(pendingRevenue), null)}
       </div>
     `;
@@ -576,7 +579,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       loadAndShowSystemStatus();
     });
     document.getElementById('tariffsBtn').addEventListener('click', () => {
-      renderTariffsScreen(() => renderAdminPanel(owners));
+      renderTariffsScreen(() => loadOwnersAndRender());
     });
 
     document.getElementById('createInviteBtn').addEventListener('click', async () => {
@@ -5671,7 +5674,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     resetBrandColor();
     const res = await apiPost('/api/owners', { initData });
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnersAndRender); return; }
-    renderAdminPanel(res.ok ? res.owners : []);
+    renderAdminPanel(res.ok ? res.owners : [], res.ok ? res.revenue : null);
   }
 
   // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
