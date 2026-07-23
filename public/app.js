@@ -2367,6 +2367,93 @@ const tg = window.Telegram && window.Telegram.WebApp;
     bootstrapApp();
   }
 
+  // ---- Xodim: shaxsiy kunlik/haftalik/oylik statistika (45-bosqich) ----
+  let myStatsState = { period: 'today' };
+
+  function myStatsPeriodLabel(period) {
+    return { today: 'Bugun', week: 'Bu hafta', month: 'Bu oy', all: 'Hammasi' }[period] || period;
+  }
+
+  function myStatsBodyHtml(stats) {
+    const blocks = [];
+    if (stats.kassir) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Yaratgan buyurtmalarim</h2>
+          <div class="profile-row"><b>Soni:</b> ${stats.kassir.orderCount} ta</div>
+          <div class="profile-row"><b>Jami summa:</b> ${cfFormatSum(stats.kassir.totalAmount)}</div>
+        </div>
+      `);
+    }
+    if (stats.oshpaz) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Tayyorlagan buyurtmalarim</h2>
+          <div class="profile-row"><b>Soni:</b> ${stats.oshpaz.orderCount} ta</div>
+        </div>
+      `);
+    }
+    if (stats.dostavka) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Yetkazgan buyurtmalarim</h2>
+          <div class="profile-row"><b>Soni:</b> ${stats.dostavka.orderCount} ta</div>
+          <div class="profile-row"><b>Jami pul:</b> ${cfFormatSum(stats.dostavka.totalAmount)}</div>
+          <div class="profile-row"><b>Komissiyam:</b> ${cfFormatSum(stats.dostavka.commission)}</div>
+        </div>
+      `);
+    }
+    if (stats.sklad) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Sklad harakatlarim</h2>
+          <div class="profile-row"><b>Jami:</b> ${stats.sklad.movementCount} ta</div>
+          <div class="profile-row"><b>Kirim:</b> ${stats.sklad.kirimCount} ta</div>
+          <div class="profile-row"><b>Chiqim:</b> ${stats.sklad.chiqimCount} ta</div>
+        </div>
+      `);
+    }
+    if (!blocks.length) return `<div class="bosh">Hozircha statistika yo'q.</div>`;
+    return blocks.join('');
+  }
+
+  function renderMyStatsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Statistikam</div>
+        <button class="btn ikkinchi" id="msBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${myStatsState.period === 'today' ? 'selected' : ''}" data-ms-period="today">Bugun</div>
+          <div class="tab-opt ${myStatsState.period === 'week' ? 'selected' : ''}" data-ms-period="week">Hafta</div>
+          <div class="tab-opt ${myStatsState.period === 'month' ? 'selected' : ''}" data-ms-period="month">Oy</div>
+        </div>
+        <div id="msBody"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+
+    document.getElementById('msBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack && onBack(); });
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-ms-period');
+      if (!p || p === myStatsState.period) return;
+      myStatsState.period = p;
+      renderMyStatsScreen(onBack);
+    });
+
+    loadMyStats();
+  }
+
+  async function loadMyStats() {
+    const bodyEl = document.getElementById('msBody');
+    if (!bodyEl) return;
+    const res = await apiPost('/api/my-stats', { initData, period: myStatsState.period });
+    if (res.networkError) { renderNetworkErrorInline(bodyEl, res.reason, () => loadMyStats()); return; }
+    if (!res.ok) {
+      bodyEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    bodyEl.innerHTML = myStatsBodyHtml(res.stats);
+  }
+
   // ---- Kassir: buyurtma ekrani (menyu → savat → tur/to'lov → yuborish) ----
   const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
@@ -2408,6 +2495,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="tab-row">
         <div class="tab-opt ${cashierState.tab === 'yaratish' ? 'selected' : ''}" data-cashier-tab="yaratish">Yangi buyurtma</div>
         <div class="tab-opt ${cashierState.tab === 'holat' ? 'selected' : ''}" data-cashier-tab="holat">Buyurtmalar holati</div>
+        <div class="tab-opt ${cashierState.tab === 'statistika' ? 'selected' : ''}" data-cashier-tab="statistika">Statistikam</div>
       </div>
     `;
   }
@@ -2417,6 +2505,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     disconnectSectionedMenuObserver('cashierCatRow');
     if (cashierState.tab === 'holat') {
       renderCashierOrdersTab(restaurantName, onBack);
+      return;
+    }
+    if (cashierState.tab === 'statistika') {
+      renderMyStatsScreen(() => { cashierState.tab = 'yaratish'; renderCashierScreen(restaurantName, onBack); });
       return;
     }
     ekran(`
@@ -2911,11 +3003,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
         ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        <button class="btn ikkinchi" id="kitchenStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
         <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
     if (onBack) document.getElementById('kitchenBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
+    document.getElementById('kitchenStatsBtn').addEventListener('click', () => {
+      stopOrdersPolling();
+      renderMyStatsScreen(() => renderKitchenScreen(restaurantName, onBack));
+    });
     startOrdersPolling('oshpaz');
   }
 
@@ -3005,11 +3102,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         <div class="salom" style="font-size:20px;">Yetkazib berish</div>
         ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        <button class="btn ikkinchi" id="deliveryStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
     if (onBack) document.getElementById('deliveryBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
+    document.getElementById('deliveryStatsBtn').addEventListener('click', () => {
+      stopOrdersPolling();
+      renderMyStatsScreen(() => renderDeliveryScreen(restaurantName, onBack));
+    });
     startDeliveryPolling();
   }
 
@@ -3075,6 +3177,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         ${onBack ? `<button class="btn ikkinchi" id="stockBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <div class="salom" style="font-size:20px;">Sklad</div>
+        ${role !== 'egasi' ? `<button class="btn ikkinchi" id="stockStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>` : ''}
         ${role === 'egasi' ? `
         <div class="kartochka">
           <h2>Joylashuv</h2>
@@ -3137,6 +3240,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `);
 
     if (onBack) document.getElementById('stockBackBtn').addEventListener('click', onBack);
+    if (role !== 'egasi') {
+      document.getElementById('stockStatsBtn').addEventListener('click', () => {
+        renderMyStatsScreen(() => renderStockScreen(restaurantName, role, onBack));
+      });
+    }
 
     if (role === 'egasi') {
       document.getElementById('stockBranchSelect').addEventListener('change', (e) => {
