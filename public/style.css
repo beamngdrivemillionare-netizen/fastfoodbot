@@ -854,7 +854,7 @@
     box-sizing: border-box;
   }
   .check-label input[type="checkbox"] { width: 18px; height: 18px; flex-shrink: 0; }
-  .owner-list { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
+  .owner-list { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-3); }
   .owner-item {
     display: flex;
     align-items: flex-start;
@@ -867,13 +867,28 @@
     transition: opacity var(--transition-fast);
   }
   .owner-item.hidden { display: none; }
+  /* ---- Admin "Do'kon egalari" ro'yxatidagi kengaytirilgan kartochka —
+     bir nechta ekranda qayta ishlatiladigan .owner-item'ning umumiy
+     qator-layoutini o'zgartirmaydi (tariflar/xodimlar/filiallar/mijozlar
+     ro'yxatlari ham shu klassdan foydalanadi), faqat shu modifikator
+     bilan birga kelganda vertikal kartochkaga aylanadi. ---- */
+  .owner-item.owner-item-detailed {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    background: var(--surface-0);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    padding: var(--sp-4);
+  }
+  .owner-item-head { display: flex; align-items: flex-start; gap: var(--sp-3); }
   /* Admin ro'yxatidagi har bir do'kon egasi qatori uchun ism/username/ID'ning
      birinchi harfidan yasalgan doiraviy belgi — bo'sh joyni "shaxs" hissi
      bilan to'ldiradi va ro'yxatni ko'z bilan tez skanerlash osonlashadi. */
   .owner-avatar {
     flex-shrink: 0;
-    width: 38px;
-    height: 38px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
     background: var(--brand-primary-light);
     color: var(--brand-primary);
@@ -883,7 +898,7 @@
     font-size: var(--fs-body);
     font-weight: 700;
   }
-  .owner-item-main { flex: 1; min-width: 0; }
+  .owner-item-heading { flex: 1; min-width: 0; }
   .owner-item-top {
     display: flex;
     align-items: center;
@@ -891,8 +906,8 @@
     gap: var(--sp-2);
     margin-bottom: 2px;
   }
-  .owner-item .owner-id { font-weight: 600; word-break: break-all; }
-  .owner-item .owner-username { font-size: var(--fs-xs); color: var(--text-muted); }
+  .owner-item .owner-id { font-weight: 700; word-break: break-all; }
+  .owner-item .owner-username { font-size: var(--fs-xs); color: var(--text-muted); display: flex; align-items: center; gap: 4px; margin-top: 1px; }
   .owner-item .owner-username-empty { color: var(--warning); }
   .owner-remove-btn {
     flex-shrink: 0;
@@ -911,22 +926,62 @@
   }
   .owner-remove-btn:hover { background: var(--danger-bg); }
   .owner-remove-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-  /* 14-bosqich: narxni tahrirlash uchun bosiladigan matn — ko'rinishi
-     o'zgarmaydi (kichik, chizilgan matn), lekin haqiqiy bosish maydoni
-     44px'gacha kengaytirilgan (padding + kompensatsion manfiy margin). */
-  .owner-item .owner-price {
-    font-size: var(--fs-xs);
-    color: var(--text-secondary);
-    margin-top: 2px;
+  /* ---- Har bir do'kon egasi kartochkasidagi tahrirlanadigan qatorlar
+     (muddat, narx, login, tarif) — ilgari underline qilingan matn sifatida
+     bir-birining ustiga zich yig'ilgan edi (noqulay/xunuk ko'rinar edi).
+     Endi bir xil balandlikdagi, ikonli, ажратилган (divider'li) qatorlar
+     ro'yxati sifatida — har biri butun kengligi bo'yicha bosiladi va
+     bosilganda faqat o'sha qator ichki tahrirlash maydoniga aylanadi. ---- */
+  .owner-field-list {
+    background: var(--surface-1);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .owner-field {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: 10px var(--sp-3);
+    min-height: 44px;
+    box-sizing: border-box;
     cursor: pointer;
-    text-decoration: underline dotted;
-    text-underline-offset: 2px;
+    border-top: 1px solid var(--border-color);
+    transition: background var(--transition-fast);
   }
-  .owner-item .owner-price[data-edit-price] {
-    display: inline-block;
-    padding: 14px 4px;
-    margin: -14px -4px -12px;
+  .owner-field:first-child { border-top: none; }
+  .owner-field:hover { background: var(--surface-2); }
+  .owner-field-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--surface-0);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
   }
+  .owner-field-icon .icon { width: 14px; height: 14px; }
+  .owner-field-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: var(--fs-sm);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .owner-field-edit { flex-shrink: 0; color: var(--text-muted); display: flex; }
+  .owner-field-edit .icon { width: 14px; height: 14px; }
+  .owner-field-list .subscription-progress { margin: 2px var(--sp-3) var(--sp-3); max-width: none; }
+  /* Qator ichki tahrirlash holatiga o'tsa (input/select/saqlash tugmasi
+     ko'rsatilsa), moslashuvchan qatorga aylanadi va bosiladigan kursor
+     ko'rinishi olib tashlanadi. */
+  .owner-field:has(input), .owner-field:has(select) {
+    flex-wrap: wrap;
+    cursor: default;
+  }
+  .owner-field:has(input):hover, .owner-field:has(select):hover { background: none; }
   /* ---- Admin panelidagi statistika kartochkalari (mavjud .ko-kpi-grid'dan
      qayta foydalaniladi) va ro'yxat sarlavhasi/qidiruv paneli ---- */
   .admin-subtitle { margin-bottom: var(--sp-5); max-width: 340px; }
