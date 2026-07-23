@@ -368,6 +368,15 @@ function subscriptionBlockedJSON(owners, userId, fallbackReason) {
 // ular handleStartCommand() ichida, bu funksiyani chaqirmasdan alohida
 // ishlaydi.
 async function sendSubscriptionBlockedScreen(chatId, access) {
+  // 10-bosqich: o'zi ro'yxatdan o'tgan, lekin admin hali tasdiqlamagan
+  // ("pending_trial") holat — "obunangiz TUGAGAN" degan matn noto'g'ri
+  // bo'lardi (u hali boshlanmagan ham), shuning uchun alohida xabar.
+  if (access.status === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+    await sendMessage(chatId,
+      "🕓 <b>So'rovingiz hali ko'rib chiqilmoqda</b>\n" +
+      "Administrator tasdiqlagach, sizga xabar boradi va Mini App ochiladi.");
+    return;
+  }
   const graceNote = access.inGrace ? '\n(Muhlat davri ham tugadi.)' : '';
   await sendMessage(chatId,
     `⛔ <b>Obunangiz tugagan</b>\nBotdagi va Mini App'dagi amallar vaqtincha bloklandi.${graceNote}\n` +
@@ -703,6 +712,14 @@ function removeExtraAdmin(id) {
 function isAdminId(userId) {
   const idStr = String(userId);
   return idStr === String(ADMIN_ID) || EXTRA_ADMIN_IDS.has(idStr);
+}
+
+// 10-bosqich: o'zi ro'yxatdan o'tgan yangi oshxona egasi haqidagi xabar
+// BARCHA adminlarga (bootstrap ADMIN_ID + admins.json'dagi qo'shimchalar)
+// yuborilishi kerak — faqat bittasiga emas (78-bosqichdagi ko'p adminli
+// tizimga mos).
+function allAdminIds() {
+  return Array.from(new Set([String(ADMIN_ID), ...EXTRA_ADMIN_IDS]));
 }
 
 function findOwner(owners, userId) {
@@ -1660,6 +1677,14 @@ function approveRequest(reqInfo, days) {
   return label;
 }
 
+// ====== 10-BOSQICH: o'z-o'zidan ro'yxatdan o'tish (self-registration) ======
+// Notanish foydalanuvchi "📝 Ro'yxatdan o'tish" tugmasini bossa, uning
+// keyingi yuboradigan xabarini OSHXONA NOMI sifatida kutamiz. Xotirada
+// saqlanadi (server qayta ishga tushsa tozalanadi — foydalanuvchi tugmani
+// qayta bossa yetarli, ma'lumot yo'qolmaydi, chunki hali owner sifatida
+// SAQLANMAGAN).
+const pendingSelfRegistration = new Set(); // userId(string) larni saqlaydi
+
 // /start buyrug'ining asosiy mantiqi (taklif havolasi, mijoz menyu havolasi va h.k.) —
 // alohida funksiyaga ajratildi, chunki ro'yxatdan o'tish tugagandan keyin ham
 // xuddi shu logikani (asl /start matni bilan) qayta ishga tushirish kerak bo'ladi.
@@ -1668,9 +1693,23 @@ async function handleStartCommand(chatId, from, text) {
   const payload = parts.length > 1 ? parts[1].trim() : '';
 
   if (!payload) {
-    await sendMessage(chatId, isAdminId(from.id)
-      ? 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.'
-      : 'Salom! Ushbu botdan foydalanish uchun sizga taklif havolasi kerak.');
+    if (isAdminId(from.id)) {
+      await sendMessage(chatId, 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.');
+      return;
+    }
+    const owners = loadOwners();
+    if (findOwner(owners, from.id) || findStaffInfo(owners, from.id)) {
+      await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
+      return;
+    }
+    // 10-bosqich: avval bu yerda "sizga taklif havolasi kerak" deb qat'iy
+    // to'xtatilardi — endi notanish foydalanuvchi ham o'zi ro'yxatdan
+    // o'tishi mumkin, taklif havolasiz.
+    await sendMessage(chatId,
+      `👋 <b>KitchenOS</b>ga xush kelibsiz!\n` +
+      `Bu — oshxonangiz uchun buyurtma qabul qilish va boshqarish tizimi (menyu, xodimlar, sklad, hisobotlar).\n\n` +
+      `O'z oshxonangizni ro'yxatdan o'tkazish uchun quyidagi tugmani bosing:`,
+      { inline_keyboard: [[{ text: "📝 Ro'yxatdan o'tish", callback_data: 'self_register_start' }]] });
     return;
   }
 
@@ -1865,6 +1904,66 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
+    // ---- 10-bosqich: "📝 Ro'yxatdan o'tish" bosilgandan keyin, foydalanuvchi
+    // yuborgan keyingi (buyruq bo'lmagan) xabarni OSHXONA NOMI sifatida
+    // qabul qilamiz va pending_trial holatida yangi owner yaratamiz. ----
+    if (!isAdminId(from.id) && !text.startsWith('/') && pendingSelfRegistration.has(String(from.id))) {
+      const restaurantName = text.trim();
+      if (restaurantName.length < 2 || restaurantName.length > 60) {
+        await sendMessage(chatId, "Iltimos, oshxona nomini 2 tadan 60 belgigacha oralig'ida yozing.");
+        return;
+      }
+      pendingSelfRegistration.delete(String(from.id));
+
+      const owners = loadOwners();
+      // Ehtiyot chorasi: shu vaqt ichida boshqa yo'l bilan (masalan admin
+      // qo'lda) allaqachon ro'yxatga qo'shilgan bo'lishi mumkin.
+      if (findOwner(owners, from.id)) {
+        await sendMessage(chatId, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
+        return;
+      }
+
+      const newOwner = {
+        id: String(from.id),
+        username: from.username || null,
+        addedAt: new Date().toISOString(),
+        expiresAt: null,
+        price: 0,
+        paid: false,
+        paidAt: null,
+        // pending_trial — admin tasdiqlaguncha kirish yo'q (qarang:
+        // getOwnerSubscriptionAccess). Tasdiqlash — 11-bosqich.
+        subscriptionStatus: SUBSCRIPTION_STATUS.PENDING_TRIAL,
+        subscriptionUntil: null,
+        graceUntil: null,
+        trialGivenAt: null,
+        profile: { name: restaurantName }
+      };
+      owners.push(newOwner);
+      saveOwners(owners);
+
+      await sendMessage(chatId,
+        `✅ So'rovingiz qabul qilindi!\n<b>${escapeHtmlServer(restaurantName)}</b> nomi bilan ro'yxatga olindi.\n` +
+        `Administrator tasdiqlashini kuting — tasdiqlangach shu yerga xabar boradi.`);
+
+      const adminText =
+        `🆕 <b>Yangi oshxona — o'zi ro'yxatdan o'tdi</b>\n` +
+        `Oshxona: <b>${escapeHtmlServer(restaurantName)}</b>\n` +
+        `Ega: ${displayName(from)}${from.username ? ' (@' + escapeHtmlServer(from.username) + ')' : ''}\n` +
+        `ID: <code>${from.id}</code>\n\n` +
+        `Sinov muddatini tasdiqlaysizmi? (tasdiqlansa ${SUBSCRIPTION_TRIAL_DAYS} kunlik standart sinov beriladi)`;
+      const approveKb = {
+        inline_keyboard: [[
+          { text: '✅ Tasdiqlash', callback_data: `approve_trial:${newOwner.id}` },
+          { text: '❌ Rad etish', callback_data: `reject_trial:${newOwner.id}` }
+        ]]
+      };
+      for (const adminId of allAdminIds()) {
+        sendMessage(adminId, adminText, approveKb);
+      }
+      return;
+    }
+
     // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
     if (isAdminId(from.id) && !text.startsWith('/')) {
       const awaiting = getAwaitingCustom();
@@ -1983,6 +2082,86 @@ async function handleTelegramUpdate(update) {
       await answerCallbackQuery(cq.id);
       await sendMessage(from.id,
         '💳 Obunani uzaytirish menyusi tez orada shu yerga qo\'shiladi.\nHozircha davom ettirish uchun administrator bilan bog\'laning.');
+      return;
+    }
+
+    // ---- 10-bosqich: "📝 Ro'yxatdan o'tish" tugmasi (payloadsiz /start
+    // ekranida, notanish foydalanuvchiga ko'rsatiladi) ----
+    if (data === 'self_register_start') {
+      await answerCallbackQuery(cq.id);
+      if (isAdminId(from.id)) {
+        await sendMessage(from.id, 'Siz administratorsiz, ro\'yxatdan o\'tishning hojati yo\'q.');
+        return;
+      }
+      const owners = loadOwners();
+      if (findOwner(owners, from.id)) {
+        await sendMessage(from.id, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
+        return;
+      }
+      if (findStaffInfo(owners, from.id)) {
+        await sendMessage(from.id, 'Siz allaqachon boshqa oshxonaning xodimisiz, alohida ega sifatida ro\'yxatdan o\'ta olmaysiz.');
+        return;
+      }
+      pendingSelfRegistration.add(String(from.id));
+      await sendMessage(from.id, 'Oshxonangiz nomini yozib yuboring (masalan: "Sardor Osh Markazi").');
+      return;
+    }
+
+    // ---- 11-bosqich: admin (yoki qo'shimcha adminlardan biri) o'zi
+    // ro'yxatdan o'tgan oshxonaning sinov muddatini tasdiqlaydi — standart
+    // SUBSCRIPTION_TRIAL_DAYS beriladi (kunlar sonini qo'lda kiritish
+    // keyingi nozik sozlash sifatida qo'shilishi mumkin, hozircha standart
+    // yetarli va tugmani "o'lik" qoldirmaydi). ----
+    if (data.startsWith('approve_trial:')) {
+      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
+      const ownerId = data.slice('approve_trial:'.length);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Bu so\'rov topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
+      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.', true);
+        return;
+      }
+      const until = new Date(Date.now() + SUBSCRIPTION_TRIAL_DAYS * 86400000).toISOString();
+      owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+      owner.subscriptionUntil = until;
+      owner.trialGivenAt = new Date().toISOString();
+      owner.graceUntil = null;
+      saveOwners(owners);
+
+      await answerCallbackQuery(cq.id, '✅ Tasdiqlandi.');
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId,
+          `✅ <b>Tasdiqlandi</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>\nSinov muddati: ${SUBSCRIPTION_TRIAL_DAYS} kun`);
+      }
+      await sendMessage(owner.id,
+        `✅ So'rovingiz tasdiqlandi!\nSizga <b>${SUBSCRIPTION_TRIAL_DAYS} kunlik</b> bepul sinov muddati berildi.\nMini App tugmasi orqali oching va oshxonangizni sozlashni boshlang.`);
+      return;
+    }
+
+    // ---- 11-bosqich: admin so'rovni rad etadi — owner yozuvi butunlay
+    // o'chiriladi (hali hech qanday ma'lumot — menyu, xodim, buyurtma —
+    // yaratilmagan, faqat "ariza" bosqichida edi, shuning uchun bu yerda
+    // 6-bosqichdagi "o'chirishni bekor qilish" qoidasiga zid emas). ----
+    if (data.startsWith('reject_trial:')) {
+      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin rad eta oladi.', true); return; }
+      const ownerId = data.slice('reject_trial:'.length);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Bu so\'rov topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
+      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.', true);
+        return;
+      }
+      const restaurantName = (owner.profile && owner.profile.name) || 'oshxona';
+      const remaining = owners.filter(o => String(o.id) !== String(ownerId));
+      saveOwners(remaining);
+
+      await answerCallbackQuery(cq.id, '❌ Rad etildi.');
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, `❌ <b>Rad etildi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
+      }
+      await sendMessage(ownerId, '❌ Afsuski, ro\'yxatdan o\'tish so\'rovingiz rad etildi. Savollar bo\'lsa, administrator bilan bog\'laning.');
       return;
     }
 
