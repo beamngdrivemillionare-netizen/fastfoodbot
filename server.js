@@ -559,6 +559,36 @@ function sendMessage(chatId, text, replyMarkup) {
   });
 }
 
+// 17-bosqich: bir nechta xodimga (notifyTargets ro'yxati) bir xil matnni
+// yuboradigan umumiy yordamchi. Ilgari har bir chaqiruv joyida
+// `for (const targetId of new Set(notifyTargets)) sendMessage(targetId, text)`
+// deb takrorlanardi — endi bitta joyda, va MUHIMI: yetkazib bo'lmagan har bir
+// xabar sababi bilan birga `owner.notificationErrors`ga yoziladi (oxirgi 50
+// tasi saqlanadi), shunda egasi ilova ichida ("Bildirishnoma xatolari"
+// kartochkasi, Sozlamalar) buni ko'ra oladi — Telegram/server logiga
+// kirish shart emas. Chaqiruvchi tomon o'zgarishdan keyin owner obyektini
+// saqlashi (saveOwners) kerak — bu funksiya faylga o'zi yozmaydi.
+function notifyStaffList(owner, targetIds, text, context) {
+  const uniqueIds = [...new Set((targetIds || []).map(String))];
+  const promises = uniqueIds.map(targetId => sendMessage(targetId, text).then(result => {
+    if (!result || !result.ok) {
+      const reason = (result && result.description) || 'yuborilmadi (tarmoq xatosi)';
+      const staff = (owner.staff || []).find(s => String(s.id) === String(targetId));
+      if (!owner.notificationErrors) owner.notificationErrors = [];
+      owner.notificationErrors.unshift({
+        id: crypto.randomBytes(4).toString('hex'),
+        targetId,
+        targetName: staff ? staffDisplayName(staff) : (String(targetId) === String(owner.id) ? 'Egasi' : `ID: ${targetId}`),
+        reason,
+        context: context || null,
+        createdAt: new Date().toISOString()
+      });
+      if (owner.notificationErrors.length > 50) owner.notificationErrors.length = 50;
+    }
+  }));
+  return Promise.all(promises);
+}
+
 function answerCallbackQuery(callbackId, text, showAlert) {
   const params = { callback_query_id: callbackId };
   if (text) params.text = text;
@@ -1380,9 +1410,8 @@ async function handleTelegramUpdate(update) {
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${order.total}\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-        for (const targetId of new Set(notifyTargets.map(String))) {
-          sendMessage(targetId, notifyText);
-        }
+        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`);
+        saveOwners(owners);
         notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
         notifyKitchenGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
 
@@ -2429,6 +2458,182 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ==================== D-bo'lim (28-31-bosqich): Combo — CRUD ====================
+  // Combo obyekti: { id, name, itemIds: [{menuItemId, qty}], price, priceMode:
+  // 'auto'|'manual', category, imageUrl, available, addedAt }. "auto" rejimda
+  // narx har safar tarkib narxlari yig'indisidan qayta hisoblanadi (agar
+  // tarkibdagi taomlarning narxi keyinroq o'zgarsa ham to'g'ri bo'lib turadi);
+  // "manual" rejimda egasi kiritgan qiymat saqlanadi.
+
+  // ---- API: combo ro'yxatini olish (egasi yoki uning xodimlari — kassir menyuda ko'rsatishi uchun) ----
+  if (req.method === 'POST' && req.url === '/api/combo-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, { ok: false, reason: 'Ruxsatingiz yo\'q' });
+
+      const combos = (ctx.owner.combos || []).map(c => Object.assign({}, c, {
+        price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price
+      }));
+      return sendJSON(res, 200, { ok: true, combos });
+    });
+    return;
+  }
+
+  // ---- API: yangi combo qo'shish (28-bosqich, faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/combo-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, itemIds, priceMode, price, category, imageUrl } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi combo boshqara oladi' });
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
+
+      // Tarkib — kamida 2 ta taom (aks holda combo emas, oddiy taom bo'lardi)
+      if (!Array.isArray(itemIds) || itemIds.length < 2) {
+        return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
+      }
+      const cleanItemIds = [];
+      for (const entry of itemIds) {
+        const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Tarkibda menyuda mavjud bo\'lmagan taom bor.' });
+        const qtyNum = Number(entry.qty) || 1;
+        if (qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Har bir taom miqdori musbat bo\'lishi kerak.' });
+        cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
+      }
+
+      // 31-bosqich: narx — avtomatik (tarkib yig'indisi) yoki qo'lda
+      const priceModeVal = priceMode === 'manual' ? 'manual' : 'auto';
+      let priceVal;
+      if (priceModeVal === 'manual') {
+        priceVal = Number(price);
+        if (!Number.isFinite(priceVal) || priceVal <= 0) return sendJSON(res, 200, { ok: false, reason: 'Combo narxini to\'g\'ri kiriting.' });
+      } else {
+        priceVal = comboAutoPrice(owner, cleanItemIds);
+      }
+
+      const imageTrim = String(imageUrl || '').trim();
+      if (!isValidImageValue(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+      }
+
+      if (!owner.combos) owner.combos = [];
+      const combo = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: nameTrim,
+        itemIds: cleanItemIds,
+        priceMode: priceModeVal,
+        price: priceVal,
+        category: String(category || '').trim() || null,
+        imageUrl: imageTrim || null,
+        available: true,
+        addedAt: new Date().toISOString()
+      };
+      owner.combos.push(combo);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, combo });
+    });
+    return;
+  }
+
+  // ---- API: comboni tahrirlash / ko'rinish holatini almashtirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/combo-update') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name, itemIds, priceMode, price, category, imageUrl, available } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi combo boshqara oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const combo = findCombo(owner, id);
+      if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Combo topilmadi.' });
+
+      if (name !== undefined) {
+        const nameTrim = String(name || '').trim();
+        if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
+        combo.name = nameTrim;
+      }
+      if (itemIds !== undefined) {
+        if (!Array.isArray(itemIds) || itemIds.length < 2) {
+          return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
+        }
+        const cleanItemIds = [];
+        for (const entry of itemIds) {
+          const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+          if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Tarkibda menyuda mavjud bo\'lmagan taom bor.' });
+          const qtyNum = Number(entry.qty) || 1;
+          if (qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Har bir taom miqdori musbat bo\'lishi kerak.' });
+          cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
+        }
+        combo.itemIds = cleanItemIds;
+      }
+      if (priceMode !== undefined) combo.priceMode = priceMode === 'manual' ? 'manual' : 'auto';
+      if (combo.priceMode === 'manual') {
+        if (price !== undefined) {
+          const priceVal = Number(price);
+          if (!Number.isFinite(priceVal) || priceVal <= 0) return sendJSON(res, 200, { ok: false, reason: 'Combo narxini to\'g\'ri kiriting.' });
+          combo.price = priceVal;
+        }
+      } else {
+        // auto rejimda narx doim tarkibdan qayta hisoblanadi
+        combo.price = comboAutoPrice(owner, combo.itemIds);
+      }
+      if (category !== undefined) combo.category = String(category || '').trim() || null;
+      if (imageUrl !== undefined) {
+        const imageTrim = String(imageUrl || '').trim();
+        if (!isValidImageValue(imageTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+        }
+        combo.imageUrl = imageTrim || null;
+      }
+      if (available !== undefined) combo.available = !!available;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, combo });
+    });
+    return;
+  }
+
+  // ---- API: comboni o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/combo-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.combos = (owner.combos || []).filter(c => c.id !== id);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
 
   // ---- API: egasi uchun mijoz-menyu havolasini olish ----
@@ -2755,8 +2960,15 @@ const server = http.createServer((req, res) => {
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
 
       const menu = (owner.menu || []).filter(m => m.available !== false);
+      // 30-bosqich: combolar ham mijoz menyusiga qo'shiladi — frontend ularni
+      // alohida "Combo" bo'limi sifatida ko'rsatadi (qarang: customerMenuListHtml).
+      // "auto" narx rejimidagilar uchun narx shu yerda qayta hisoblanadi, shunda
+      // tarkibdagi taom narxi keyinroq o'zgargan bo'lsa ham mijozga to'g'ri ko'rinadi.
+      const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
+        price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price
+      }));
       const promotions = (owner.promotions || []).filter(p => p.active);
-      return sendJSON(res, 200, { ok: true, menu, promotions, categories: sortedOwnerCategories(owner) });
+      return sendJSON(res, 200, { ok: true, menu, combos, promotions, categories: sortedOwnerCategories(owner) });
     });
     return;
   }
@@ -3071,11 +3283,10 @@ const server = http.createServer((req, res) => {
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `Mijoz: ${escapeHtmlServer(order.customerName)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-        for (const targetId of new Set(notifyTargets)) {
-          sendMessage(targetId, notifyText);
-        }
+        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`);
         notifyDeliveryGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
         notifyKitchenGroup(owner, order, `Mijoz: ${escapeHtmlServer(order.customerName)}`);
+        saveOwners(owners);
       }
 
       const successResponse = {
@@ -3361,11 +3572,10 @@ const server = http.createServer((req, res) => {
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
         `${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
-      for (const targetId of new Set(notifyTargets)) {
-        sendMessage(targetId, notifyText);
-      }
+      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`);
       notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
+      saveOwners(owners);
 
       const successResponse = { ok: true, orderId: order.id, total };
       setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
@@ -4897,6 +5107,47 @@ const server = http.createServer((req, res) => {
       });
 
       return sendJSON(res, 200, { ok: true, entries, staff: owner.staff || [] });
+    });
+    return;
+  }
+
+  // ---- API: 17-bosqich — Telegramga yuborilmagan bildirishnomalar jurnali
+  // (masalan: xodim botga /start bosmagan yoki uni block qilgan) — faqat
+  // egasi ko'radi. owner.notificationErrors notifyStaffList() tomonidan
+  // to'ldiriladi (qarang: sendMessage/notifyStaffList yuqorida). ----
+  if (req.method === 'POST' && req.url === '/api/notification-error-log') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      return sendJSON(res, 200, { ok: true, entries: owner.notificationErrors || [] });
+    });
+    return;
+  }
+
+  // ---- API: bildirishnoma xatolari jurnalini tozalash (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/notification-error-log-clear') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+
+      owner.notificationErrors = [];
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
     });
     return;
   }
