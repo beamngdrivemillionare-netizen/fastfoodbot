@@ -976,7 +976,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="owner-item" data-tariff-id="${escapeHtml(t.id)}">
         <div>
           <div class="owner-id">${escapeHtml(t.name)}</div>
-          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan</div>
+          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan · Eslatma: ${t.reminderDays || 1} kun oldin</div>
         </div>
         <div class="btn-row" style="margin-top:0;">
           <button class="btn ikkinchi" data-tariff-features="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('check-circle', 'icon-xs')}</button>
@@ -1132,6 +1132,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <input type="text" id="tariffEditNameInput" value="${escapeHtml(tariff.name)}">
         <label class="field-label">Narx (so'm/oy)</label>
         <input type="text" id="tariffEditPriceInput" value="${tariff.price || 0}" inputmode="numeric">
+        <label class="field-label">Muddat tugashi eslatmasi (necha kun oldin)</label>
+        <input type="text" id="tariffEditReminderInput" value="${tariff.reminderDays || 1}" inputmode="numeric">
         <div class="xabar" id="tariffEditMsg"></div>
         <button type="button" class="btn ikkinchi" id="tariffEditPermsBtn" style="margin-top:4px;">${icon('check-circle', 'icon-xs')}<span>Ruxsatlar (funksiyalar)</span></button>
         <div class="btn-row">
@@ -1149,6 +1151,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('tariffEditSaveBtn').onclick = async () => {
       const nameVal = document.getElementById('tariffEditNameInput').value.trim();
       const priceVal = document.getElementById('tariffEditPriceInput').value.trim();
+      const reminderVal = document.getElementById('tariffEditReminderInput').value.trim();
       const msgEl = document.getElementById('tariffEditMsg');
       if (!nameVal) {
         msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
@@ -1160,7 +1163,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
         return;
       }
-      const res = await apiPost('/api/tariff-rename', { initData, id: tariff.id, name: nameVal, price: priceVal || 0 });
+      if (reminderVal && (!/^\d+$/.test(reminderVal) || parseInt(reminderVal, 10) <= 0)) {
+        msgEl.textContent = 'Eslatma kunlari musbat butun son bo\'lishi kerak.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      const res = await apiPost('/api/tariff-rename', { initData, id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1 });
       if (!res.ok) {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
