@@ -3806,6 +3806,80 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: 49-bosqich — kassir/oshpaz "smena" holatini olish ----
+  // Xodim ekranini ochganda joriy smena holatini (faol/faol emas, boshlangan
+  // vaqti) so'raydi — holat staff yozuvida saqlanadi, shuning uchun qaysi
+  // qurilmadan ochilsa ham bir xil ko'rinadi.
+  if (req.method === 'POST' && req.url === '/api/shift-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir va oshpaz uchun' });
+      }
+      const staff = (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+
+      return sendJSON(res, 200, { ok: true, active: !!staff.shiftActive, startedAt: staff.shiftStartedAt || null });
+    });
+    return;
+  }
+
+  // ---- API: 49-bosqich — smena boshlash/tugatish ----
+  // Kassir yoki oshpaz ish boshlaganda/tugatganda bosadigan tugma. Holat
+  // xodim yozuvida saqlanadi (staff.shiftActive / staff.shiftStartedAt).
+  // Tugatilganda davomiylik owner.shiftHistory'ga yoziladi (kelajakda
+  // smena bo'yicha hisobot uchun) va umumiy amallar jurnaliga
+  // (logStaffAction) tushadi — egasi buni "Xodimlar nazorati" bo'limida
+  // ko'radi.
+  if (req.method === 'POST' && req.url === '/api/shift-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['kassir', 'oshpaz'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir va oshpaz uchun' });
+      }
+      const staff = (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+
+      const now = new Date().toISOString();
+      if (staff.shiftActive) {
+        if (!ctx.owner.shiftHistory) ctx.owner.shiftHistory = [];
+        ctx.owner.shiftHistory.unshift({
+          id: crypto.randomBytes(4).toString('hex'),
+          userId,
+          role: ctx.role,
+          startedAt: staff.shiftStartedAt || now,
+          endedAt: now
+        });
+        if (ctx.owner.shiftHistory.length > 1000) ctx.owner.shiftHistory.length = 1000;
+        staff.shiftActive = false;
+        staff.shiftStartedAt = null;
+        logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_tugatdi', note: 'Ish smenasini tugatdi' });
+      } else {
+        staff.shiftActive = true;
+        staff.shiftStartedAt = now;
+        logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_boshladi', note: 'Ish smenasini boshladi' });
+      }
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, active: !!staff.shiftActive, startedAt: staff.shiftStartedAt || null });
+    });
+    return;
+  }
+
   // ---- API: buyurtma holatini o'zgartirish (Yangi -> Tayyorlanmoqda -> Tayyor) ----
   if (req.method === 'POST' && req.url === '/api/update-order-status') {
     readBody(req, async (err, payload) => {
