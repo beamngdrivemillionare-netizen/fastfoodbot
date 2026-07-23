@@ -497,6 +497,12 @@
   @media (max-width: 380px) {
     .ko-menu-grid { grid-template-columns: repeat(4, 1fr); }
   }
+  /* Admin bo'limi menyusida atigi 4 ta band bor, shu sababli har doim
+     2 qatorli, teng bo'lingan grid ko'proq mos keladi (5 ustunli
+     grid'da bitta bo'sh joy qolib ketardi). */
+  .admin-menu-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 
   /* =========================================================================
      13-bosqich: KitchenOS bosh sahifa "Muhim ogohlantirishlar" ro'yxati —
