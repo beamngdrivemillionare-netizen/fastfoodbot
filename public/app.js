@@ -468,6 +468,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return ms > 0 && ms <= 3 * 86400000;
     }).length;
     const unpaidCount = owners.filter(o => !o.paid).length;
+    // 67-bosqich: admin dashboardida umumiy daromad — hozircha to'lagan
+    // egalarning obuna narxlari yig'indisi (oylik takrorlanuvchi daromad).
+    // Alohida to'lovlar tarixi saqlanmagani uchun bu joriy holatning
+    // hisob-kitobi (snapshot), tarixiy jami emas.
+    const totalRevenue = owners.filter(o => o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+    const pendingRevenue = owners.filter(o => !o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 
     const statsHtml = `
       <div class="ko-kpi-grid admin-stats-grid">
@@ -475,6 +481,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${koKpiCardHtml('check-circle', 'Faol', String(activeCount), null)}
         ${koKpiCardHtml('clock', 'Muddati yaqin', String(expiringSoonCount), null)}
         ${koKpiCardHtml('wallet', "Qarzdor", String(unpaidCount), null)}
+        ${koKpiCardHtml('card', "Oylik daromad", cfFormatSum(totalRevenue), null)}
+        ${koKpiCardHtml('warning', "Kutilmoqda (qarzdor)", cfFormatSum(pendingRevenue), null)}
       </div>
     `;
 
@@ -977,6 +985,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div>
           <div class="owner-id">${escapeHtml(t.name)}</div>
           <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan · Eslatma: ${t.reminderDays || 1} kun oldin</div>
+          <div class="owner-username">${icon('users', 'icon-xs icon-muted')} ${t.ownerCount || 0} ta do'kon</div>
         </div>
         <div class="btn-row" style="margin-top:0;">
           <button class="btn ikkinchi" data-tariff-features="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('check-circle', 'icon-xs')}</button>
