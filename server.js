@@ -37,6 +37,14 @@ const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
 // biriktiriladi (owner.tariffId — 55-bosqichda tarif o'chirishda tekshiriladi,
 // egaga biriktirish UI'si 57-bosqichda qo'shiladi).
 const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
+// payments.json — har bir "to'landi" deb belgilangan voqea alohida yozuv
+// sifatida shu yerga yoziladi (67-bosqich: admin dashboardida umumiy
+// daromadni FAQAT joriy holat snapshoti emas, balki haqiqiy tarix bo'yicha
+// hisoblash uchun). Bitta yozuv: { id, ownerId, amount, tariffId, at }.
+// owner.json'dagi paid/paidAt/price — joriy holatning "hozirgi surat"i,
+// bu fayl esa — vaqt bo'yicha to'liq jurnal (owner o'chirilsa ham saqlanadi,
+// 69-bosqich talabiga mos).
+const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
 // ========================================================
 
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
@@ -163,6 +171,27 @@ function saveInvites(invites) { saveJSONArray(INVITES_FILE, invites); }
 
 function loadRequests() { return loadJSONArray(REQUESTS_FILE); }
 function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
+
+// ====== To'lovlar tarixi (67-bosqich) — har bir "to'landi" voqeasi alohida
+// yozuv sifatida saqlanadi, shunda admin dashboardida haqiqiy (joriy holat
+// emas, balki vaqt bo'yicha) daromad hisoblanadi. Owner o'chirilsa/muddati
+// tugasa ham bu yozuvlar saqlanib qoladi (69-bosqich).
+function loadPayments() { return loadJSONArray(PAYMENTS_FILE); }
+function savePayments(list) { saveJSONArray(PAYMENTS_FILE, list); }
+function recordPayment(owner, amount) {
+  const amountVal = Number(amount) || 0;
+  if (amountVal <= 0) return; // 0 so'mlik "to'lov"ni jurnalga yozmaymiz
+  const payments = loadPayments();
+  payments.push({
+    id: crypto.randomBytes(6).toString('hex'),
+    ownerId: owner.id,
+    ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
+    amount: amountVal,
+    tariffId: owner.tariffId || null,
+    at: new Date().toISOString()
+  });
+  savePayments(payments);
+}
 
 // ====== Shaxsiy profil (ism, familiya, telefon) — har bir bot foydalanuvchisi
 // (mijoz, xodim, egasi) uchun umumiy, bitta martalik ro'yxatdan o'tish ======
@@ -5965,7 +5994,18 @@ const server = http.createServer((req, res) => {
         clean.hasLogin = !!(o.login && o.passwordHash);
         return clean;
       });
-      return sendJSON(res, 200, { ok: true, owners });
+      // 67-bosqich: umumiy daromad — payments.json (to'liq tarix) asosida,
+      // joriy owners.json holatining oddiy yig'indisi emas. Shu bilan owner
+      // o'chirilgan/tarifi o'zgargan taqdirda ham o'tmishdagi to'lovlar
+      // hisobdan tushib qolmaydi (69-bosqich talabiga mos).
+      const payments = loadPayments();
+      const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+      const revenue = {
+        totalLifetime: payments.reduce((s, p) => s + (Number(p.amount) || 0), 0),
+        thisMonth: payments.filter(p => new Date(p.at).getTime() >= monthStart).reduce((s, p) => s + (Number(p.amount) || 0), 0),
+        paymentCount: payments.length
+      };
+      return sendJSON(res, 200, { ok: true, owners, revenue });
     });
     return;
   }
@@ -6377,6 +6417,7 @@ const server = http.createServer((req, res) => {
       };
       owners.push(newOwner);
       saveOwners(owners);
+      if (newOwner.paid) recordPayment(newOwner, priceVal);
 
       return sendJSON(res, 200, { ok: true, owner: newOwner });
     });
@@ -6407,14 +6448,22 @@ const server = http.createServer((req, res) => {
         owner.price = p;
       }
 
+      let justPaid = false;
       if (paid !== undefined && paid !== null) {
         const wasPaid = !!owner.paid;
         owner.paid = !!paid;
-        if (owner.paid && !wasPaid) owner.paidAt = new Date().toISOString();
+        if (owner.paid && !wasPaid) { owner.paidAt = new Date().toISOString(); justPaid = true; }
         if (!owner.paid) owner.paidAt = null;
       }
 
       saveOwners(owners);
+      // Faqat "to'lanmagan" -> "to'langan" haqiqiy o'tishida ledger'ga
+      // yozamiz (narx shu paytdagi owner.price bo'yicha — yuqorida
+      // yangilangan bo'lishi mumkin) — paid:true qayta yuborilsa qayta
+      // yozilmaydi.
+      if (justPaid) {
+        recordPayment(owner, owner.price);
+      }
       return sendJSON(res, 200, { ok: true, owner });
     });
     return;
