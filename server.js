@@ -191,8 +191,7 @@ const STAFF_ROLES = {
   kassir: 'Kassir',
   oshpaz: 'Oshpaz',
   sklad: 'Sklad mas\'uli',
-  dostavka: 'Kuryer',
-  manager: 'Menejer'
+  dostavka: 'Kuryer'
 };
 
 // ====== Filiallar (G. Filiallar tizimi) — har bir egasi bir nechta filial ocha oladi ======
@@ -262,6 +261,54 @@ function ensureOwnerCategories(owner) {
 // yuborishdan oldin har doim shu orqali o'qish kerak.
 function sortedOwnerCategories(owner) {
   return ensureOwnerCategories(owner).slice().sort((a, b) => a.order - b.order);
+}
+
+// ====== D-bo'lim (28-31-bosqich): Combo — bir nechta taomni birlashtirib,
+// mijozga alohida bo'lim sifatida ko'rinadigan, o'z narxiga ega "to'plam"
+// sifatida sotish. Combo o'zi sklad bilan BEVOSITA bog'lanmaydi — u faqat
+// mavjud menyu taomlarining (owner.menu) qaysi biri va necha donadan
+// tarkibga kirishini saqlaydi (itemIds: [{menuItemId, qty}]). Buyurtma
+// qilinganda combo tarkibidagi HAR BIR taomning o'z retsepti (yoki
+// to'g'ridan-sklad turi) bo'yicha sklad kamayadi — xuddi o'sha taomlar
+// alohida-alohida buyurtma qilingandek (faqat narx combo narxi bo'yicha
+// hisoblanadi, tarkibidagi taomlarning yig'indi narxi emas — buning
+// farqini priceMode belgilaydi: "auto" = tarkib narxlari yig'indisi,
+// "manual" = egasi qo'lda kiritgan narx).
+function findCombo(owner, id) {
+  return (owner.combos || []).find(c => c.id === id);
+}
+
+// Combo tarkibidagi taomlar narxining yig'indisini hisoblaydi ("avtomatik"
+// narx rejimi uchun — 31-bosqich). Menyudan o'chirilgan/topilmagan taom
+// bo'lsa, uning ulushi yig'indiga qo'shilmaydi (0 sifatida hisoblanadi).
+function comboAutoPrice(owner, itemIds) {
+  return (itemIds || []).reduce((sum, entry) => {
+    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+    return sum + (menuItem ? menuItem.price * entry.qty : 0);
+  }, 0);
+}
+
+// Combo bitta buyurtma miqdorida (comboQty) qancha sklad mahsuloti talab
+// qilishini hisoblaydi — natija {stockId, qty, viaName} massivi;
+// checkStockAvailability (tekshirish) va haqiqiy kamaytirish (consumption)
+// bir xil shu ro'yxatdan foydalanadi, shu bilan ikkalasida mantiq
+// bir-biridan farq qilib qolmaydi.
+function comboStockNeeds(owner, combo, comboQty) {
+  const needs = [];
+  for (const entry of ((combo && combo.itemIds) || [])) {
+    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+    if (!menuItem) continue;
+    const unitsNeeded = entry.qty * comboQty;
+    if (menuItem.directStockId) {
+      needs.push({ stockId: menuItem.directStockId, qty: Math.round(unitsNeeded * 1000) / 1000, viaName: menuItem.name });
+      continue;
+    }
+    const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
+    for (const ing of recipe) {
+      needs.push({ stockId: ing.stockId, qty: Math.round(ing.qty * unitsNeeded * 1000) / 1000, viaName: menuItem.name });
+    }
+  }
+  return needs;
 }
 
 // ====== Sklad birliklari va buyurtma turlari (module darajasida — bir nechta joyda ishlatiladi) ======
@@ -2835,12 +2882,19 @@ const server = http.createServer((req, res) => {
       const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
 
       const menu = (owner.menu || []).filter(m => m.available !== false);
+      const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
       const orderItems = [];
       for (const it of items) {
-        const menuItem = menu.find(m => m.id === it.id);
-        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const qty = parseInt(it.qty, 10);
         if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        if (it.isCombo) {
+          const combo = combosAvailable.find(c => c.id === it.id);
+          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
+          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          continue;
+        }
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
       }
       const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
@@ -2867,6 +2921,24 @@ const server = http.createServer((req, res) => {
       }
 
       for (const it of orderItems) {
+        if (it.isCombo) {
+          const combo = findCombo(owner, it.id);
+          if (combo) {
+            for (const need of comboStockNeeds(owner, combo, it.qty)) {
+              const stockItem = findStockItem(owner, need.stockId);
+              if (!stockItem) continue;
+              stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
+              addStockMovement(owner, {
+                stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+                qty: need.qty, unit: stockItem.unit,
+                note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
+                userId
+              });
+              checkLowStockAlert(owner, stockItem, userId);
+            }
+          }
+          continue;
+        }
         const menuItem = menu.find(m => m.id === it.id);
         // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
         // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi,
@@ -3058,6 +3130,14 @@ const server = http.createServer((req, res) => {
   function checkStockAvailability(owner, orderItems, menu) {
     const needed = new Map(); // stockId -> jami kerak bo'lgan miqdor
     for (const it of orderItems) {
+      if (it.isCombo) {
+        const combo = findCombo(owner, it.id);
+        if (!combo) continue;
+        for (const need of comboStockNeeds(owner, combo, it.qty)) {
+          needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+        }
+        continue;
+      }
       const menuItem = menu.find(m => m.id === it.id);
       // 16-bosqich: retsept o'rniga directStockId bilan bog'langan taom
       // bo'lsa - bitta sklad birligi taom donasiga to'g'ri keladi (1:1),
@@ -3177,12 +3257,19 @@ const server = http.createServer((req, res) => {
 
       // Narxlarni klientdan emas, serverdagi menyudan olamiz (soxtalashtirilmasligi uchun)
       const menu = ctx.owner.menu || [];
+      const combosAvailable = ctx.owner.combos || [];
       const orderItems = [];
       for (const it of items) {
-        const menuItem = menu.find(m => m.id === it.id);
-        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const qty = parseInt(it.qty, 10);
         if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        if (it.isCombo) {
+          const combo = combosAvailable.find(c => c.id === it.id);
+          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
+          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          continue;
+        }
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
       }
       const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
@@ -3196,6 +3283,24 @@ const server = http.createServer((req, res) => {
       }
 
       for (const it of orderItems) {
+        if (it.isCombo) {
+          const combo = findCombo(ctx.owner, it.id);
+          if (combo) {
+            for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
+              const stockItem = findStockItem(ctx.owner, need.stockId);
+              if (!stockItem) continue;
+              stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
+              addStockMovement(ctx.owner, {
+                stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+                qty: need.qty, unit: stockItem.unit,
+                note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
+                userId
+              });
+              checkLowStockAlert(ctx.owner, stockItem, userId);
+            }
+          }
+          continue;
+        }
         const menuItem = menu.find(m => m.id === it.id);
         // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
         // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi.
@@ -4259,7 +4364,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (egasi, yoki ruxsat berilgan bo'lsa menejer) ----
+  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/courier-report') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4270,12 +4375,8 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !isOwnerAccessValid(ctx.owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ctx || !isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
       const owner = ctx.owner;
-      if (ctx.role !== 'egasi') {
-        if (!ctxHasRole(ctx, 'manager')) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat egasi yoki menejerga ko\'rinadi' });
-        if (!owner.managerCourierMoneyVisible) return sendJSON(res, 200, { ok: false, reason: 'Egasi hali bu bo\'limni menejerga ochmagan.' });
-      }
 
       const fromDate = resolvePeriodStart(period);
       const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
@@ -4307,7 +4408,7 @@ const server = http.createServer((req, res) => {
         .filter(m => m.type === 'kuryer_kassaga_qaytarish')
         .slice(0, 20);
 
-      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements, managerCourierMoneyVisible: !!owner.managerCourierMoneyVisible });
+      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements });
     });
     return;
   }
@@ -4337,27 +4438,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: menejerga kuryer puli ko'rinishini yoqish/o'chirish (faqat egasi) ----
-  if (req.method === 'POST' && req.url === '/api/set-manager-courier-visibility') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, visible } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi o\'zgartira oladi' });
-
-      owner.managerCourierMoneyVisible = !!visible;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, managerCourierMoneyVisible: owner.managerCourierMoneyVisible });
-    });
-    return;
-  }
-
   // ---- API: kuryerdan naqd pulni "oldim" deb belgilash (faqat egasi) ----
   // Kuryer "dostavka orqali" to'lovda mijozdan naqd pulni o'zi qo'lida
   // ushlab turadi. Egasi shu pulni jismonan kuryerdan olganda shu API
@@ -4375,12 +4455,8 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
       const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !isOwnerAccessValid(ctx.owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
+      if (!ctx || !isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
       const owner = ctx.owner;
-      if (ctx.role !== 'egasi') {
-        if (!ctxHasRole(ctx, 'manager')) return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat egasi yoki menejer bajara oladi' });
-        if (!owner.managerCourierMoneyVisible) return sendJSON(res, 200, { ok: false, reason: 'Egasi hali bu bo\'limni menejerga ochmagan.' });
-      }
 
       if (!courierId) return sendJSON(res, 200, { ok: false, reason: 'Kuryer tanlanmagan.' });
 
