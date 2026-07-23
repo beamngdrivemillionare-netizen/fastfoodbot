@@ -5784,6 +5784,21 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #E4232A).' });
       }
 
+      // 19-bosqich: 'restaurant-brand' faqat logo/brend rangini o'zgartirishni
+      // cheklaydi — nom/manzil/telefon/ish vaqti asosiy profil ma'lumoti bo'lgani
+      // uchun tarifdan qat'i nazar har doim saqlanadi. Owner logo/rangni
+      // o'zgartirmoqchi bo'lganda (mavjud qiymatdan farqli yangi qiymat
+      // yuborsa) va tarifda bu funksiya yopiq bo'lsa — bloklanadi; oldingi
+      // qiymatni o'zgartirmasdan qayta yuborish (masalan forma qayta
+      // saqlanganda) esa xatoga olib kelmaydi.
+      if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
+        const existingLogo = (owner.profile && owner.profile.logoUrl) || '';
+        const existingBrandColor = (owner.profile && owner.profile.brandColor) || '';
+        if (logoTrim !== existingLogo || brandColorTrim !== existingBrandColor) {
+          return sendJSON(res, 200, featureBlockedResult('restaurant-brand'));
+        }
+      }
+
       const owners2 = loadOwners();
       const target = findOwner(owners2, userId);
       const wasCompleted = !!(target.profile && target.profile.completedAt);
