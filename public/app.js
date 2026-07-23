@@ -2708,6 +2708,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const thumbHtml = m.imageUrl
       ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
       : `<div class="menu-item-thumb-empty"></div>`;
+    // 47-bosqich: sklad tugagan taom avtomatik "Tugagan" deb belgilanadi —
+    // savatga qo'shib bo'lmaydi (miqdor tugmalari o'chiriladi).
+    if (m.outOfStock) {
+      return `
+        <div class="menu-item" style="opacity:0.55;">
+          <div class="menu-item-info">
+            ${thumbHtml}
+            <div>
+              <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
+              <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+            </div>
+          </div>
+          <div class="qty-controls">
+            <button disabled>-</button>
+            <span class="qty-val">0</span>
+            <button disabled>+</button>
+          </div>
+        </div>
+      `;
+    }
     return `
       <div class="menu-item">
         <div class="menu-item-info">
@@ -5024,6 +5044,24 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function customerItemCardHtml(m) {
     const qty = customerState.cart[m.id] || 0;
     const isFav = customerState.favorites.includes(m.id);
+    // 47-bosqich: sklad tugagan taom mijoz menyusida "Tugagan" deb
+    // ko'rinadi, savatga qo'shish tugmasi o'chiriladi.
+    if (m.outOfStock) {
+      return `
+        <div class="catalog-item" style="opacity:0.55;">
+          <div class="catalog-img-wrap">
+            ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+          </div>
+          <div class="catalog-body">
+            <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
+            ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+            <div class="catalog-bottom-row">
+              <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
     return `
       <div class="catalog-item">
         <div class="catalog-img-wrap">
