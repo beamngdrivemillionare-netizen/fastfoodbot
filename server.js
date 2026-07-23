@@ -32,6 +32,10 @@ const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
 // uchun umumiy, oshxonaga bog'liq emas) ism/familiya/telefon ma'lumotlari.
 // Qarang: "Ro'yxatdan o'tish" bo'limi (handleTelegramUpdate ichida).
 const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
+// tariffs.json — admin belgilaydigan obuna tariflari katalogi (F-bo'lim,
+// 51-70-bosqich). Har bir do'kon egasiga shu ro'yxatdan bitta tarif
+// biriktiriladi (owner.tariffId — keyingi bosqichlarda qo'shiladi).
+const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
 // ========================================================
 
 // ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
@@ -168,6 +172,10 @@ function isRegisteredUser(userId) {
   const p = findProfile(userId);
   return !!(p && p.registeredAt);
 }
+
+// ====== Obuna tariflari (F-bo'lim, 51-70-bosqich) — admin belgilaydigan katalog ======
+function loadTariffs() { return loadJSONArray(TARIFFS_FILE); }
+function saveTariffs(list) { saveJSONArray(TARIFFS_FILE, list); }
 
 function isAdminId(userId) {
   return String(userId) === String(ADMIN_ID);
@@ -5542,6 +5550,111 @@ const server = http.createServer((req, res) => {
   // ---- API: do'kon egalari ro'yxatini olish (faqat admin) ----
   // MUHIM: passwordHash/sessionToken kabi maxfiy maydonlar frontendga hech qachon
   // yuborilmaydi — faqat login mavjudligini bildiruvchi hasLogin bayrog'i qaytariladi.
+  // ==================== F. Obuna (tarif) tizimi (51-70-bosqich) ====================
+  // 51-bosqich: admin tariflar sonini va nomini o'zi belgilaydi — tariflar
+  // umumiy katalog sifatida (tariffs.json) saqlanadi, keyingi bosqichlarda
+  // (52-narx, 53-54-funksiyalar, 57-do'kon egasiga biriktirish) shu
+  // yozuvlar kengaytiriladi.
+
+  // ---- API: tariflar ro'yxati (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/tariff-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+      return sendJSON(res, 200, { ok: true, tariffs });
+    });
+    return;
+  }
+
+  // ---- API: yangi tarif qo'shish (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/tariff-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
+
+      const tariffs = loadTariffs();
+      if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
+        return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
+      }
+      const tariff = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: nameTrim,
+        order: tariffs.length,
+        price: 0,
+        createdAt: new Date().toISOString()
+      };
+      tariffs.push(tariff);
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true, tariff });
+    });
+    return;
+  }
+
+  // ---- API: tarif nomini o'zgartirish (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/tariff-rename') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
+
+      const tariffs = loadTariffs();
+      const tariff = tariffs.find(t => t.id === id);
+      if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+      if (tariffs.some(t => t.id !== id && t.name.toLowerCase() === nameTrim.toLowerCase())) {
+        return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
+      }
+      tariff.name = nameTrim;
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true, tariff });
+    });
+    return;
+  }
+
+  // ---- API: tarifni o'chirish (faqat admin) — 55-bosqichda "biriktirilgan
+  // bo'lsa nima bo'ladi" degan mantiq kengaytiriladi; hozircha faqat
+  // katalogdan olib tashlaydi ----
+  if (req.method === 'POST' && req.url === '/api/tariff-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+
+      const tariffs = loadTariffs();
+      const idx = tariffs.findIndex(t => t.id === id);
+      if (idx === -1) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+      tariffs.splice(idx, 1);
+      // Qolgan tariflarning order'ini qayta tekislaydi (ro'yxatda bo'shliq qolmasin)
+      tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- API: 50-bosqich — admin uchun kichik "System status" paneli ----
   // Serverning umumiy holatini (ishlash vaqti, xotira, xodimlar/buyurtmalar
   // soni, ma'lumot fayllari hajmi, webhook statistikasi) bitta so'rovda
