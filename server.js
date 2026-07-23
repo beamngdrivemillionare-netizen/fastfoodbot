@@ -5575,7 +5575,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/tariff-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, name } = payload;
+      const { initData, name, price } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5583,6 +5583,12 @@ const server = http.createServer((req, res) => {
 
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
+
+      let priceVal = 0;
+      if (price !== undefined && price !== null && String(price).trim() !== '') {
+        priceVal = Number(price);
+        if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
+      }
 
       const tariffs = loadTariffs();
       if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
@@ -5592,7 +5598,7 @@ const server = http.createServer((req, res) => {
         id: crypto.randomBytes(4).toString('hex'),
         name: nameTrim,
         order: tariffs.length,
-        price: 0,
+        price: priceVal,
         createdAt: new Date().toISOString()
       };
       tariffs.push(tariff);
@@ -5603,11 +5609,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tarif nomini o'zgartirish (faqat admin) ----
+  // ---- API: tarif nomi va narxini o'zgartirish (faqat admin) ----
+  // 52-bosqich: narx ham shu endpoint orqali yangilanadi — name har doim
+  // yuboriladi, price ixtiyoriy (yuborilmasa eski narx saqlanib qoladi).
   if (req.method === 'POST' && req.url === '/api/tariff-rename') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, id, name } = payload;
+      const { initData, id, name, price } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5621,6 +5629,11 @@ const server = http.createServer((req, res) => {
       if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
       if (tariffs.some(t => t.id !== id && t.name.toLowerCase() === nameTrim.toLowerCase())) {
         return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
+      }
+      if (price !== undefined && price !== null && String(price).trim() !== '') {
+        const priceVal = Number(price);
+        if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
+        tariff.price = priceVal;
       }
       tariff.name = nameTrim;
       saveTariffs(tariffs);
