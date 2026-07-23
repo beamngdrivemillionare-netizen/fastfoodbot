@@ -809,17 +809,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Admin: obuna tariflari — soni va nomlari (51-bosqich) ----
-  // Keyingi bosqichlarda shu ro'yxatga narx (52), funksiyalar jadvali
-  // (53-54) va do'kon egalariga biriktirish (57) qo'shiladi — hozircha
-  // faqat tariflarni qo'shish/nomlash/o'chirish.
+  // 52-bosqich: narx ham shu ro'yxatda. 54-bosqich: har bir tarifga qaysi
+  // funksiyalar (53-bosqichdagi katalogdan) kirishini ✅/❌ belgilash —
+  // "Funksiyalar" tugmasi orqali alohida modalda.
   function tariffItemHtml(t) {
+    const enabledCount = t.features ? Object.values(t.features).filter(Boolean).length : 0;
     return `
       <div class="owner-item" data-tariff-id="${escapeHtml(t.id)}">
         <div>
           <div class="owner-id">${escapeHtml(t.name)}</div>
-          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'}</div>
+          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan</div>
         </div>
         <div class="btn-row" style="margin-top:0;">
+          <button class="btn ikkinchi" data-tariff-features="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('check-circle', 'icon-xs')}</button>
           <button class="btn ikkinchi" data-tariff-edit="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
           <button class="btn xavfli" data-tariff-remove="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
         </div>
@@ -885,8 +887,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Admin: tizim funksiyalari katalogi (53-bosqich) ----
-  // Hozircha faqat guruhlangan ro'yxatni ko'rsatadi — har bir tarif uchun
-  // ✅/❌ belgilash imkoniyati 54-bosqichda shu bloknnig ustiga qo'shiladi.
+  // Guruhlangan ro'yxatni bir marta yuklab keshlaydi — 54-bosqichdagi
+  // har-tarif "Funksiyalar" modali ham shu keshdan foydalanadi (qayta
+  // so'rov yubormaslik uchun).
+  let featureCatalogCache = null;
   async function loadFeatureCatalog() {
     const el = document.getElementById('featureCatalogList');
     if (!el) return;
@@ -895,6 +899,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
     }
+    featureCatalogCache = res.groups;
     el.innerHTML = res.groups.map(g => `
       <div style="margin-bottom:10px;">
         <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
@@ -921,6 +926,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const id = btn.getAttribute('data-tariff-edit');
         const current = res.tariffs.find(t => t.id === id);
         if (current) showTariffEditModal(current);
+      });
+    });
+    el.querySelectorAll('[data-tariff-features]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-tariff-features');
+        const current = res.tariffs.find(t => t.id === id);
+        if (current) await showTariffFeaturesModal(current);
       });
     });
     el.querySelectorAll('[data-tariff-remove]').forEach(btn => {
@@ -980,7 +992,61 @@ const tg = window.Telegram && window.Telegram.WebApp;
     };
   }
 
-  // ---- Do'kon egasi: profilni to'ldirish formasi ----
+  // 54-bosqich: bitta tarif uchun "Funksiya × Tarif" jadvali — har bir
+  // funksiya guruhlangan holda checkbox bilan ko'rsatiladi, admin
+  // ✅/❌ belgilaydi. Saqlashda BUTUN xarita bir yo'la /api/tariff-set-features
+  // ga yuboriladi (checkbox'lar shu modalda birga saqlanadi).
+  async function showTariffFeaturesModal(tariff) {
+    let groups = featureCatalogCache;
+    if (!groups) {
+      const res = await apiPost('/api/feature-list', { initData });
+      if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); return; }
+      groups = res.groups;
+      featureCatalogCache = groups;
+    }
+    const current = tariff.features || {};
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
+        <h3>"${escapeHtml(tariff.name)}" — funksiyalar</h3>
+        <div class="owner-username" style="margin-bottom:10px;">Ushbu tarifga qaysi funksiyalar kirishini belgilang.</div>
+        ${groups.map(g => `
+          <div style="margin-bottom:12px;">
+            <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
+            ${g.features.map(f => `
+              <label style="display:flex; align-items:center; gap:8px; padding:6px 0; cursor:pointer;">
+                <input type="checkbox" data-feature-id="${escapeHtml(f.id)}" ${current[f.id] ? 'checked' : ''} style="width:18px; height:18px; flex-shrink:0;">
+                <span>${escapeHtml(f.name)}</span>
+              </label>
+            `).join('')}
+          </div>
+        `).join('')}
+        <div class="xabar" id="tariffFeaturesMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="tariffFeaturesCancelBtn">Bekor qilish</button>
+          <button class="btn" id="tariffFeaturesSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('tariffFeaturesCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('tariffFeaturesSaveBtn').onclick = async () => {
+      const msgEl = document.getElementById('tariffFeaturesMsg');
+      const features = {};
+      overlay.querySelectorAll('[data-feature-id]').forEach(cb => {
+        features[cb.getAttribute('data-feature-id')] = cb.checked;
+      });
+      const res = await apiPost('/api/tariff-set-features', { initData, id: tariff.id, features });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      overlay.remove();
+      loadTariffList();
+    };
+  }
   function renderProfileForm(existing) {
     if (!existing) { renderProfileOnboarding(); return; }
     const p = existing;
