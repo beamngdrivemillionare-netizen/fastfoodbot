@@ -3640,6 +3640,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
         </div>
+        ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)}</div>` : ''}
         <div class="order-items">${itemsHtml}</div>
         ${deliveredNote}
         <div class="order-bottom">
@@ -3804,6 +3805,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
         </div>
         ${order.addressNote ? `<div class="order-time">📝 ${escapeHtml(order.addressNote)}</div>` : ''}
+        ${order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)}</div>` : ''}
         ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
         <div class="order-items">${itemsHtml}</div>
         <div class="order-bottom">
@@ -5694,6 +5696,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     tableNumber: '',
     location: null,
     addressNote: '',
+    extraPhone: '',
     tab: 'menyu',
     category: 'hammasi',
     promoId: '',
@@ -5934,6 +5937,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </button>
         <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
         <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+        <input type="tel" id="cExtraPhoneInput" placeholder="Qo'shimcha telefon raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel" style="margin-top:6px;">
       </div>
       <div class="type-row" id="cPaymentTypeRow">
         ${visiblePaymentTypeEntries(customerState.orderType).map(([k, label]) => `
@@ -6020,6 +6024,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
     const addressNoteInput = modalEl.querySelector('#cAddressNoteInput');
     if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
+
+    const extraPhoneInput = modalEl.querySelector('#cExtraPhoneInput');
+    if (extraPhoneInput) extraPhoneInput.addEventListener('input', (e) => { customerState.extraPhone = e.target.value; });
 
     const pointsCheckbox = modalEl.querySelector('#cUsePoints');
     if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
@@ -6117,6 +6124,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.className = 'xabar err';
       return;
     }
+    if (customerState.orderType === 'dostavka' && customerState.extraPhone.trim().replace(/\D/g, '').length < 7) {
+      msgEl.textContent = 'Qo\'shimcha telefon raqamingizni kiriting.';
+      msgEl.className = 'xabar err';
+      return;
+    }
 
     // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
     // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
@@ -6140,6 +6152,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
       location: customerState.orderType === 'dostavka' ? customerState.location : null,
       addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : '',
+      extraPhone: customerState.orderType === 'dostavka' ? customerState.extraPhone : '',
       requestId: customerState.lastOrderRequestId
     });
 
@@ -6149,6 +6162,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.bonusPoints = res.bonusBalance;
       customerState.location = null;
       customerState.addressNote = '';
+      customerState.extraPhone = '';
       customerState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
       if (overlay) overlay.remove();
       if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
@@ -6192,8 +6206,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     overlay.className = 'overlay';
     overlay.innerHTML = `
       <div class="modal payment-proof-modal">
-        <h3>${icon('warning', 'icon-sm modal-warn-icon')} Diqqat! To'lovni tasdiqlash kerak</h3>
-        <p>Buyurtmangiz hali <b>tasdiqlanmagan</b>. Iltimos, to'lov chekining (skrinshotning) RASMINI shu botning shaxsiy chatiga yuboring — kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.</p>
+        <h3>${icon('warning', 'icon-sm modal-warn-icon')} Chek rasmini yuboring</h3>
+        <p>Buyurtma hali <b>tasdiqlanmagan</b>.<br>To'lov chekining rasmini botning shaxsiy chatiga yuboring.</p>
         <div class="btn-row">
           <button type="button" class="btn xavfli" id="paymentProofOkBtn" style="width:100%;">Tushundim</button>
         </div>
