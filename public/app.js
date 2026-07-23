@@ -424,7 +424,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         <div class="salom">Salom, admin</div>
         <div class="bosh admin-subtitle">Do'kon egalarini shu yerdan boshqarasiz — havola yarating, qo'lda qo'shing yoki mavjudlarini tahrirlang.</div>
-        <button type="button" class="btn ikkinchi" id="systemStatusBtn" style="margin-bottom:10px;">${icon('settings', 'icon-xs')}<span>System status</span></button>
+        <div class="btn-row" style="margin-bottom:10px;">
+          <button type="button" class="btn ikkinchi" id="systemStatusBtn">${icon('settings', 'icon-xs')}<span>System status</span></button>
+          <button type="button" class="btn ikkinchi" id="tariffsBtn">${icon('star', 'icon-xs')}<span>Tariflar</span></button>
+        </div>
 
         ${statsHtml}
 
@@ -496,6 +499,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     document.getElementById('systemStatusBtn').addEventListener('click', () => {
       loadAndShowSystemStatus();
+    });
+    document.getElementById('tariffsBtn').addEventListener('click', () => {
+      renderTariffsScreen(() => renderAdminPanel(owners));
     });
 
     document.getElementById('createInviteBtn').addEventListener('click', async () => {
@@ -800,6 +806,103 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     overlay.innerHTML = systemStatusModalHtml(res.status);
     document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
+  }
+
+  // ---- Admin: obuna tariflari — soni va nomlari (51-bosqich) ----
+  // Keyingi bosqichlarda shu ro'yxatga narx (52), funksiyalar jadvali
+  // (53-54) va do'kon egalariga biriktirish (57) qo'shiladi — hozircha
+  // faqat tariflarni qo'shish/nomlash/o'chirish.
+  function tariffItemHtml(t) {
+    return `
+      <div class="owner-item" data-tariff-id="${escapeHtml(t.id)}">
+        <div>
+          <div class="owner-id">${escapeHtml(t.name)}</div>
+        </div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn ikkinchi" data-tariff-rename="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
+          <button class="btn xavfli" data-tariff-remove="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderTariffsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Obuna tariflari</div>
+        <button class="btn ikkinchi" id="tariffsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('plus', 'icon-xs')} Yangi tarif qo'shish</h2>
+          <label class="field-label">Tarif nomi</label>
+          <input type="text" id="tariffNameInput" placeholder="Masalan: Standart">
+          <button class="btn" id="tariffAddBtn" style="margin-top:10px;">Qo'shish</button>
+          <div class="xabar" id="tariffAddMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('star', 'icon-xs')} Mavjud tariflar</h2>
+          <div id="tariffList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('tariffsBackBtn').addEventListener('click', () => onBack());
+    document.getElementById('tariffAddBtn').addEventListener('click', async () => {
+      const input = document.getElementById('tariffNameInput');
+      const msgEl = document.getElementById('tariffAddMsg');
+      const name = input.value.trim();
+      if (!name) {
+        msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = '';
+      const res = await apiPost('/api/tariff-add', { initData, name });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      input.value = '';
+      loadTariffList();
+    });
+    await loadTariffList();
+  }
+
+  async function loadTariffList() {
+    const el = document.getElementById('tariffList');
+    if (!el) return;
+    const res = await apiPost('/api/tariff-list', { initData });
+    if (!res.ok) {
+      el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (!res.tariffs.length) {
+      el.innerHTML = `<div class="bosh">Hozircha tarif qo'shilmagan.</div>`;
+      return;
+    }
+    el.innerHTML = res.tariffs.map(tariffItemHtml).join('');
+    el.querySelectorAll('[data-tariff-rename]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-tariff-rename');
+        const current = res.tariffs.find(t => t.id === id);
+        const newName = prompt("Tarif nomini kiriting:", current ? current.name : '');
+        if (newName === null) return;
+        const trimmed = newName.trim();
+        if (!trimmed) return;
+        const r = await apiPost('/api/tariff-rename', { initData, id, name: trimmed });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
+        loadTariffList();
+      });
+    });
+    el.querySelectorAll('[data-tariff-remove]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-tariff-remove');
+        const current = res.tariffs.find(t => t.id === id);
+        if (!confirm(`"${current ? current.name : ''}" tarifini o'chirasizmi?`)) return;
+        const r = await apiPost('/api/tariff-remove', { initData, id });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
+        loadTariffList();
+      });
+    });
   }
 
   // ---- Do'kon egasi: profilni to'ldirish formasi ----
