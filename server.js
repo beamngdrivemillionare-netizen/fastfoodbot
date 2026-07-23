@@ -3109,6 +3109,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi' });
+      if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
       return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
     });
     return;
@@ -3125,6 +3126,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi saqlay oladi' });
+      if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
 
       const percentNum = Number(earnPercent);
       if (!Number.isFinite(percentNum) || percentNum < 0 || percentNum > 50) {
@@ -4866,6 +4868,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
       const now = new Date();
       const todayStart = tzDayStart(now);
@@ -4933,6 +4936,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
       const now = new Date();
       const todayStart = tzDayStart(now);
@@ -4982,6 +4986,7 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
       const alerts = [];
 
