@@ -2516,6 +2516,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
         ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         ${cashierTabRowHtml()}
+        ${shiftWidgetHtml()}
         <div class="bosh">Taomni bosib savatga qo'shing.</div>
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="cart-bar">
@@ -2567,6 +2568,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
 
+    attachShiftWidgetHandler();
+    loadShiftWidget();
     loadCashierMenu(restaurantName);
   }
 
@@ -2577,6 +2580,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
         ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         ${cashierTabRowHtml()}
+        ${shiftWidgetHtml()}
         ${soundToggleBtnHtml()}
         ${cashierStatusChipsHtml()}
         <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
@@ -2602,6 +2606,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       refreshOrdersBoard('kassir');
     });
     attachSoundToggleHandler();
+    attachShiftWidgetHandler();
+    loadShiftWidget();
     startOrdersPolling('kassir');
   }
 
@@ -2921,6 +2927,105 @@ const tg = window.Telegram && window.Telegram.WebApp;
       // Audio ishlamasa (masalan brauzer bloklagan bo'lsa) — jim o'tkazib yuboriladi, ilova buzilmaydi
     }
   }
+  // ---- Kassir/oshpaz: smena boshlash/tugatish (49-bosqich) ----
+  // Ish kunini boshlaganda/tugatganda bosadigan tugma. Holat serverda
+  // saqlanadi (/api/shift-status, /api/shift-toggle) — shu bois qaysi
+  // qurilmadan ochilsa ham bir xil ko'rinadi. shiftState — shu klient
+  // sessiyasidagi keshlangan nusxa: ekran darhol (eski ma'lumot bilan)
+  // chizilib, so'ng loadShiftWidget() serverdan yangi holatni olib keladi.
+  let shiftState = { active: false, startedAt: null };
+  let shiftTickTimer = null;
+
+  function shiftDurationText(startedAt) {
+    if (!startedAt) return '';
+    const ms = Date.now() - new Date(startedAt).getTime();
+    const totalMin = Math.max(0, Math.floor(ms / 60000));
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return h > 0 ? `${h} soat ${m} daqiqa` : `${m} daqiqa`;
+  }
+
+  function stopShiftTicker() {
+    if (shiftTickTimer) { clearInterval(shiftTickTimer); shiftTickTimer = null; }
+  }
+
+  // Smena faol bo'lsa, "necha vaqtdan beri" matnini har 30 soniyada yangilaydi.
+  // Ekran o'sha vaqtda boshqa joyga o'tib ketgan bo'lsa (element yo'q) —
+  // interval o'zi to'xtatiladi.
+  function startShiftTickerIfNeeded() {
+    stopShiftTicker();
+    if (!shiftState.active) return;
+    shiftTickTimer = setInterval(() => {
+      const el = document.getElementById('shiftElapsedText');
+      if (!el) { stopShiftTicker(); return; }
+      el.textContent = shiftDurationText(shiftState.startedAt);
+    }, 30000);
+  }
+
+  function shiftWidgetInnerHtml() {
+    if (shiftState.active) {
+      return `
+        <div class="kartochka shift-widget shift-widget-active">
+          <div class="shift-widget-row">
+            <div class="shift-widget-info">
+              ${icon('clock', 'icon-xs')}
+              <div>
+                <b>Smena boshlangan</b>
+                <div class="shift-widget-time" id="shiftElapsedText">${escapeHtml(shiftDurationText(shiftState.startedAt))}</div>
+              </div>
+            </div>
+            <button type="button" class="btn xavfli shift-widget-btn" id="shiftToggleBtn">Tugatish</button>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="kartochka shift-widget">
+        <div class="shift-widget-row">
+          <div class="shift-widget-info">${icon('clock', 'icon-xs')}<b>Smena boshlanmagan</b></div>
+          <button type="button" class="btn shift-widget-btn" id="shiftToggleBtn">Smenani boshlash</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // Placeholder — o'zining "wrap" idsi bilan, keyinroq DOM'ning shu qismi
+  // (butun ekranni qayta chizmasdan) yangilanadi.
+  function shiftWidgetHtml() {
+    return `<div id="shiftWidgetWrap" style="margin-bottom:12px;">${shiftWidgetInnerHtml()}</div>`;
+  }
+
+  function attachShiftWidgetHandler() {
+    const btn = document.getElementById('shiftToggleBtn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await apiPost('/api/shift-toggle', { initData });
+      if (res.ok) {
+        shiftState.active = res.active;
+        shiftState.startedAt = res.startedAt;
+        const wrap = document.getElementById('shiftWidgetWrap');
+        if (wrap) wrap.innerHTML = shiftWidgetInnerHtml();
+        attachShiftWidgetHandler();
+        startShiftTickerIfNeeded();
+      } else {
+        btn.disabled = false;
+        alert(res.reason || 'Xatolik yuz berdi.');
+      }
+    });
+  }
+
+  async function loadShiftWidget() {
+    const res = await apiPost('/api/shift-status', { initData });
+    if (!res.ok) return; // jim o'tkazib yuboriladi — tugma keshlangan holat bilan ham ishlayveradi
+    shiftState.active = res.active;
+    shiftState.startedAt = res.startedAt;
+    const wrap = document.getElementById('shiftWidgetWrap');
+    if (wrap) wrap.innerHTML = shiftWidgetInnerHtml();
+    attachShiftWidgetHandler();
+    startShiftTickerIfNeeded();
+  }
+
   function soundToggleBtnHtml() {
     const on = soundNotifEnabled();
     return `<button class="btn ikkinchi" id="soundNotifToggleBtn" style="margin-bottom:12px;">${on ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan'}</button>`;
@@ -3091,6 +3196,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
         ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <button class="btn ikkinchi" id="kitchenStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
+        ${shiftWidgetHtml()}
         ${soundToggleBtnHtml()}
         <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
@@ -3102,6 +3208,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       renderMyStatsScreen(() => renderKitchenScreen(restaurantName, onBack));
     });
     attachSoundToggleHandler();
+    attachShiftWidgetHandler();
+    loadShiftWidget();
     startOrdersPolling('oshpaz');
   }
 
@@ -4143,7 +4251,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     holat_tayyor: 'Tayyor deb belgiladi',
     yetkazdi: 'Yetkazib berdi',
     sklad_kirim: 'Skladga kirim qildi',
-    audit_topshirdi: 'Audit topshirdi'
+    audit_topshirdi: 'Audit topshirdi',
+    smena_boshladi: 'Smenani boshladi',
+    smena_tugatdi: 'Smenani tugatdi'
   };
 
   function staffPerformanceHtml(report) {
