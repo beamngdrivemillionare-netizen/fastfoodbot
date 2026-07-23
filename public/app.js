@@ -12,6 +12,45 @@ const tg = window.Telegram && window.Telegram.WebApp;
     appEl.innerHTML = html;
   }
 
+  // ---- Qo'ng'iroq qilish: mijoz/qo'shimcha telefon raqami bosilganda,
+  // "Telefondan" (oddiy tel: qo'ng'iroq) yoki "Telegramdan" (mijozning
+  // Telegram profili ochiladi, u yerdan qo'ng'iroq qilinadi) so'raladi.
+  // Telegram varianti faqat shu raqam mijozning o'z Telegram akkauntiga
+  // (customerId) tegishli bo'lsa ko'rsatiladi — qo'shimcha (extraPhone)
+  // raqamlar odatda alohida odamga tegishli bo'lishi mumkin va ularning
+  // Telegram ID'si bizda yo'q.
+  function promptCall(phone, tgUserId) {
+    if (!phone) return;
+    const callByPhone = () => { window.location.href = `tel:${phone}`; };
+    const callByTelegram = () => { openExternalLink(`tg://user?id=${tgUserId}`); };
+
+    if (tg && typeof tg.showPopup === 'function') {
+      const buttons = [{ id: 'phone', type: 'default', text: '📞 Telefondan' }];
+      if (tgUserId) buttons.push({ id: 'telegram', type: 'default', text: '✈️ Telegramdan' });
+      buttons.push({ id: 'cancel', type: 'cancel', text: 'Bekor qilish' });
+      tg.showPopup({ title: 'Qo\'ng\'iroq qilish', message: phone, buttons }, (buttonId) => {
+        if (buttonId === 'phone') callByPhone();
+        else if (buttonId === 'telegram') callByTelegram();
+      });
+      return;
+    }
+
+    // Telegram WebApp mavjud bo'lmasa (masalan, oddiy brauzerda ochilgan bo'lsa) — oddiy tanlov.
+    if (tgUserId && confirm(`${phone}\n\nTelegramdan qo'ng'iroq qilinsinmi? (Bekor qilinsa — telefondan qo'ng'iroq qilinadi)`)) {
+      callByTelegram();
+    } else {
+      callByPhone();
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-call-phone]');
+    if (!btn) return;
+    e.preventDefault();
+    promptCall(btn.getAttribute('data-call-phone'), btn.getAttribute('data-call-tgid') || null);
+  });
+
+
   // 16-bosqich: tarmoq xatosi holati. apiPost endi ikki turdagi muvaffaqiyatsizlikni
   // ajratadi — (1) server javob berdi, lekin so'rov mantiqan rad etildi (masalan
   // "ruxsat yo'q") — bu {ok:false, reason} bo'lib qoladi, chaqiruvchi joy o'zi
@@ -3641,8 +3680,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
         </div>
-        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ' · 📞 ' + escapeHtml(order.customerPhone) : ''}</div>` : ''}
-        ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)}</div>` : ''}
+        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
+        ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button></div>` : ''}
         <div class="order-items">${itemsHtml}</div>
         ${deliveredNote}
         <div class="order-bottom">
@@ -3806,9 +3845,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
         </div>
-        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ' · 📞 ' + escapeHtml(order.customerPhone) : ''}</div>` : ''}
+        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
         ${order.addressNote ? `<div class="order-time">📝 ${escapeHtml(order.addressNote)}</div>` : ''}
-        ${order.extraPhone ? `<div class="order-time">📞 ${escapeHtml(order.extraPhone)} (qo'shimcha)</div>` : ''}
+        ${order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button> (qo'shimcha)</div>` : ''}
         ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
         <div class="order-items">${itemsHtml}</div>
         <div class="order-bottom">
