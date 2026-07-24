@@ -1,5 +1,26 @@
 const tg = window.Telegram && window.Telegram.WebApp;
   const appEl = document.getElementById('app');
+
+  // ---- 34-bosqich: Responsive mini-app — avtomatik moslashish (resize) ----
+  // Mobil brauzerlarda (va ba'zi Telegram klientlarida) `100vh` manzil
+  // panel/klaviatura ochilib-yopilganda noto'g'ri hisoblanadi — sahifa
+  // "sakrab" turadi. Shuning uchun haqiqiy balandlikni JS orqali o'lchab,
+  // --app-vh CSS o'zgaruvchisiga yozamiz (style.css'da `calc(var(--app-vh)*100)`
+  // sifatida ishlatiladi). Ekran o'lchami/orientatsiyasi o'zgarganda (resize,
+  // orientationchange) va Telegram WebApp'ning o'z `viewportChanged` hodisasida
+  // qayta hisoblanadi — shu bilan mobil/planshet/kompyuter (31-33-bosqich)
+  // orasida foydalanuvchi qo'lda hech narsa qilmasdan ham ilova to'g'ri
+  // ko'rinishda qoladi.
+  function applyResponsiveViewport() {
+    const h = (tg && tg.viewportHeight) || window.innerHeight;
+    document.documentElement.style.setProperty('--app-vh', (h * 0.01) + 'px');
+  }
+  applyResponsiveViewport();
+  window.addEventListener('resize', applyResponsiveViewport);
+  window.addEventListener('orientationchange', applyResponsiveViewport);
+  if (tg && typeof tg.onEvent === 'function') {
+    tg.onEvent('viewportChanged', applyResponsiveViewport);
+  }
   // Login/parol orqali kirish (16-bosqich): Telegram initData bo'lmasa,
   // localStorage'da saqlangan sessiya tokeni ("sess_<token>") bo'lishi mumkin —
   // u xuddi Telegram initData o'rniga barcha /api/... so'rovlarida ishlatiladi.
