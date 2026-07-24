@@ -3554,13 +3554,70 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
         </div>
+        <div class="section-label" style="margin-top:18px;">${icon('card', 'icon-xs')} To'lov kartasi (mijozlar uchun)</div>
+        <div class="kartochka">
+          <div class="bosh">Mijoz "Karta" orqali to'lashni tanlaganda shu karta raqamini ko'radi.</div>
+          <button class="btn ikkinchi" id="openPaymentCardBtn" style="margin-top:10px;">Karta ma'lumotlarini tahrirlash</button>
+        </div>
         <div class="section-label" style="margin-top:18px;">${icon('bell', 'icon-xs')} Push-bildirishnoma sozlamalari</div>
         <div class="kartochka" id="notifPrefsCard"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
     document.getElementById('profileBackBtn').addEventListener('click', () => onBack && onBack());
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+    document.getElementById('openPaymentCardBtn').addEventListener('click', () => renderOwnerPaymentCardScreen(() => renderOwnerProfileScreen(profile, onBack)));
     loadNotificationPrefs();
+  }
+
+  // =========================================================================
+  // Do'kon egasi o'zi mijozlardan "karta" to'lovini qabul qilish uchun karta
+  // raqamini kiritadi/tahrirlaydi (qarang: /api/owner-payment-card-*).
+  // Bu — platforma egasining "To'lov sozlamalari" (renderPaymentSettingsScreen,
+  // faqat platforma admin uchun) bilan ARALASHTIRILMASIN — u boshqa narsa.
+  // =========================================================================
+  async function renderOwnerPaymentCardScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">To'lov kartasi</div>
+        <button class="btn ikkinchi" id="ownerCardBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('card', 'icon-xs')} Mijozlar uchun karta raqami</h2>
+          <div class="bosh">Mijoz buyurtma berib "Karta" to'lovini tanlaganda, shu ma'lumotlarni ko'radi va shu kartaga o'tkazadi.</div>
+          <label class="field-label" style="margin-top:10px;">Karta raqami</label>
+          <input type="text" id="ownerCardNumberInput" placeholder="8600 **** **** ****">
+          <label class="field-label">Karta egasining F.I.Sh</label>
+          <input type="text" id="ownerCardHolderInput" placeholder="Masalan: ISMOILOV FAYZULLA">
+          <button class="btn" id="ownerCardSaveBtn" style="margin-top:10px;">Saqlash</button>
+          <div class="xabar" id="ownerCardMsg"></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('ownerCardBackBtn').addEventListener('click', () => onBack && onBack());
+
+    const msgEl = document.getElementById('ownerCardMsg');
+    const res = await apiPost('/api/owner-payment-card-get', { initData });
+    if (res.ok) {
+      document.getElementById('ownerCardNumberInput').value = res.card.cardNumber || '';
+      document.getElementById('ownerCardHolderInput').value = res.card.cardHolder || '';
+    } else {
+      msgEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      msgEl.className = 'xabar err';
+    }
+
+    document.getElementById('ownerCardSaveBtn').addEventListener('click', async () => {
+      const cardNumber = document.getElementById('ownerCardNumberInput').value.trim();
+      const cardHolder = document.getElementById('ownerCardHolderInput').value.trim();
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const saveRes = await apiPost('/api/owner-payment-card-set', { initData, cardNumber, cardHolder });
+      if (saveRes.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+      } else {
+        msgEl.textContent = saveRes.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
   }
 
   // ---- 59-bosqich: egasi qaysi toifadagi shaxsiy xabarlarni (yangi
@@ -8021,6 +8078,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
+  // Mijoz "Karta" to'lovini tanlaganda ko'radigan, DO'KON EGASI o'zi
+  // kiritgan karta raqami — nusxalab bo'ladigan tugma bilan (qarang:
+  // /api/owner-payment-card-*, renderPaymentCardSettingsScreen).
+  function customerPaymentCardBoxHtml() {
+    const card = (customerState.restaurant && customerState.restaurant.paymentCard) || {};
+    if (!card.cardNumber) {
+      return `<div class="xabar err" style="margin-bottom:10px;">Oshxona hali to'lov kartasini kiritmagan. Buyurtmani yuborib, kassaga murojaat qiling.</div>`;
+    }
+    return `
+      <div class="link-box" style="margin-bottom:10px;">
+        <span id="cPayCardNumberText">${escapeHtml(card.cardNumber)}</span>
+        <button id="cPayCardCopyBtn" type="button">${icon('clipboard', 'icon-xs')}<span>Nusxalash</span></button>
+      </div>
+      ${card.cardHolder ? `<div class="bosh" style="margin-top:-6px; margin-bottom:10px;">Egasi: ${escapeHtml(card.cardHolder)}</div>` : ''}
+    `;
+  }
+
   // ---- Checkout — ALOHIDA oynada (overlay/modal) ----
   // Buyurtma turi, stol/dostavka, to'lov turi, bonus va "Buyurtma
   // berish" shu yerda. Har bir tanlov o'zgarganda faqat shu modal ichi
@@ -8055,6 +8129,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
         `).join('')}
       </div>
+      ${customerState.paymentType === 'karta' ? customerPaymentCardBoxHtml() : ''}
       ${customerState.orderType === 'dostavka' && customerState.cardOnlyRestricted ? `
         <div class="xabar err" style="margin-bottom:10px;">Avvalgi buyurtma(lar)ingizda kuryer sizga bog'lana olmagani sababli, hozircha faqat Karta orqali oldindan to'lov mavjud.</div>
       ` : ''}
@@ -8187,6 +8262,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!t) return;
       customerState.paymentType = t;
       renderCheckoutModalBody(overlay);
+    });
+    const payCopyBtn = modalEl.querySelector('#cPayCardCopyBtn');
+    if (payCopyBtn) payCopyBtn.addEventListener('click', () => {
+      const card = (customerState.restaurant && customerState.restaurant.paymentCard) || {};
+      const rawNumber = (card.cardNumber || '').replace(/\s+/g, '');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(rawNumber).then(() => {
+          payCopyBtn.innerHTML = `${icon('check-circle', 'icon-xs')}<span>Nusxalandi</span>`;
+        }).catch(() => alert('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.'));
+      } else {
+        alert('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.');
+      }
     });
     const tableInput = modalEl.querySelector('#cTableInput');
     if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
