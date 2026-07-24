@@ -1683,6 +1683,55 @@ function telegramApi(method, params) {
   });
 }
 
+// Galereyadan yuklangan rasm (base64 data URL) — oddiy GET so'rov orqali
+// Telegram'ga yuborib bo'lmaydi (binary ma'lumot query string'ga sig'maydi),
+// shuning uchun bu yerda haqiqiy multipart/form-data POST so'rovi qo'lda
+// (tashqi kutubxonasiz) tuziladi. `fields` — matn maydonlari (chat_id,
+// caption va h.k.), `fileFieldName`/`buffer`/`filename`/`mimeType` — fayl
+// qismi. Faqat sendPhoto uchun ishlatiladi (broadcast: galereyadan rasm).
+function telegramApiUploadPhoto(chatId, buffer, mimeType, fields) {
+  return new Promise((resolve, reject) => {
+    const boundary = '----uzbotBoundary' + crypto.randomBytes(16).toString('hex');
+    const CRLF = '\r\n';
+    const chunks = [];
+    const pushField = (name, value) => {
+      if (value === undefined || value === null || value === '') return;
+      chunks.push(Buffer.from(
+        `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${String(value)}${CRLF}`, 'utf8'
+      ));
+    };
+    pushField('chat_id', chatId);
+    Object.keys(fields || {}).forEach(k => pushField(k, fields[k]));
+    const ext = (mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    chunks.push(Buffer.from(
+      `--${boundary}${CRLF}Content-Disposition: form-data; name="photo"; filename="broadcast.${ext}"${CRLF}Content-Type: ${mimeType}${CRLF}${CRLF}`, 'utf8'
+    ));
+    chunks.push(buffer);
+    chunks.push(Buffer.from(`${CRLF}--${boundary}--${CRLF}`, 'utf8'));
+    const body = Buffer.concat(chunks);
+
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${BOT_TOKEN}/sendPhoto`,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': body.length
+      }
+    }, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 // 12-bosqich: Ilgari sendMessage() Telegramdan qaytgan har qanday xatolikni
 // (masalan "Forbidden: bot was blocked by the user" yoki "chat not found" —
 // bular xodim botga hali /start bosmagan yoki uni block qilgan bo'lsa yuz
@@ -10332,35 +10381,47 @@ const server = http.createServer((req, res) => {
 
   // 49-bosqich: tanlangan toifadagi barcha (takrorlanmas) Telegram ID'lar,
   // BARCHA oshxona egalari bo'yicha yig'ib chiqiladi.
+  // targetType === 'all' — 3 toifaning HAMMASI (mijoz + oshxona egasi +
+  // xizmatchi) birlashtirilib, takrorlanmas ID'lar ro'yxati qaytariladi
+  // (bitta odam bir nechta rolga ega bo'lsa ham, xabar UNGA FAQAT BIR MARTA
+  // yetadi — Set orqali dedupe qilingani uchun).
   function collectBroadcastRecipients(targetType) {
     const owners = loadOwners();
     const ids = new Set();
-    if (targetType === 'owner') {
+    if (targetType === 'owner' || targetType === 'all') {
       owners.forEach(o => ids.add(String(o.id)));
-    } else if (targetType === 'customer') {
+    }
+    if (targetType === 'customer' || targetType === 'all') {
       owners.forEach(o => (o.customers || []).forEach(c => ids.add(String(c.id))));
-    } else if (targetType === 'staff') {
+    }
+    if (targetType === 'staff' || targetType === 'all') {
       owners.forEach(o => (o.staff || []).forEach(s => ids.add(String(s.id))));
     }
     return Array.from(ids);
   }
 
-  // Rasm faqat https:// havola sifatida qabul qilinadi (menyu/banner
-  // rasmlaridan farqli — Telegram sendPhoto rasmni o'zi shu havoladan
-  // yuklab oladi, base64 data URL'ni GET so'rovda yuborib bo'lmaydi).
+  // Rasm ikki xil bo'lishi mumkin: https:// havola (Telegram o'zi yuklab
+  // oladi) YOKI galereyadan tanlangan rasm (base64 data URL — kichraytirib,
+  // frontendda tayyorlanadi, qarang: readImageFileAsCompressedDataUrl).
+  // Ikkinchisi menyu rasmi bilan bir xil qoidada tekshiriladi (isValidImageValue).
   function isValidBroadcastImageUrl(value) {
-    if (!value) return true;
-    return /^https?:\/\//i.test(value);
+    return isValidImageValue(value);
+  }
+  function isBase64ImageValue(value) {
+    return !!value && /^data:image\/(png|jpe?g|webp);base64,/i.test(value);
   }
 
   // Bitta qabul qiluvchiga xabar yuboradi (rasm bo'lsa sendPhoto+caption,
   // bo'lmasa oddiy sendMessage), tugma bo'lsa inline havola tugmasi bilan.
-  function sendBroadcastToChat(chatId, text, imageUrl, buttonText, buttonUrl) {
+  // `photo` — https:// havola YOKI Telegram file_id (base64 rasm birinchi
+  // marta yuklangandan keyin olingan) bo'lishi mumkin, ikkalasi ham oddiy
+  // GET so'rovda `photo` parametri sifatida ishlaydi.
+  function sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl) {
     const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
     const params = { chat_id: chatId, parse_mode: 'HTML' };
     if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-    const method = imageUrl ? 'sendPhoto' : 'sendMessage';
-    if (imageUrl) { params.photo = imageUrl; params.caption = text; }
+    const method = photo ? 'sendPhoto' : 'sendMessage';
+    if (photo) { params.photo = photo; params.caption = text; }
     else { params.text = text; }
     return telegramApi(method, params).then(result => {
       if (!result || !result.ok) {
@@ -10375,13 +10436,58 @@ const server = http.createServer((req, res) => {
     });
   }
 
+  // Galereyadan yuklangan (base64) rasmni HAQIQIY fayl sifatida multipart
+  // orqali yuboradi va Telegram javobidagi file_id'ni qaytaradi (muvaffaqiyatli
+  // bo'lsa) — shu file_id keyingi barcha qabul qiluvchilarga qayta ishlatiladi,
+  // shunda rasm minglab marta emas, FAQAT BIR MARTA serverdan Telegram'ga
+  // yuklanadi (tezroq va tejamli).
+  async function sendBroadcastPhotoUploadAndGetFileId(chatId, dataUrl, text, buttonText, buttonUrl) {
+    const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(dataUrl);
+    if (!match) return { ok: false, fileId: null };
+    const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
+    const buffer = Buffer.from(match[2], 'base64');
+    const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
+    const fields = { caption: text, parse_mode: 'HTML' };
+    if (replyMarkup) fields.reply_markup = JSON.stringify(replyMarkup);
+    try {
+      const result = await telegramApiUploadPhoto(chatId, buffer, mimeType, fields);
+      if (!result || !result.ok) {
+        const reason = (result && result.description) || 'noma\'lum xatolik';
+        console.error(`[broadcast rasm yuklash xatosi] chat_id=${chatId}: ${reason}`);
+        return { ok: false, fileId: null };
+      }
+      const sizes = result.result && result.result.photo;
+      const fileId = (Array.isArray(sizes) && sizes.length) ? sizes[sizes.length - 1].file_id : null;
+      return { ok: true, fileId };
+    } catch (err) {
+      console.error(`[broadcast rasm yuklash tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+      return { ok: false, fileId: null };
+    }
+  }
+
   // 51-bosqich: barcha qabul qiluvchilarga KETMA-KET (Promise.all emas)
   // kichik tanaffus bilan yuboradi — Telegram'ning soniyasiga xabar
-  // limitidan (~30/s) chiqib ketmaslik uchun.
-  async function sendBroadcastSequential(recipientIds, text, imageUrl, buttonText, buttonUrl) {
+  // limitidan (~30/s) chiqib ketmaslik uchun. `image` https:// havola YOKI
+  // galereya base64 rasmi bo'lishi mumkin — ikkinchi holatda faqat BIRINCHI
+  // qabul qiluvchiga haqiqiy fayl yuklanadi, undan olingan file_id qolgan
+  // hammaga qayta ishlatiladi.
+  async function sendBroadcastSequential(recipientIds, text, image, buttonText, buttonUrl) {
     let delivered = 0, failed = 0;
+    let pendingUpload = isBase64ImageValue(image);
+    let photo = pendingUpload ? null : (image || null);
+
     for (const chatId of recipientIds) {
-      const ok = await sendBroadcastToChat(chatId, text, imageUrl, buttonText, buttonUrl);
+      let ok;
+      if (pendingUpload) {
+        const uploadResult = await sendBroadcastPhotoUploadAndGetFileId(chatId, image, text, buttonText, buttonUrl);
+        ok = uploadResult.ok;
+        if (ok) {
+          pendingUpload = false;
+          photo = uploadResult.fileId; // shundan keyingilarga shu file_id ishlatiladi
+        }
+      } else {
+        ok = await sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl);
+      }
       if (ok) delivered++; else failed++;
       await new Promise(resolve => setTimeout(resolve, 40));
     }
@@ -10398,14 +10504,14 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin yubora oladi' });
 
-      if (!['customer', 'owner', 'staff'].includes(targetType)) {
+      if (!['customer', 'owner', 'staff', 'all'].includes(targetType)) {
         return sendJSON(res, 200, { ok: false, reason: 'Qabul qiluvchi turini tanlang.' });
       }
       const textTrim = String(text || '').trim();
       if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matnini kiriting.' });
       const imageTrim = String(imageUrl || '').trim();
       if (!isValidBroadcastImageUrl(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun to\'g\'ridan-to\'g\'ri https:// havola kiriting.' });
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun https:// havola kiriting yoki galereyadan tanlang.' });
       }
       const buttonTextTrim = String(buttonText || '').trim();
       const buttonUrlTrim = String(buttonUrl || '').trim();
@@ -10425,12 +10531,19 @@ const server = http.createServer((req, res) => {
         recipientIds, textTrim, imageTrim || null, buttonTextTrim || null, buttonUrlTrim || null
       );
 
+      // Galereyadan yuklangan (base64) rasmni tarix jurnaliga (broadcasts.json)
+      // to'liq holda YOZMAYMIZ — aks holda jurnal juda tez og'irlashib ketadi
+      // (200 ta yozuv × bir necha MB). https:// havola bo'lsa esa qisqa, shuni
+      // saqlaymiz. `hadImage` bayrog'i orqali "rasm bilan yuborilgan edi"
+      // ma'lumoti baribir saqlanadi (tarixda ko'rsatish uchun).
+      const isBase64Img = isBase64ImageValue(imageTrim);
       const broadcasts = loadBroadcasts();
       const record = {
         id: crypto.randomBytes(4).toString('hex'),
         targetType,
         text: textTrim,
-        imageUrl: imageTrim || null,
+        imageUrl: isBase64Img ? null : (imageTrim || null),
+        hadImage: !!imageTrim,
         buttonText: buttonTextTrim || null,
         buttonUrl: buttonUrlTrim || null,
         totalTargets: recipientIds.length,
