@@ -8424,30 +8424,39 @@ const tg = window.Telegram && window.Telegram.WebApp;
     // yozamiz, shunda HAR QANDAY ichki elementning o'z cursor qoidasidan
     // ustun turadi — bosiladigan narsa ustida esa hotdog emas, KETCHUP
     // shishasi ko'rinadi (interaktivlikni bildiradi, o'zi ham jonli detal).
-    const hotdogSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>
-      <g transform='rotate(-40 16 16)'>
-        <rect x='2' y='11' width='28' height='14' rx='7' fill='%23E8B974'/>
-        <rect x='5' y='9' width='22' height='10' rx='5' fill='%23B5451D'/>
-        <path d='M7 13 Q10 9 13 13 T19 13 T25 13' stroke='%23F2C200' stroke-width='2' fill='none' stroke-linecap='round'/>
+    // TUZATISH: ikkalasi ham 32x32'da juda mayda va notanish shakl bo'lib
+    // ko'rinar edi (bitta rangli to'rtburchak + chiziq). Endi 40x40'ga
+    // kattalashtirilgan va har biri bir nechta qatlamdan (soya/asosiy/
+    // yaltiroq) tuzilgan — shu bilan kursor o'lchamida ham "hotdog" va
+    // "ketchup shishasi" ekani darhol tanilishi kerak.
+    const hotdogSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'>
+      <g transform='rotate(-40 20 20)'>
+        <rect x='3' y='13' width='34' height='16' rx='8' fill='%23D9A15C'/>
+        <rect x='7' y='12' width='26' height='12' rx='6' fill='%238C3A1B'/>
+        <rect x='7' y='12' width='26' height='5.5' rx='2.75' fill='%23B5511F'/>
+        <path d='M9 16 Q13 11 17 16 T25 16 T31 16' stroke='%23805300' stroke-width='3.4' fill='none' stroke-linecap='round'/>
+        <path d='M9 16 Q13 11 17 16 T25 16 T31 16' stroke='%23FFCE3A' stroke-width='2' fill='none' stroke-linecap='round'/>
       </g>
     </svg>`.replace(/\s+/g, ' ').trim();
 
-    const ketchupSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>
-      <g transform='rotate(-40 16 16)'>
-        <path d='M6 13 L25 10 Q29 16 25 22 L6 19 Q4 16 6 13 Z' fill='%23D42E12'/>
-        <rect x='1' y='14' width='6' height='5' rx='2' fill='%231c1c1c'/>
-        <ellipse cx='17' cy='16' rx='7' ry='4.2' fill='white' opacity='0.9'/>
-        <circle cx='0' cy='16.5' r='2.4' fill='%23D42E12'/>
+    const ketchupSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'>
+      <g transform='rotate(-40 20 20)'>
+        <path d='M8 14 L30 10.5 Q35.5 20 30 29.5 L8 26 Q5 20 8 14 Z' fill='%23A81E0C'/>
+        <path d='M10 15.6 L28.4 12.6 Q32.4 20 28.4 27.4 L10 24.4 Q7.8 20 10 15.6 Z' fill='%23E5391A'/>
+        <ellipse cx='20.5' cy='20' rx='8.6' ry='5' fill='white' opacity='0.92'/>
+        <rect x='0' y='16' width='8' height='8' rx='3' fill='%231c1c1c'/>
+        <circle cx='1.2' cy='20' r='2.2' fill='%23A81E0C'/>
+        <path d='M13 15.4 L15.4 14.9 L16 17 L13.5 17.5 Z' fill='white' opacity='0.5'/>
       </g>
     </svg>`.replace(/\s+/g, ' ').trim();
 
     const cursorStyleTag = document.createElement('style');
     cursorStyleTag.textContent = `
       body.ko-cursor-hotdog, body.ko-cursor-hotdog * {
-        cursor: url("data:image/svg+xml,${hotdogSvg}") 6 6, auto !important;
+        cursor: url("data:image/svg+xml,${hotdogSvg}") 8 8, auto !important;
       }
       body.ko-cursor-ketchup, body.ko-cursor-ketchup * {
-        cursor: url("data:image/svg+xml,${ketchupSvg}") 4 16, pointer !important;
+        cursor: url("data:image/svg+xml,${ketchupSvg}") 5 20, pointer !important;
       }
     `;
     document.head.appendChild(cursorStyleTag);
@@ -8502,22 +8511,25 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const now = Date.now();
       if (now - lastSpawn < 14) return;
       lastSpawn = now;
-      // Olov yanada seziladigan va jonli bo'lishi uchun: ko'proq va kattaroq
-      // zarrachalar, yorqinroq boshlang'ich shaffoflik, har biriga o'z
-      // "chayqalish" fazasi (wobble) — "yalinayotgan" olov taassurotini beradi.
-      for (let i = 0; i < 5; i++) {
+      // TUZATISH: oldin zarrachalar juda YORQIN edi (deyarli oq yadro, ~0.85-1.0
+      // shaffoflik) va "lighter" rejimda ustma-ust tushib fon matnini butunlay
+      // yopib qo'yardi. Endi boshlang'ich shaffoflik pasaytirildi (matn orqada
+      // ham o'qilishi uchun), izning O'ZI esa uzunroq bo'lishi uchun so'nish
+      // (pastda p.alpha -= ...) sekinlashtirildi — zarracha kamroq yorqin,
+      // lekin uzoqroq umr ko'radi (demak iz uzunroq ko'rinadi).
+      for (let i = 0; i < 4; i++) {
         particles.push({
           x: x + (Math.random() - 0.5) * 8,
           y: y + (Math.random() - 0.5) * 8,
-          r: 8 + Math.random() * 10,
-          alpha: 0.85 + Math.random() * 0.15,
+          r: 7 + Math.random() * 9,
+          alpha: 0.5 + Math.random() * 0.16,
           vx: (Math.random() - 0.5) * 0.6,
           vy: -0.8 - Math.random() * 1.0,
           grow: 0.07 + Math.random() * 0.09,
           seed: Math.random() * Math.PI * 2
         });
       }
-      if (particles.length > 260) particles.splice(0, particles.length - 260);
+      if (particles.length > 340) particles.splice(0, particles.length - 340);
     }
 
     window.addEventListener('pointermove', (e) => spawn(e.clientX, e.clientY), { passive: true });
@@ -8537,16 +8549,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
         p.x += p.vx;
         p.y += p.vy;
         p.r += p.grow;
-        p.alpha -= 0.017;
+        p.alpha -= 0.011;
         if (p.alpha > 0) {
           const wobble = 1 + Math.sin(now2 / 90 + p.seed) * 0.18;
           const r = p.r * wobble;
           const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
           // Markazda deyarli oq-issiq yadro, keyin yorqin sariq, to'q
-          // to'qsariq, chetda qizil — chetlarga borgan sari tezroq so'nadi
-          grad.addColorStop(0, `rgba(255, 253, 230, ${p.alpha})`);
-          grad.addColorStop(0.28, `rgba(255, 210, 90, ${p.alpha * 0.95})`);
-          grad.addColorStop(0.6, `rgba(255, 120, 30, ${p.alpha * 0.75})`);
+          // to'qsariq, chetda qizil — chetlarga borgan sari tezroq so'nadi.
+          // TUZATISH: har bir bosqichning shaffofligi pasaytirildi (0.28/0.6
+          // nuqtalaridagi ko'paytiruvchilar kichraytirildi) — orqadagi matn
+          // butunlay yopilib qolmasligi uchun, "lighter" rejimda zarrachalar
+          // ustma-ust tushganda ham fon o'qilishi imkonini beradi.
+          grad.addColorStop(0, `rgba(255, 253, 230, ${p.alpha * 0.8})`);
+          grad.addColorStop(0.28, `rgba(255, 210, 90, ${p.alpha * 0.6})`);
+          grad.addColorStop(0.6, `rgba(255, 120, 30, ${p.alpha * 0.4})`);
           grad.addColorStop(1, 'rgba(210, 30, 10, 0)');
           ctx.fillStyle = grad;
           ctx.beginPath();
