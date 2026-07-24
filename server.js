@@ -165,6 +165,15 @@ function ensureSubscriptionFields(owner) {
   if (owner.customerPaymentCard === undefined) {
     owner.customerPaymentCard = { cardNumber: '', cardHolder: '' };
   }
+  // Joriy TASDIQLANGAN rejaning "kunlik narxi" (proratsiya hisob-kitobi
+  // uchun, qarang: createSubscriptionPaymentRequest / decideSubscriptionPayment).
+  // Bu maydonlar faqat tariffId biriktiruvchi reja tasdiqlanganda yangilanadi.
+  if (owner.activePlanDailyPrice === undefined) {
+    owner.activePlanDailyPrice = null;
+  }
+  if (owner.activePlanTariffId === undefined) {
+    owner.activePlanTariffId = owner.tariffId || null;
+  }
   return owner;
 }
 
@@ -276,6 +285,45 @@ function savePaymentRequisites(requisites) {
 //   { id, planId, planLabel, amount, days,
 //     status: 'kutilmoqda_skrinshot' | 'kutilmoqda_tasdiq' | 'tasdiqlandi' | 'rad_etildi',
 //     screenshotFileId, requestedAt, screenshotSentAt, decidedAt, decidedBy }
+// PRORATSIYA (tarif yuqorilashida narx farqi): agar owner hali tugamagan
+// "qoldiq kunlar"ga ega bo'lsa (masalan, arzon Starter rejasidan 29 kun
+// qolgan) va yangi tanlangan reja BOSHQA (va qimmatroq) F-bo'lim tarifiga
+// bog'langan bo'lsa (masalan, Business), o'sha qoldiq kunlar ESKI (arzon)
+// narxda emas, YANGI (qimmat) tarif narxida hisoblanishi kerak — aks holda
+// owner "narxlar farqi"ni umuman to'lamay, qoldiq kunlarni yangi qimmat
+// tarifda bepul ishlatib qoladi (shu funksiyaning yuqoridagi izohidagi
+// ekspluatatsiya). Shu sabab: qoldiq kunlar uchun (yangi_kunlik_narx −
+// eski_kunlik_narx) farqi qo'shimcha to'lov sifatida qo'shiladi.
+// Eslatma: faqat YUQORILASHDA (farq musbat bo'lganda) qo'llanadi — pastroq
+// tarifga o'tishda (yoki tariffId o'zgarmasa) hech qanday ustama olinmaydi,
+// owner shunchaki yangi reja narxini to'lab davom etadi.
+function calcTariffUpgradeSurcharge(owner, plan) {
+  const result = { surcharge: 0, remainingDays: 0, isUpgrade: false, oldDailyPrice: 0, newDailyPrice: 0 };
+  if (!plan || !plan.tariffId || !plan.days) return result;
+  // Owner hali biror tarifda bo'lmasa (yangi ro'yxatdan o'tgan yoki
+  // tariffId'siz reja bilan boshlagan) — solishtiradigan "eski narx" yo'q,
+  // ustama hisoblanmaydi (bu birinchi tarif tanlovi, "yuqorilash" emas).
+  if (!owner.activePlanTariffId) return result;
+  // Tarif o'zgarmasa (xuddi shu tariffId'ga qayta/uzaytirib sotib olish) —
+  // ustama yo'q, oddiy uzaytirish.
+  if (owner.activePlanTariffId === plan.tariffId) return result;
+  const untilMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
+  const remainingMs = (Number.isFinite(untilMs) && untilMs > Date.now()) ? (untilMs - Date.now()) : 0;
+  if (remainingMs <= 0) return result; // qoldiq kun yo'q — ustama uchun asos yo'q
+  const remainingDays = Math.ceil(remainingMs / 86400000);
+  const oldDailyPrice = owner.activePlanDailyPrice || 0;
+  const newDailyPrice = plan.price / plan.days;
+  result.remainingDays = remainingDays;
+  result.oldDailyPrice = oldDailyPrice;
+  result.newDailyPrice = newDailyPrice;
+  const diffPerDay = newDailyPrice - oldDailyPrice;
+  if (diffPerDay > 0) {
+    result.isUpgrade = true;
+    result.surcharge = Math.round(diffPerDay * remainingDays);
+  }
+  return result;
+}
+
 function createSubscriptionPaymentRequest(owner, planId) {
   const plans = loadSubscriptionPlans();
   const plan = plans[planId];
@@ -289,11 +337,15 @@ function createSubscriptionPaymentRequest(owner, planId) {
     const tariff = loadTariffs().find(t => t.id === plan.tariffId);
     tariffLabel = tariff ? tariff.name : null;
   }
+  const upgrade = calcTariffUpgradeSurcharge(owner, plan);
   owner.subscriptionPaymentRequest = {
     id: crypto.randomBytes(6).toString('hex'),
     planId: plan.id,
     planLabel: plan.label,
-    amount: plan.price,
+    baseAmount: plan.price,
+    upgradeSurcharge: upgrade.surcharge,
+    upgradeRemainingDays: upgrade.isUpgrade ? upgrade.remainingDays : 0,
+    amount: plan.price + upgrade.surcharge,
     days: plan.days,
     tariffId: plan.tariffId || null,
     tariffLabel,
@@ -317,7 +369,11 @@ async function sendObunaPlansMenu(owner, chatId) {
   const planLines = list.map(p => {
     const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
     const tariffNote = tariff ? ` — tarif: ${escapeHtmlServer(tariff.name)}` : '';
-    return `• <b>${escapeHtmlServer(p.label)}</b> — ${fmtNum(p.price)} so'm${p.discountNote ? ' (' + escapeHtmlServer(p.discountNote) + ')' : ''}${tariffNote}`;
+    const upgrade = calcTariffUpgradeSurcharge(owner, p);
+    const upgradeNote = upgrade.isUpgrade
+      ? ` <i>(+${fmtNum(upgrade.surcharge)} so'm ustama — qolgan ${upgrade.remainingDays} kun uchun tarif farqi, jami ${fmtNum(p.price + upgrade.surcharge)} so'm)</i>`
+      : '';
+    return `• <b>${escapeHtmlServer(p.label)}</b> — ${fmtNum(p.price)} so'm${p.discountNote ? ' (' + escapeHtmlServer(p.discountNote) + ')' : ''}${tariffNote}${upgradeNote}`;
   }).join('\n');
   const text = `💳 <b>Obuna tarifini tanlang</b>\n\n${planLines}\n\n` +
     `To'lov rekvizitlari:\n💳 Karta: <code>${escapeHtmlServer(requisites.cardNumber)}</code>\n👤 Egasi: ${escapeHtmlServer(requisites.cardHolder)}\n\n` +
@@ -360,12 +416,21 @@ function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
     const grantedTariffId = plan ? (plan.tariffId || null) : null;
     if (grantedTariffId) {
       owner.tariffId = grantedTariffId;
+      // Keyingi safar (agar owner yana boshqa tarifga o'tsa) proratsiya
+      // to'g'ri hisoblanishi uchun, HOZIR tasdiqlangan rejaning kunlik
+      // narxini "joriy tarif narxi" sifatida eslab qolamiz (qarang:
+      // calcTariffUpgradeSurcharge).
+      owner.activePlanTariffId = grantedTariffId;
+      owner.activePlanDailyPrice = plan.days ? (plan.price / plan.days) : 0;
     }
     reqData.status = 'tasdiqlandi';
     reqData.decidedAt = new Date().toISOString();
     reqData.decidedBy = decidedByUserId;
     recordPayment(owner, reqData.amount, {
-      planId: reqData.planId, planLabel: reqData.planLabel, days, source: 'subscription'
+      planId: reqData.planId, planLabel: reqData.planLabel, days,
+      baseAmount: reqData.baseAmount != null ? reqData.baseAmount : reqData.amount,
+      upgradeSurcharge: reqData.upgradeSurcharge || 0,
+      source: 'subscription'
     });
     const tariffNote = reqData.tariffLabel ? `\nTarif: ${escapeHtmlServer(reqData.tariffLabel)}` : '';
     sendMessage(owner.id,
@@ -702,6 +767,10 @@ function recordPayment(owner, amount, extra) {
     planLabel: (extra && extra.planLabel) || null,
     days: (extra && extra.days) || null,
     source: (extra && extra.source) || null,
+    // Tarif yuqorilashida qo'shilgan ustama (agar bo'lsa) — hisobot/audit
+    // uchun asosiy narxdan alohida saqlanadi (qarang: calcTariffUpgradeSurcharge).
+    baseAmount: (extra && extra.baseAmount != null) ? extra.baseAmount : null,
+    upgradeSurcharge: (extra && extra.upgradeSurcharge) || 0,
     at: new Date().toISOString()
   });
   savePayments(payments);
@@ -2643,9 +2712,12 @@ async function handleTelegramUpdate(update) {
 
         await sendMessage(chatId, '📤 Skrinshot qabul qilindi. Administrator tasdiqlashini kuting...');
 
+        const surchargeCaptionLine = (reqData.upgradeSurcharge > 0)
+          ? `\nAsosiy narx: ${fmtNum(reqData.baseAmount)} so'm + tarif farqi ustamasi (qolgan ${reqData.upgradeRemainingDays} kun): ${fmtNum(reqData.upgradeSurcharge)} so'm`
+          : '';
         const caption = `💳 <b>Obuna to'lovi tasdiqlash so'raladi</b>\n` +
           `Oshxona: ${escapeHtmlServer(ownerLabel(subOwner))} (ID: <code>${subOwner.id}</code>)\n` +
-          `Tarif: ${escapeHtmlServer(reqData.planLabel)}\nSumma: ${fmtNum(reqData.amount)} so'm`;
+          `Tarif: ${escapeHtmlServer(reqData.planLabel)}\nSumma: ${fmtNum(reqData.amount)} so'm${surchargeCaptionLine}`;
         const subKb = {
           inline_keyboard: [[
             { text: '✅ Tasdiqlash', callback_data: `subok:${subOwner.id}` },
@@ -2720,11 +2792,15 @@ async function handleTelegramUpdate(update) {
       if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
       const plan = loadSubscriptionPlans()[planId];
       if (!plan) { await answerCallbackQuery(cq.id, 'Tarif topilmadi.'); return; }
-      createSubscriptionPaymentRequest(owner, planId);
+      const reqData = createSubscriptionPaymentRequest(owner, planId);
       saveOwners(owners);
       await answerCallbackQuery(cq.id, 'Tarif tanlandi ✅');
+      const surchargeLine = (reqData.upgradeSurcharge > 0)
+        ? `\n➕ Tarif farqi ustamasi (qolgan ${reqData.upgradeRemainingDays} kun uchun): ${fmtNum(reqData.upgradeSurcharge)} so'm` +
+          `\n💰 <b>Jami to'lov: ${fmtNum(reqData.amount)} so'm</b>`
+        : '';
       await sendMessage(from.id,
-        `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
+        `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).${surchargeLine}\n\n` +
         `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
         `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
       return;
