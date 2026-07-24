@@ -1343,6 +1343,13 @@ function staffDisplayName(staff) {
   return staff.username ? '@' + staff.username : `ID: ${staff.id}`;
 }
 
+// 71-BOSQICH: raqamlarni o'qishga oson qilib chiqarish uchun (1000 -> "1 000",
+// 100000 -> "100 000"). Pul summalari va boshqa katta raqamlar shu orqali chiqariladi.
+function fmtNum(n) {
+  const num = Math.round(Number(n) || 0);
+  return num.toLocaleString('ru-RU').replace(/,/g, ' ');
+}
+
 // Telegram xabarlari HTML parse_mode bilan yuborilgani uchun, foydalanuvchi kiritgan matnni xavfsiz qilib chiqaramiz
 function escapeHtmlServer(str) {
   return String(str).replace(/[&<>"']/g, c => ({
@@ -1367,7 +1374,7 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
   const headerEmoji = order.orderType === 'dostavka' ? '🚚' : (order.orderType === 'stol' ? '🍽' : '🥡');
   const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
-  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
+  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
     (addressLines ? `\n\n${addressLines}` : '');
   sendMessage(owner.deliveryGroupId, text, {
     inline_keyboard: [[
@@ -1412,7 +1419,7 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
     const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
     const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
-    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${order.total} so'm`;
+    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
     sendMessage(owner.kitchenGroupId, text, {
       inline_keyboard: [[
         { text: '✅ Qabul qilish', callback_data: `kgaccept:${owner.id}:${order.id}` },
@@ -2052,7 +2059,7 @@ async function handleTelegramUpdate(update) {
     const itemsText = targetOrder.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const caption = `💳 <b>To'lov tasdiqlash so'raladi</b>\n` +
       `${orderCustomerContactLabel(targetOrder)}\n${itemsText}\n\n` +
-      `Jami: ${targetOrder.total} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}` +
+      `Jami: ${fmtNum(targetOrder.total)} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}` +
       `${targetOrder.tableNumber ? ' — stol ' + escapeHtmlServer(targetOrder.tableNumber) : ''}`;
     const approveKb = {
       inline_keyboard: [[
@@ -2204,7 +2211,7 @@ async function handleTelegramUpdate(update) {
       // tezroq javob berish imkoni bo'lishi uchun.
       if (stars <= 3) {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const alertText = `⚠️ <b>Past baho olindi</b> (${starsText})\n${itemsText}\n\nJami: ${order.total} so'm\nMijoz: ${orderCustomerContactLabel(order)}`;
+        const alertText = `⚠️ <b>Past baho olindi</b> (${starsText})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nMijoz: ${orderCustomerContactLabel(order)}`;
         const staffList = owner.staff || [];
         const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
         for (const targetId of new Set([owner.id, ...targetIds])) {
@@ -2315,7 +2322,7 @@ async function handleTelegramUpdate(update) {
         {
           const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
           const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
-          const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${order.total}`;
+          const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
           const staffList = owner.staff || [];
           const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
           const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
@@ -2375,7 +2382,7 @@ async function handleTelegramUpdate(update) {
         // dostavka guruhiga xabar ketadi (customer-order'dagi bilan bir xil).
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${order.total}\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`);
         saveOwners(owners);
@@ -2666,12 +2673,10 @@ function buildAiDirectorText(owner) {
   const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 3);
   const declining = aiDirDecliningItems(owner);
 
-  const fmt = (n) => Math.round(n).toLocaleString('ru-RU').replace(/,/g, ' ');
-
   const lines = ['📊 <b>Bugungi holat</b>', ''];
-  lines.push(`Kecha tushum: <b>${fmt(yesterday.income)} so'm</b>` +
+  lines.push(`Kecha tushum: <b>${fmtNum(yesterday.income)} so'm</b>` +
     (incomeChangePercent !== null ? ` (${incomeChangePercent > 0 ? '+' : ''}${incomeChangePercent}%)` : ''));
-  lines.push(`Foyda: <b>${fmt(yesterday.net)} so'm</b>`);
+  lines.push(`Foyda: <b>${fmtNum(yesterday.net)} so'm</b>`);
   if (topItem) lines.push(`Eng ko'p tushum keltirgan taom (7 kun): <b>${escapeHtmlServer(topItem.name)}</b>`);
 
   if (urgentStock.length) {
@@ -4261,7 +4266,7 @@ const server = http.createServer((req, res) => {
         createdBy: userId
       };
       owner.orders.push(order);
-      logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${total} so'm` });
+      logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${fmtNum(total)} so'm` });
       saveOwners(owners);
 
       if (paymentType === 'karta') {
@@ -4287,7 +4292,7 @@ const server = http.createServer((req, res) => {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const confirmCaption = `💵 <b>Naqd to'lov tasdiqlash kerak</b>\n` +
           `Stol: ${escapeHtmlServer(order.tableNumber || '-')}\n${orderCustomerContactLabel(order)}\n${itemsText}\n\n` +
-          `Jami: ${total} so'm\n\nMijoz kassaga to'lov qilgach, shu yerda tasdiqlang - shundan keyin oshpazga ketadi.`;
+          `Jami: ${fmtNum(total)} so'm\n\nMijoz kassaga to'lov qilgach, shu yerda tasdiqlang - shundan keyin oshpazga ketadi.`;
         const confirmKb = {
           inline_keyboard: [[
             { text: '✅ To\'lov qabul qilindi', callback_data: `payok:${owner.id}:${order.id}` },
@@ -4301,7 +4306,7 @@ const server = http.createServer((req, res) => {
       } else {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`);
         notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
@@ -4585,13 +4590,13 @@ const server = http.createServer((req, res) => {
         createdBy: userId
       };
       ctx.owner.orders.push(order);
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${total} so'm` });
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${fmtNum(total)} so'm` });
       saveOwners(owners);
 
       // Oshxonaga (egaga + oshpazlarga) xabar yuboriladi
       const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
-        `${itemsText}\n\nJami: ${total}\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`);
       notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
@@ -4929,7 +4934,7 @@ const server = http.createServer((req, res) => {
       if (status === 'tayyor') {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
-        const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${order.total}`;
+        const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
 
         const staffList = ctx.owner.staff || [];
         const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
@@ -4973,7 +4978,7 @@ const server = http.createServer((req, res) => {
 
       order.deliveredBy = userId;
       order.deliveredAt = new Date().toISOString();
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${order.total} so'm — yetkazib berildi` });
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
       saveOwners(owners);
 
       // Buyurtma "Yetkazildi" deb belgilangach, mijozdan xizmatni baholashini
@@ -5052,7 +5057,7 @@ const server = http.createServer((req, res) => {
       const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
       const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
-      const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${order.total} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}`;
+      const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}`;
       const staffList = ctx.owner.staff || [];
       const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
       for (const targetId of new Set([ctx.owner.id, ...targetIds])) {
@@ -6368,17 +6373,17 @@ const server = http.createServer((req, res) => {
     const q = String(question || '').toLowerCase();
 
     if (/bugun/.test(q) && /foyda|savdo|kirim/.test(q)) {
-      return `Bugungi kirim: ${ctx.cashflow.today.income} so'm, xarajat: ${ctx.cashflow.today.expense} so'm, sof foyda: ${ctx.cashflow.today.net} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
+      return `Bugungi kirim: ${fmtNum(ctx.cashflow.today.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.today.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.today.net)} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
     }
     if (/hafta/.test(q) && /foyda|savdo|kirim/.test(q)) {
-      return `Shu hafta kirim: ${ctx.cashflow.week.income} so'm, xarajat: ${ctx.cashflow.week.expense} so'm, sof foyda: ${ctx.cashflow.week.net} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
+      return `Shu hafta kirim: ${fmtNum(ctx.cashflow.week.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.week.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.week.net)} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
     }
     if (/oy/.test(q) && /foyda|savdo|kirim/.test(q)) {
-      return `Shu oy kirim: ${ctx.cashflow.month.income} so'm, xarajat: ${ctx.cashflow.month.expense} so'm, sof foyda: ${ctx.cashflow.month.net} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
+      return `Shu oy kirim: ${fmtNum(ctx.cashflow.month.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.month.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.month.net)} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
     }
     if (/top|eng ko'p sotilgan|mashhur|qaysi taom/.test(q)) {
       if (!ctx.topItems.length) return 'Hozircha (so\'nggi 30 kunda) buyurtma tarixi yo\'q.';
-      const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${it.revenue} so'm)`).join('\n');
+      const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`).join('\n');
       return `Eng ko'p sotilgan taomlar (so'nggi 30 kun):\n${list}`;
     }
     if (/pik|band vaqt|qaysi soat|eng gavjum/.test(q)) {
@@ -6389,13 +6394,13 @@ const server = http.createServer((req, res) => {
     if (/kam qolgan|tugab qolayotgan|sklad|zaxira/.test(q)) {
       const low = (ctx.forecast || []).filter(f => f.shortage);
       if (!low.length) return 'Hozircha ertangi kunga yetarli zaxira bor ko\'rinadi (oxirgi 7 kunlik iste\'mol bo\'yicha).';
-      const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${f.currentQty} ${f.unit}, kunlik o'rtacha sarf ${f.avgDailyUsage} ${f.unit}`).join('\n');
+      const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${fmtNum(f.currentQty)} ${f.unit}, kunlik o'rtacha sarf ${fmtNum(f.avgDailyUsage)} ${f.unit}`).join('\n');
       return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
     }
 
     // Umumiy so'rovlarga qisqa umumiy hisobot bilan javob beramiz
     const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
-    return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${ctx.cashflow.today.net} so'm, shu hafta ${ctx.cashflow.week.net} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
+    return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${fmtNum(ctx.cashflow.today.net)} so'm, shu hafta ${fmtNum(ctx.cashflow.week.net)} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
   }
 
   // ---- API: AI analitika — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji (faqat egasi) ----
