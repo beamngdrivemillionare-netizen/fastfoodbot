@@ -248,7 +248,103 @@ function savePaymentRequisites(requisites) {
   return current.paymentRequisites;
 }
 
-// 75-BOSQICH: "hozir botga/Mini App'ga kirish mumkinmi" degan YAGONA tekshiruv
+// ==================== 82-BOSQICH: Egasi o'zi obuna sotib olishi ====================
+// (avtomatik so'rov + admin tasdig'i). Owner "💳 Obuna" bo'limida (Mini App'da
+// yoki bot ichida /obuna_menyu orqali) tarif tanlaydi -> to'lov skrinshotini
+// shu botga rasm qilib yuboradi -> BARCHA adminlarga (allAdminIds()) ✅/❌
+// tugmali xabar boradi -> admin tasdiqlasa subscriptionUntil AVTOMATIK
+// tanlangan tarif muddatiga uzaytiriladi va to'lov payments.json'ga yoziladi.
+//
+// owner.subscriptionPaymentRequest — bitta owner uchun FAQAT bitta joriy
+// so'rov saqlanadi (yangi tarif tanlansa eskisi ustidan yoziladi):
+//   { id, planId, planLabel, amount, days,
+//     status: 'kutilmoqda_skrinshot' | 'kutilmoqda_tasdiq' | 'tasdiqlandi' | 'rad_etildi',
+//     screenshotFileId, requestedAt, screenshotSentAt, decidedAt, decidedBy }
+function createSubscriptionPaymentRequest(owner, planId) {
+  const plans = loadSubscriptionPlans();
+  const plan = plans[planId];
+  if (!plan) return null;
+  owner.subscriptionPaymentRequest = {
+    id: crypto.randomBytes(6).toString('hex'),
+    planId: plan.id,
+    planLabel: plan.label,
+    amount: plan.price,
+    days: plan.days,
+    status: 'kutilmoqda_skrinshot',
+    screenshotFileId: null,
+    requestedAt: new Date().toISOString(),
+    screenshotSentAt: null,
+    decidedAt: null,
+    decidedBy: null
+  };
+  return owner.subscriptionPaymentRequest;
+}
+
+// Owner "💳 Obuna" bo'limini ochganda ko'radigan matn+tugmalar (bot ichida
+// ham, Mini App'dan "skrinshot yuboring" bosqichiga o'tishda ham ishlatiladi).
+async function sendObunaPlansMenu(owner, chatId) {
+  const requisites = loadPaymentRequisites();
+  const plans = loadSubscriptionPlans();
+  const list = Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const planLines = list.map(p => `• <b>${escapeHtmlServer(p.label)}</b> — ${fmtNum(p.price)} so'm${p.discountNote ? ' (' + escapeHtmlServer(p.discountNote) + ')' : ''}`).join('\n');
+  const text = `💳 <b>Obuna tarifini tanlang</b>\n\n${planLines}\n\n` +
+    `To'lov rekvizitlari:\n💳 Karta: <code>${escapeHtmlServer(requisites.cardNumber)}</code>\n👤 Egasi: ${escapeHtmlServer(requisites.cardHolder)}\n\n` +
+    `Tarifni tanlang, so'ng shu summani ko'rsatilgan kartaga o'tkazib, TO'LOV CHEKI (skrinshot) ni shu botga rasm qilib yuboring.`;
+  const kb = { inline_keyboard: list.map(p => [{ text: `${p.label} — ${fmtNum(p.price)} so'm`, callback_data: `subplan:${p.id}` }]) };
+  await sendMessage(chatId, text, kb);
+}
+
+// Admin ✅/❌ bosganda (bot callback'dan) VA admin panelidan (Mini App API'dan)
+// bir xil natija chiqishi uchun qaror mantiqi shu YAGONA joyda. Chaqiruvchi
+// tomon saveOwners(owners)ni O'ZI qiladi (bu funksiya faylga yozmaydi).
+function decideSubscriptionPayment(owner, action, decidedByUserId) {
+  const reqData = owner && owner.subscriptionPaymentRequest;
+  if (!reqData || reqData.status !== 'kutilmoqda_tasdiq') {
+    return { ok: false, reason: 'So\'rov topilmadi yoki allaqachon ko\'rib chiqilgan.' };
+  }
+
+  if (action === 'approve') {
+    const plans = loadSubscriptionPlans();
+    const plan = plans[reqData.planId];
+    const days = (plan && plan.days) || reqData.days || 30;
+    // Muddat hali tugamagan bo'lsa - USHBU muddatning USTIGA qo'shiladi (grace
+    // davrida bo'lsa yoki allaqachon tugagan bo'lsa - hozirgi vaqtdan boshlanadi).
+    const baseMs = (owner.subscriptionUntil && new Date(owner.subscriptionUntil).getTime() > Date.now())
+      ? new Date(owner.subscriptionUntil).getTime()
+      : Date.now();
+    const newUntil = new Date(baseMs + days * 86400000);
+    owner.subscriptionUntil = newUntil.toISOString();
+    owner.expiresAt = owner.subscriptionUntil; // orqaga moslik uchun eski maydon ham yangilanadi
+    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    owner.graceUntil = null;
+    owner.blockedNotifiedAt = null;
+    owner.reminderSentAt = null; // keyingi muddat uchun eslatma qaytadan yuborilishi kerak
+    owner.paid = true;
+    owner.paidAt = new Date().toISOString();
+    reqData.status = 'tasdiqlandi';
+    reqData.decidedAt = new Date().toISOString();
+    reqData.decidedBy = decidedByUserId;
+    recordPayment(owner, reqData.amount);
+    sendMessage(owner.id,
+      `✅ <b>Obuna to'lovingiz tasdiqlandi!</b>\nTarif: ${escapeHtmlServer(reqData.planLabel)}\n` +
+      `Yangi muddat: ${newUntil.toLocaleDateString('uz-UZ')}gacha.\nRahmat! 🙏`);
+    return { ok: true, newUntil: owner.subscriptionUntil };
+  }
+
+  if (action === 'reject') {
+    reqData.status = 'rad_etildi';
+    reqData.decidedAt = new Date().toISOString();
+    reqData.decidedBy = decidedByUserId;
+    sendMessage(owner.id,
+      `❌ <b>Obuna to'lovingiz rad etildi.</b>\nSkrinshot noto'g'ri yoki summa mos emas bo'lishi mumkin. ` +
+      `Qaytadan tarif tanlab urinib ko'ring yoki administrator bilan bog'laning.`);
+    return { ok: true };
+  }
+
+  return { ok: false, reason: 'Noma\'lum amal.' };
+}
+
+
 // (hisob-kitob-bot'dagi access_control.check_subscription_access() bilan bir
 // xil vazifa). Bitta owner obyekti uchun holatni hisoblaydi:
 //   - pending_trial — admin hali trial muddatini tasdiqlamagan (kirish yo'q).
@@ -2042,8 +2138,36 @@ async function handleTelegramUpdate(update) {
     }
 
     if (!targetOwner || !targetOrder) {
-      // Kutilayotgan karta to'lovi topilmadi - bu oddiy rasm bo'lishi mumkin,
-      // jim o'tkazib yuboramiz (xato deb hisoblamaymiz).
+      // Buyurtma to'lovi topilmadi - balki bu OSHXONA EGASINING o'ZI tanlagan
+      // OBUNA TARIFI uchun skrinshot bo'lishi mumkin (82-bosqich).
+      const subOwner = findOwner(owners, userId);
+      if (subOwner && subOwner.subscriptionPaymentRequest &&
+          subOwner.subscriptionPaymentRequest.status === 'kutilmoqda_skrinshot') {
+        const reqData = subOwner.subscriptionPaymentRequest;
+        const photos = msg.photo;
+        const bestPhoto = photos[photos.length - 1]; // Telegram eng kattasini oxiriga qo'yadi
+        reqData.screenshotFileId = bestPhoto.file_id;
+        reqData.status = 'kutilmoqda_tasdiq';
+        reqData.screenshotSentAt = new Date().toISOString();
+        saveOwners(owners);
+
+        await sendMessage(chatId, '📤 Skrinshot qabul qilindi. Administrator tasdiqlashini kuting...');
+
+        const caption = `💳 <b>Obuna to'lovi tasdiqlash so'raladi</b>\n` +
+          `Oshxona: ${escapeHtmlServer(ownerLabel(subOwner))} (ID: <code>${subOwner.id}</code>)\n` +
+          `Tarif: ${escapeHtmlServer(reqData.planLabel)}\nSumma: ${fmtNum(reqData.amount)} so'm`;
+        const subKb = {
+          inline_keyboard: [[
+            { text: '✅ Tasdiqlash', callback_data: `subok:${subOwner.id}` },
+            { text: '❌ Rad etish', callback_data: `subrej:${subOwner.id}` }
+          ]]
+        };
+        for (const adminId of allAdminIds()) {
+          copyMessageWithKeyboard(adminId, chatId, msg.message_id, caption, subKb);
+        }
+      }
+      // Kutilayotgan karta to'lovi ham, obuna so'rovi ham topilmadi - bu oddiy
+      // rasm bo'lishi mumkin, jim o'tkazib yuboramiz (xato deb hisoblamaymiz).
       return;
     }
 
@@ -2087,8 +2211,32 @@ async function handleTelegramUpdate(update) {
     // bog'lanishga yo'naltiradi, tugma "o'lik" bo'lib qolmasligi uchun. ----
     if (data === 'obuna_menyu') {
       await answerCallbackQuery(cq.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, from.id);
+      if (!owner) {
+        await sendMessage(from.id, 'Siz do\'kon egasi sifatida ro\'yxatdan o\'tmagansiz. Administrator bilan bog\'laning.');
+        return;
+      }
+      await sendObunaPlansMenu(owner, from.id);
+      return;
+    }
+
+    // ---- 82-BOSQICH: owner "💳 Obuna" menyusidan biror tarifni tanlaganda
+    // (sendObunaPlansMenu orqali chiqqan tugmalardan biri bosilganda) ----
+    if (data.startsWith('subplan:')) {
+      const [, planId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, from.id);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      const plan = loadSubscriptionPlans()[planId];
+      if (!plan) { await answerCallbackQuery(cq.id, 'Tarif topilmadi.'); return; }
+      createSubscriptionPaymentRequest(owner, planId);
+      saveOwners(owners);
+      await answerCallbackQuery(cq.id, 'Tarif tanlandi ✅');
       await sendMessage(from.id,
-        '💳 Obunani uzaytirish menyusi tez orada shu yerga qo\'shiladi.\nHozircha davom ettirish uchun administrator bilan bog\'laning.');
+        `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
+        `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
+        `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
       return;
     }
 
@@ -2421,6 +2569,42 @@ async function handleTelegramUpdate(update) {
 
     if (!isAdminId(from.id)) {
       await answerCallbackQuery(cq.id, 'Faqat admin qaror qabul qila oladi.');
+      return;
+    }
+
+    // ---- 82-BOSQICH: admin owner'ning obuna to'lov skrinshotini ✅/❌ qilganda
+    // (sendObunaPlansMenu -> subplan -> skrinshot -> shu tugmalar zanjiri) ----
+    if (data.startsWith('subok:') || data.startsWith('subrej:')) {
+      const [action, ownerId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+
+      const editConfirmMessage = (extraLine) => {
+        if (!chatId || !messageId) return Promise.resolve();
+        if (cq.message && cq.message.photo) {
+          return editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n${extraLine}`, null);
+        }
+        return editMessageText(chatId, messageId, `${cq.message.text || ''}\n\n${extraLine}`, null);
+      };
+
+      const reqData = owner.subscriptionPaymentRequest;
+      if (!reqData || reqData.status !== 'kutilmoqda_tasdiq') {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        await editConfirmMessage('(allaqachon ko\'rib chiqilgan)');
+        return;
+      }
+
+      const result = decideSubscriptionPayment(owner, action === 'subok' ? 'approve' : 'reject', from.id);
+      saveOwners(owners);
+
+      if (action === 'subok') {
+        await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
+        await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
+      } else {
+        await editConfirmMessage(`❌ Rad etildi — ${displayName(from)}`);
+        await answerCallbackQuery(cq.id, 'Rad etildi ❌');
+      }
       return;
     }
 
@@ -7604,6 +7788,126 @@ const server = http.createServer((req, res) => {
       const token = createInvite();
       const link = `https://t.me/${BOT_USERNAME}?start=inv_${token}`;
       return sendJSON(res, 200, { ok: true, link });
+    });
+    return;
+  }
+
+  // ==================== 82-BOSQICH: Egasi obuna sotib olish (Mini App) ====================
+  // ---- API: "💳 Obuna" ekrani ochilganda kerak bo'ladigan barcha ma'lumot
+  // (joriy holat, to'lov rekvizitlari, tariflar ro'yxati, kutilayotgan so'rov).
+  // MUHIM: bu endpoint ATAYLAB resolveOwnerContext/isOwnerAccessValid orqali
+  // EMAS, to'g'ridan-to'g'ri findOwner() orqali ishlaydi - aks holda aynan
+  // OBUNASI BLOKLANGAN (shu ekranga eng ko'p muhtoj) egasi kira olmay qolardi.
+  if (req.method === 'POST' && req.url === '/api/subscription-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+
+      const access = getOwnerSubscriptionAccess(owner);
+      const requisites = loadPaymentRequisites();
+      const plans = loadSubscriptionPlans();
+      const plansList = Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      return sendJSON(res, 200, {
+        ok: true,
+        status: access.status,
+        allowed: access.allowed,
+        daysLeft: access.daysLeft,
+        inGrace: access.inGrace,
+        subscriptionUntil: owner.subscriptionUntil || null,
+        requisites: { cardNumber: requisites.cardNumber, cardHolder: requisites.cardHolder },
+        plans: plansList,
+        pendingRequest: owner.subscriptionPaymentRequest || null
+      });
+    });
+    return;
+  }
+
+  // ---- API: owner "💳 Obuna" ekranida bitta tarifni tanlaydi. Skrinshotning
+  // O'ZI hamon Mini App'dan EMAS, botning shaxsiy chatiga RASM qilib
+  // yuboriladi (Telegram Mini App'da fayl yuklash uchun maxsus infratuzilma
+  // kerak bo'lmasligi uchun - qarang: yuqoridagi photo-listener, 82-bosqich).
+  if (req.method === 'POST' && req.url === '/api/subscription-select-plan') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+
+      const plan = loadSubscriptionPlans()[payload.planId];
+      if (!plan) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+
+      const reqData = createSubscriptionPaymentRequest(owner, payload.planId);
+      saveOwners(owners);
+
+      // Botga o'tib skrinshot yuborishni eslatib, shaxsiy chatni ochish uchun link ham qaytaramiz.
+      sendMessage(owner.id,
+        `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
+        `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
+        `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
+
+      return sendJSON(res, 200, { ok: true, request: reqData, botUsername: BOT_USERNAME || null });
+    });
+    return;
+  }
+
+  // ---- API: admin uchun "Kutilayotgan to'lovlar" ro'yxati (skrinshot
+  // yuborilgan, hali tasdiq/rad kutilayotgan barcha so'rovlar). ----
+  if (req.method === 'POST' && req.url === '/api/admin-pending-subscription-payments') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const owners = loadOwners();
+      const pending = owners
+        .filter(o => o.subscriptionPaymentRequest && o.subscriptionPaymentRequest.status === 'kutilmoqda_tasdiq')
+        .map(o => ({
+          ownerId: o.id,
+          ownerLabel: ownerLabel(o),
+          restaurantName: (o.profile && o.profile.name) || null,
+          request: o.subscriptionPaymentRequest
+        }));
+
+      return sendJSON(res, 200, { ok: true, pending });
+    });
+    return;
+  }
+
+  // ---- API: admin panelidan tasdiqlash/rad etish (bot ichidagi ✅/❌
+  // tugmalari bilan bir xil decideSubscriptionPayment() mantig'idan foydalanadi). ----
+  if (req.method === 'POST' && req.url === '/api/admin-subscription-decide') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qaror qabul qila oladi' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, payload.ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Oshxona topilmadi.' });
+
+      const action = payload.action === 'approve' ? 'approve' : (payload.action === 'reject' ? 'reject' : null);
+      if (!action) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
+
+      const result = decideSubscriptionPayment(owner, action, userId);
+      if (!result.ok) return sendJSON(res, 200, result);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, newUntil: result.newUntil || null });
     });
     return;
   }
