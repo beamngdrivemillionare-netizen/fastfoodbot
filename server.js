@@ -785,6 +785,7 @@ function archiveOwnerOrders(owner) {
   if (!orders || !orders.length) return; // buyurtmasi bo'lmagan egani arxivlashning hojati yo'q
   const archive = loadArchivedOrders();
   archive.push({
+    type: 'owner_removed', // butunlay o'chirilgan owner'ning buyurtmalari (Savatcha/tozalash oqimi)
     ownerId: owner.id,
     ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
     removedAt: new Date().toISOString(),
@@ -792,6 +793,76 @@ function archiveOwnerOrders(owner) {
   });
   saveArchivedOrders(archive);
 }
+
+// ====== Buyurtmalar retensiyasi (100-bosqich) — owners.json cheksiz
+// o'sib ketmasligi uchun, ESKI (ORDERS_RETENTION_DAYS'dan katta) buyurtmalar
+// owner.orders'dan olib tashlanadi va shu YUQORIDAGI arxiv fayliga
+// ('archived_orders.json', type: 'retention') ko'chiriladi — O'CHIRILMAYDI,
+// faqat asosiy (har so'rovda to'liq o'qib-yoziladigan) fayldan chiqariladi.
+// Bu bilan: 1) owners.json hajmi va har bir yozish tezligi vaqt o'tishi bilan
+// cheksiz o'smaydi; 2) statistikaga (cashflow, AI Direktor, xodimlar
+// hisoboti) ta'sir qilmaydi, chunki ular hammasi oxirgi 30-90 kunga qaraydi,
+// bu esa ORDERS_RETENTION_DAYS'dan ancha kam; 3) ma'lumot yo'qolmaydi —
+// kerak bo'lsa archived_orders.json'dan tiklash/ko'rish mumkin.
+const ORDERS_RETENTION_DAYS = parseInt(process.env.ORDERS_RETENTION_DAYS, 10) || 120;
+const ORDERS_ARCHIVE_HOUR = 4; // Toshkent vaqti, tungi soat 04:00 — eng kam yuklama vaqti
+let lastOrdersArchiveDateKey = null; // shu kun uchun allaqachon ishlaganini bildiradi (qayta-qayta ishlab ketmasligi uchun)
+
+function archiveOldOrdersAcrossOwners() {
+  const owners = loadOwners();
+  const cutoffTime = Date.now() - ORDERS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const archive = loadArchivedOrders();
+  let ownersChanged = false;
+  let archiveChanged = false;
+  let totalArchived = 0;
+
+  for (const owner of owners) {
+    const orders = owner.orders;
+    if (!orders || !orders.length) continue;
+    const keep = [];
+    const old = [];
+    for (const o of orders) {
+      const t = new Date(o.createdAt).getTime();
+      // createdAt noto'g'ri/yo'q bo'lsa — xavfsiz tomonda qolamiz: o'chirmaymiz.
+      if (Number.isFinite(t) && t < cutoffTime) old.push(o);
+      else keep.push(o);
+    }
+    if (old.length) {
+      archive.push({
+        type: 'retention',
+        ownerId: owner.id,
+        ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
+        archivedAt: new Date().toISOString(),
+        retentionDays: ORDERS_RETENTION_DAYS,
+        count: old.length,
+        orders: old
+      });
+      owner.orders = keep;
+      ownersChanged = true;
+      archiveChanged = true;
+      totalArchived += old.length;
+    }
+  }
+
+  if (archiveChanged) saveArchivedOrders(archive);
+  if (ownersChanged) saveOwners(owners);
+  return totalArchived;
+}
+
+// Har 10 daqiqada tekshiradi: Toshkent vaqti ORDERS_ARCHIVE_HOUR bo'lganda
+// va bugun hali ishlamagan bo'lsa — bir marta arxivlashni ishga tushiradi.
+setInterval(() => {
+  try {
+    if (aiDirTashkentHour(new Date()) !== ORDERS_ARCHIVE_HOUR) return;
+    const todayKey = aiDirDateKey(new Date());
+    if (lastOrdersArchiveDateKey === todayKey) return;
+    lastOrdersArchiveDateKey = todayKey;
+    const count = archiveOldOrdersAcrossOwners();
+    if (count > 0) console.log(`[buyurtmalar arxivlandi] ${count} ta eski buyurtma owners.json'dan archived_orders.json'ga ko'chirildi.`);
+  } catch (err) {
+    console.error('[buyurtmalar arxivlash xatosi]', err && err.message);
+  }
+}, 10 * 60 * 1000);
 
 // ==================== C-bo'lim (16-22-bosqich): "Savatcha" (o'chirilgan
 // do'kon egalarini vaqtincha saqlash) ====================
