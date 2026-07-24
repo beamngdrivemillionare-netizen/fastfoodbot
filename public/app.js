@@ -559,6 +559,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
           ${adminMenuItemHtml({ key: 'tolovlar', icon: 'card', label: "Kutilayotgan to'lovlar" })}
           ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
+          ${adminMenuItemHtml({ key: 'obunaRejalari', icon: 'card', label: 'Obuna rejalari' })}
           ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
           ${adminMenuItemHtml({ key: 'savatcha', icon: 'trash', label: 'Savatcha' })}
           ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
@@ -575,6 +576,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
         if (key === 'tolovlar') { renderAdminPendingPaymentsScreen(goBack); return; }
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
+        if (key === 'obunaRejalari') { renderSubscriptionPlansScreen(goBack); return; }
         if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
         if (key === 'savatcha') { renderTrashScreen(goBack); return; }
         if (key === 'tizim') { loadAndShowSystemStatus(); return; }
@@ -917,8 +919,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="owner-username">${escapeHtml(p.ownerLabel)} · ID: ${escapeHtml(String(p.ownerId))}</div>
           </div>
         </div>
-        <div class="profile-row"><b>Tarif:</b> ${escapeHtml(p.request.planLabel)}</div>
+        <div class="profile-row"><b>Reja:</b> ${escapeHtml(p.request.planLabel)}</div>
         <div class="profile-row"><b>Summa:</b> ${fmtNum(p.request.amount)} so'm</div>
+        ${p.request.tariffLabel ? `<div class="profile-row"><b>Tarif (biriktiriladi):</b> ${escapeHtml(p.request.tariffLabel)}</div>` : ''}
         <div class="profile-row"><b>Skrinshot yuborildi:</b> ${escapeHtml(timeAgo(p.request.screenshotSentAt))}</div>
         <div class="bosh" style="margin:6px 0 10px;">Skrinshotni tekshirish uchun Telegram'dagi bot xabarini ko'ring (shu yerga avtomatik yuborilgan).</div>
         <div class="btn-row" style="margin-top:0;">
@@ -1650,6 +1653,164 @@ const tg = window.Telegram && window.Telegram.WebApp;
       loadTariffList();
     };
   }
+  // =========================================================================
+  // Admin bo'limi: "Obuna rejalari" (G-bo'lim, 73-bosqich) — owner "💳 Obuna"
+  // bo'limida ko'radigan muddat/narx rejalarini (masalan "1 oy — 50 000 so'm")
+  // admin to'liq boshqaradi: qo'shish, narx/muddatni tahrirlash, o'chirish.
+  // Ilgari bu rejalar kod ichida qattiq yozilgan edi (admin o'zgartira
+  // olmasdi) — endi "Tariflar" bo'limi bilan bir xil CRUD naqshi ishlatiladi.
+  // Har bir rejaga ixtiyoriy ravishda F-bo'lim tarifi ham biriktirilishi
+  // mumkin: owner shu rejani tanlab to'lasa, admin tasdiqlaganda muddat
+  // bilan birga owner'ning funksiya-tarifi ham shu tarifga o'zgaradi.
+  // =========================================================================
+  function subscriptionPlanItemHtml(p) {
+    return `
+      <div class="owner-item" data-plan-id="${escapeHtml(p.id)}">
+        <div>
+          <div class="owner-id">${escapeHtml(p.label)}</div>
+          <div class="owner-username">${cfFormatSum(p.price)} so'm · ${p.days} kun${p.discountNote ? ' · ' + escapeHtml(p.discountNote) : ''}</div>
+          <div class="owner-username">${icon('star', 'icon-xs icon-muted')} ${p.tariffLabel ? escapeHtml(p.tariffLabel) : 'Tarif o\'zgarmaydi'}</div>
+        </div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn ikkinchi" data-plan-edit="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
+          <button class="btn xavfli" data-plan-remove="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderSubscriptionPlansScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Obuna rejalari</div>
+        <button class="btn ikkinchi" id="subPlansBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="bosh" style="margin-bottom:10px;">Do'kon egalari "💳 Obuna" bo'limida shu rejalardan birini tanlab, ko'rsatilgan narxni to'laydi. Har bir rejaga ixtiyoriy ravishda tarif ham biriktirishingiz mumkin — to'lov tasdiqlansa, egasining tarifi ham shu tarifga o'zgaradi.</div>
+        <div class="kartochka">
+          <h2>${icon('plus', 'icon-xs')} Yangi reja qo'shish</h2>
+          <label class="field-label">Reja nomi</label>
+          <input type="text" id="subPlanLabelInput" placeholder="Masalan: 1 oy">
+          <label class="field-label">Muddat (kun)</label>
+          <input type="text" id="subPlanDaysInput" placeholder="Masalan: 30" inputmode="numeric">
+          <label class="field-label">Narx (so'm)</label>
+          <input type="text" id="subPlanPriceInput" placeholder="Masalan: 100000" inputmode="numeric">
+          <label class="field-label">Chegirma izohi (ixtiyoriy)</label>
+          <input type="text" id="subPlanNoteInput" placeholder="Masalan: chegirmali">
+          <label class="field-label">Tarif (ixtiyoriy)</label>
+          <select id="subPlanTariffInput"><option value="">Tarif o'zgarmaydi</option></select>
+          <button class="btn" id="subPlanAddBtn" style="margin-top:10px;">Qo'shish</button>
+          <div class="xabar" id="subPlanAddMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('card', 'icon-xs')} Mavjud rejalar</h2>
+          <div id="subPlanList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('subPlansBackBtn').addEventListener('click', () => onBack());
+    document.getElementById('subPlanAddBtn').addEventListener('click', async () => {
+      const labelInput = document.getElementById('subPlanLabelInput');
+      const daysInput = document.getElementById('subPlanDaysInput');
+      const priceInput = document.getElementById('subPlanPriceInput');
+      const noteInput = document.getElementById('subPlanNoteInput');
+      const tariffInput = document.getElementById('subPlanTariffInput');
+      const msgEl = document.getElementById('subPlanAddMsg');
+      const label = labelInput.value.trim();
+      const days = daysInput.value.trim();
+      const price = priceInput.value.trim();
+      if (!label) { msgEl.textContent = 'Iltimos, reja nomini kiriting.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(days) || parseInt(days, 10) <= 0) { msgEl.textContent = 'Muddat musbat butun son (kun) bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(price)) { msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      msgEl.textContent = '';
+      const res = await apiPost('/api/subscription-plan-add', {
+        initData, label, days, price, discountNote: noteInput.value.trim(), tariffId: tariffInput.value || null
+      });
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      labelInput.value = ''; daysInput.value = ''; priceInput.value = ''; noteInput.value = ''; tariffInput.value = '';
+      loadSubscriptionPlanList();
+    });
+    await loadSubscriptionPlanList();
+  }
+
+  async function loadSubscriptionPlanList() {
+    const el = document.getElementById('subPlanList');
+    const tariffSelect = document.getElementById('subPlanTariffInput');
+    if (!el) return;
+    const res = await apiPost('/api/subscription-plan-list', { initData });
+    if (!res.ok) { el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+
+    if (tariffSelect) {
+      tariffSelect.innerHTML = `<option value="">Tarif o'zgarmaydi</option>` +
+        res.tariffs.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+    }
+
+    if (!res.plans.length) { el.innerHTML = `<div class="bosh">Hozircha reja qo'shilmagan.</div>`; return; }
+    el.innerHTML = res.plans.map(subscriptionPlanItemHtml).join('');
+    el.querySelectorAll('[data-plan-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-plan-edit');
+        const current = res.plans.find(p => p.id === id);
+        if (current) showSubscriptionPlanEditModal(current, res.tariffs);
+      });
+    });
+    el.querySelectorAll('[data-plan-remove]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-plan-remove');
+        const current = res.plans.find(p => p.id === id);
+        if (!confirm(`"${current ? current.label : ''}" rejasini o'chirasizmi?`)) return;
+        const r = await apiPost('/api/subscription-plan-remove', { initData, id });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
+        loadSubscriptionPlanList();
+      });
+    });
+  }
+
+  function showSubscriptionPlanEditModal(plan, tariffs) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:340px;">
+        <h3>Rejani tahrirlash</h3>
+        <label class="field-label">Reja nomi</label>
+        <input type="text" id="subPlanEditLabelInput" value="${escapeHtml(plan.label)}">
+        <label class="field-label">Muddat (kun)</label>
+        <input type="text" id="subPlanEditDaysInput" value="${plan.days}" inputmode="numeric">
+        <label class="field-label">Narx (so'm)</label>
+        <input type="text" id="subPlanEditPriceInput" value="${plan.price}" inputmode="numeric">
+        <label class="field-label">Chegirma izohi (ixtiyoriy)</label>
+        <input type="text" id="subPlanEditNoteInput" value="${plan.discountNote ? escapeHtml(plan.discountNote) : ''}">
+        <label class="field-label">Tarif (ixtiyoriy)</label>
+        <select id="subPlanEditTariffInput">
+          <option value="">Tarif o'zgarmaydi</option>
+          ${tariffs.map(t => `<option value="${escapeHtml(t.id)}" ${t.id === plan.tariffId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
+        </select>
+        <div class="xabar" id="subPlanEditMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="subPlanEditCancelBtn">Bekor qilish</button>
+          <button class="btn" id="subPlanEditSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('subPlanEditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('subPlanEditSaveBtn').onclick = async () => {
+      const msgEl = document.getElementById('subPlanEditMsg');
+      const label = document.getElementById('subPlanEditLabelInput').value.trim();
+      const days = document.getElementById('subPlanEditDaysInput').value.trim();
+      const price = document.getElementById('subPlanEditPriceInput').value.trim();
+      const note = document.getElementById('subPlanEditNoteInput').value.trim();
+      const tariffId = document.getElementById('subPlanEditTariffInput').value || null;
+      if (!label) { msgEl.textContent = 'Iltimos, reja nomini kiriting.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(days) || parseInt(days, 10) <= 0) { msgEl.textContent = 'Muddat musbat butun son (kun) bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(price)) { msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      const res = await apiPost('/api/subscription-plan-update', {
+        initData, id: plan.id, label, days, price, discountNote: note, tariffId
+      });
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      overlay.remove();
+      loadSubscriptionPlanList();
+    };
+  }
+
   // =========================================================================
   // Bosiladigan (accordion) bo'lim komponenti — renderProfileForm() ichida
   // kamdan-kam o'zgartiriladigan bo'limlarni (kategoriyalar, aksiyalar,
@@ -3041,7 +3202,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       requisitesCard.style.display = 'none';
       plansCard.style.display = '';
       plansCard.innerHTML = `
-        <div class="section-label">Tanlangan tarif: ${escapeHtml(req.planLabel)} (${fmtNum(req.amount)} so'm)</div>
+        <div class="section-label">Tanlangan reja: ${escapeHtml(req.planLabel)} (${fmtNum(req.amount)} so'm)</div>
+        ${req.tariffLabel ? `<div class="bosh">Tarif: ${escapeHtml(req.tariffLabel)}</div>` : ''}
         <div class="bosh">To'lov chekining (skrinshotning) RASMINI botning shaxsiy chatiga yuboring — administrator tekshirib tasdiqlagach, obunangiz avtomatik yangilanadi.</div>
         ${res.botUsername ? `<button class="btn ikkinchi" id="subOpenBotBtn" style="margin-top:10px;">Botni ochish</button>` : ''}
       `;
@@ -3060,7 +3222,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       plansCard.style.display = '';
       plansCard.innerHTML = `
         <div class="section-label">🕓 Tasdiqlanishi kutilmoqda</div>
-        <div class="bosh">Tarif: ${escapeHtml(req.planLabel)} — ${fmtNum(req.amount)} so'm. Skrinshotingiz administratorga yuborildi, tasdiqlanishini kuting.</div>
+        <div class="bosh">Reja: ${escapeHtml(req.planLabel)} — ${fmtNum(req.amount)} so'm${req.tariffLabel ? ' · Tarif: ' + escapeHtml(req.tariffLabel) : ''}. Skrinshotingiz administratorga yuborildi, tasdiqlanishini kuting.</div>
       `;
       return;
     }
@@ -3086,6 +3248,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div>
               <div class="owner-id">${escapeHtml(p.label)}</div>
               <div class="owner-username">${fmtNum(p.price)} so'm${p.discountNote ? ' · ' + escapeHtml(p.discountNote) : ''}</div>
+              ${p.tariffLabel ? `<div class="owner-username">${icon('star', 'icon-xs icon-muted')} Tarif: ${escapeHtml(p.tariffLabel)}</div>` : ''}
             </div>
             <button class="btn" data-plan-id="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 14px;">Tanlash</button>
           </div>
