@@ -8278,23 +8278,31 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.extraPhone = '';
       customerState.lastOrderRequestId = null;
       if (overlay) overlay.remove();
-      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
-      else renderCustomerMenuTab();
-      const topMsg = document.createElement('div');
-      topMsg.className = 'xabar ok';
+
+      let successMsgHtml;
+      let needsPaymentProofModal = false;
       if (res.paymentPending) {
         if (res.paymentConfirmMethod === 'naqd_kassa') {
-          topMsg.innerHTML = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm).<br>` +
+          successMsgHtml = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm).<br>` +
             `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
         } else {
-
-          topMsg.innerHTML = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm) — <b>tasdiqlash kutilmoqda</b>.`;
-          showPaymentProofModal();
+          successMsgHtml = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm) — <b>tasdiqlash kutilmoqda</b>.`;
+          needsPaymentProofModal = true;
         }
       } else {
-        topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+        successMsgHtml = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
       }
-      document.querySelector('.panel').prepend(topMsg);
+
+      renderLiveBoardScreen(() => renderCustomerMenuTab());
+      const topMsg = document.createElement('div');
+      topMsg.className = 'xabar ok';
+      topMsg.innerHTML = successMsgHtml;
+      const panelEl = document.querySelector('.live-board-panel');
+      const hintEl = panelEl && panelEl.querySelector('.live-board-hint');
+      if (panelEl && hintEl) panelEl.insertBefore(topMsg, hintEl);
+      else if (panelEl) panelEl.prepend(topMsg);
+
+      if (needsPaymentProofModal) showPaymentProofModal();
     } else {
       if (sendBtn) sendBtn.disabled = false;
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
