@@ -2820,10 +2820,37 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka" id="subStatusCard"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="kartochka" id="subRequisitesCard" style="display:none;"></div>
         <div class="kartochka" id="subPlansCard" style="display:none;"></div>
+        <div class="kartochka" id="subHistoryCard">
+          <h2>Obuna tarixi</h2>
+          <div id="subHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
       </div>
     `);
     document.getElementById('subBackBtn').addEventListener('click', () => onBack && onBack());
     await loadOwnerSubscriptionStatus(onBack);
+    await loadOwnerSubscriptionHistory();
+  }
+
+  // 15-bosqich (B-bo'lim): egasi o'ziga tegishli barcha o'tgan obuna
+  // to'lovlarini (tasdiqlangan, muddatni uzaytirgan) shu yerda ko'radi.
+  async function loadOwnerSubscriptionHistory() {
+    const listEl = document.getElementById('subHistoryList');
+    if (!listEl) return;
+    const res = await apiPost('/api/subscription-history', { initData });
+    if (!res.ok) { listEl.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`; return; }
+    if (!res.history || !res.history.length) {
+      listEl.innerHTML = `<div class="bosh">Hali to'lov tarixi yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.history.map(h => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(h.planLabel || 'Obuna')}</div>
+          <div class="owner-username">${new Date(h.at).toLocaleDateString('uz-UZ')}${h.days ? ` · ${h.days} kun` : ''}</div>
+        </div>
+        <div class="owner-id">${fmtNum(h.amount)} so'm</div>
+      </div>
+    `).join('');
   }
 
   async function loadOwnerSubscriptionStatus(onBack) {
