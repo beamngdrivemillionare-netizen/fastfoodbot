@@ -4569,10 +4569,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/customer-queue-status') {
+  if (req.method === 'POST' && req.url === '/api/live-board') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, orderId } = payload;
+      const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -4583,36 +4583,31 @@ const server = http.createServer((req, res) => {
       if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
 
       const allOrders = owner.orders || [];
-      const order = allOrders.find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (String(order.customerId) !== userId) return sendJSON(res, 200, { ok: false, reason: 'Bu sizning buyurtmangiz emas.' });
+      const LIVE_BOARD_MAX = 40;
+      const READY_WINDOW_MS = 15 * 60 * 1000; // "Tayyor" ustunida 15 daqiqagacha ko'rinib turadi
+      const now = Date.now();
 
-      const completed = allOrders
-        .filter(o => o.status === 'tayyor' && o.readyAt && o.createdAt)
+      const isRecentlyReady = (o) => o.status === 'tayyor' && o.readyAt
+        && (now - new Date(o.readyAt).getTime()) <= READY_WINDOW_MS;
+
+      const preparing = allOrders
+        .filter(o => o.status === 'yangi' || o.status === 'tayyorlanmoqda')
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+        .slice(0, LIVE_BOARD_MAX)
+        .map(o => ({ id: o.id }));
+
+      const ready = allOrders
+        .filter(isRecentlyReady)
         .sort((a, b) => new Date(b.readyAt) - new Date(a.readyAt))
-        .slice(0, 20);
-      let avgMs = 10 * 60 * 1000;
-      if (completed.length) {
-        const totalMs = completed.reduce((sum, o) => sum + (new Date(o.readyAt) - new Date(o.createdAt)), 0);
-        avgMs = Math.max(60000, totalMs / completed.length);
-      }
-      const avgMinutes = Math.max(1, Math.round(avgMs / 60000));
+        .slice(0, LIVE_BOARD_MAX)
+        .map(o => ({ id: o.id }));
 
-      if (order.status === 'tayyor' || order.status === 'bekor_qilindi') {
-        return sendJSON(res, 200, { ok: true, status: order.status, aheadCount: 0, avgMinutes, etaMinutes: 0 });
-      }
+      const myOrderIds = allOrders
+        .filter(o => String(o.customerId) === userId
+          && (o.status === 'yangi' || o.status === 'tayyorlanmoqda' || isRecentlyReady(o)))
+        .map(o => o.id);
 
-      const active = allOrders.filter(o => o.status === 'yangi' || o.status === 'tayyorlanmoqda');
-      const aheadCount = active.filter(o => o.id !== order.id && new Date(o.createdAt) < new Date(order.createdAt)).length;
-
-      const isStarted = order.status === 'tayyorlanmoqda' && order.startedAt;
-      const elapsedMs = Date.now() - new Date(isStarted ? order.startedAt : order.createdAt).getTime();
-      const ordersAheadOfReady = isStarted ? 1 : (aheadCount + 1);
-      let etaMs = ordersAheadOfReady * avgMs - elapsedMs;
-      if (etaMs < 0) etaMs = Math.min(avgMs, 60000);
-      const etaMinutes = Math.max(1, Math.round(etaMs / 60000));
-
-      return sendJSON(res, 200, { ok: true, status: order.status, aheadCount, avgMinutes, etaMinutes });
+      return sendJSON(res, 200, { ok: true, preparing, ready, myOrderIds });
     });
     return;
   }
