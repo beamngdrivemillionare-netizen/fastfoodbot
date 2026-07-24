@@ -163,10 +163,14 @@ function ensureSubscriptionFields(owner) {
 // tanlangan paytdagi narxdan to'laydi, xuddi hisob-kitob'dagidek).
 // Narxlar so'mda, admin panelidan keyinchalik o'zgartirilishi mumkin bo'ladi
 // (hozircha faqat standart qiymatlar — sozlash UI'si keyingi bosqichda).
+// tariffId: reja tasdiqlanganda owner'ga AVTOMATIK biriktiriladigan F-bo'lim
+// tarifi (qarang: decideSubscriptionPayment). null bo'lsa — owner'ning joriy
+// tarifi o'zgarmaydi (faqat muddat uzayadi). Bu maydon admin panelidan
+// "Obuna rejalari" bo'limida sozlanadi (qarang: /api/subscription-plan-*).
 const DEFAULT_SUBSCRIPTION_PLANS = {
-  '1m': { id: '1m', label: '1 oy', days: 30, price: 50000, discountNote: null, order: 0 },
-  '3m': { id: '3m', label: '3 oy', days: 90, price: 135000, discountNote: 'chegirmali', order: 1 },
-  '12m': { id: '12m', label: '12 oy', days: 365, price: 480000, discountNote: 'chegirmali', order: 2 }
+  '1m': { id: '1m', label: '1 oy', days: 30, price: 50000, discountNote: null, tariffId: null, order: 0 },
+  '3m': { id: '3m', label: '3 oy', days: 90, price: 135000, discountNote: 'chegirmali', tariffId: null, order: 1 },
+  '12m': { id: '12m', label: '12 oy', days: 365, price: 480000, discountNote: 'chegirmali', tariffId: null, order: 2 }
 };
 
 // Fayl hali mavjud bo'lmasa (birinchi ishga tushirish) — standart rejalar
@@ -264,12 +268,23 @@ function createSubscriptionPaymentRequest(owner, planId) {
   const plans = loadSubscriptionPlans();
   const plan = plans[planId];
   if (!plan) return null;
+  // Reja qaysi F-bo'lim tarifini bilan bog'langan bo'lsa (admin
+  // "Obuna rejalari"da sozlagan), shu tarif nomini ham so'rovga
+  // "suratga olib" saqlaymiz — keyin tarif o'chirilsa/o'zgarsa ham
+  // so'rovdagi ko'rsatilgan nom to'g'ri qoladi.
+  let tariffLabel = null;
+  if (plan.tariffId) {
+    const tariff = loadTariffs().find(t => t.id === plan.tariffId);
+    tariffLabel = tariff ? tariff.name : null;
+  }
   owner.subscriptionPaymentRequest = {
     id: crypto.randomBytes(6).toString('hex'),
     planId: plan.id,
     planLabel: plan.label,
     amount: plan.price,
     days: plan.days,
+    tariffId: plan.tariffId || null,
+    tariffLabel,
     status: 'kutilmoqda_skrinshot',
     screenshotFileId: null,
     requestedAt: new Date().toISOString(),
@@ -285,8 +300,13 @@ function createSubscriptionPaymentRequest(owner, planId) {
 async function sendObunaPlansMenu(owner, chatId) {
   const requisites = loadPaymentRequisites();
   const plans = loadSubscriptionPlans();
+  const tariffs = loadTariffs();
   const list = Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0));
-  const planLines = list.map(p => `• <b>${escapeHtmlServer(p.label)}</b> — ${fmtNum(p.price)} so'm${p.discountNote ? ' (' + escapeHtmlServer(p.discountNote) + ')' : ''}`).join('\n');
+  const planLines = list.map(p => {
+    const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
+    const tariffNote = tariff ? ` — tarif: ${escapeHtmlServer(tariff.name)}` : '';
+    return `• <b>${escapeHtmlServer(p.label)}</b> — ${fmtNum(p.price)} so'm${p.discountNote ? ' (' + escapeHtmlServer(p.discountNote) + ')' : ''}${tariffNote}`;
+  }).join('\n');
   const text = `💳 <b>Obuna tarifini tanlang</b>\n\n${planLines}\n\n` +
     `To'lov rekvizitlari:\n💳 Karta: <code>${escapeHtmlServer(requisites.cardNumber)}</code>\n👤 Egasi: ${escapeHtmlServer(requisites.cardHolder)}\n\n` +
     `Tarifni tanlang, so'ng shu summani ko'rsatilgan kartaga o'tkazib, TO'LOV CHEKI (skrinshot) ni shu botga rasm qilib yuboring.`;
@@ -321,14 +341,23 @@ function decideSubscriptionPayment(owner, action, decidedByUserId) {
     owner.reminderSentAt = null; // keyingi muddat uchun eslatma qaytadan yuborilishi kerak
     owner.paid = true;
     owner.paidAt = new Date().toISOString();
+    // Reja bilan F-bo'lim tarifi ham bog'langan bo'lsa (admin "Obuna
+    // rejalari"da tariffId sozlagan), owner'ning funksiya-tarifi ham shu
+    // rejaga mos tarifga AVTOMATIK o'zgaradi. tariffId yo'q (null) bo'lsa —
+    // owner'ning joriy tarifi tegilmaydi (faqat muddat uzayadi).
+    const grantedTariffId = plan ? (plan.tariffId || null) : null;
+    if (grantedTariffId) {
+      owner.tariffId = grantedTariffId;
+    }
     reqData.status = 'tasdiqlandi';
     reqData.decidedAt = new Date().toISOString();
     reqData.decidedBy = decidedByUserId;
     recordPayment(owner, reqData.amount, {
       planId: reqData.planId, planLabel: reqData.planLabel, days, source: 'subscription'
     });
+    const tariffNote = reqData.tariffLabel ? `\nTarif: ${escapeHtmlServer(reqData.tariffLabel)}` : '';
     sendMessage(owner.id,
-      `✅ <b>Obuna to'lovingiz tasdiqlandi!</b>\nTarif: ${escapeHtmlServer(reqData.planLabel)}\n` +
+      `✅ <b>Obuna to'lovingiz tasdiqlandi!</b>\nReja: ${escapeHtmlServer(reqData.planLabel)}${tariffNote}\n` +
       `Yangi muddat: ${newUntil.toLocaleDateString('uz-UZ')}gacha.\nRahmat! 🙏`);
     return { ok: true, newUntil: owner.subscriptionUntil };
   }
@@ -7403,6 +7432,158 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+
+  // =========================================================================
+  // ---- API: "Obuna rejalari" (G-bo'lim, subscription_plans.json) — admin
+  // panelidan owner "💳 Obuna" bo'limida ko'radigan muddat/narx rejalarini
+  // to'liq boshqarish (qo'shish/tahrirlash/o'chirish). Ilgari bu rejalar
+  // FAQAT kod ichidagi DEFAULT_SUBSCRIPTION_PLANS orqali qat'iy belgilangan
+  // edi (admin hech narsani o'zgartira olmasdi) — endi tariffs.json'dagi
+  // kabi to'liq CRUD orqali boshqariladi. Har bir rejaga ixtiyoriy ravishda
+  // F-bo'lim tarifi (tariffId) ham biriktirilishi mumkin — owner shu rejani
+  // tanlab to'lasa, admin tasdiqlaganda muddat bilan birga tarifi ham shu
+  // tarifga o'zgaradi (qarang: decideSubscriptionPayment).
+  // =========================================================================
+  if (req.method === 'POST' && req.url === '/api/subscription-plan-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const tariffs = loadTariffs();
+      const plans = Object.values(loadSubscriptionPlans())
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map(p => {
+          const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
+          return { ...p, tariffLabel: tariff ? tariff.name : null };
+        });
+      return sendJSON(res, 200, { ok: true, plans, tariffs: tariffs.map(t => ({ id: t.id, name: t.name })) });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/subscription-plan-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, label, days, price, discountNote, tariffId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
+
+      const labelTrim = String(label || '').trim();
+      if (!labelTrim) return sendJSON(res, 200, { ok: false, reason: 'Reja nomini kiriting.' });
+
+      const daysVal = parseInt(days, 10);
+      if (!Number.isInteger(daysVal) || daysVal <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Muddat (kun) musbat butun son bo\'lishi kerak.' });
+      }
+
+      const priceVal = Number(price);
+      if (!Number.isFinite(priceVal) || priceVal < 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
+      }
+
+      let tariffIdVal = null;
+      if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
+        const tariffs = loadTariffs();
+        if (!tariffs.some(t => t.id === tariffId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Tanlangan tarif topilmadi.' });
+        }
+        tariffIdVal = tariffId;
+      }
+
+      const plans = loadSubscriptionPlans();
+      const id = crypto.randomBytes(4).toString('hex');
+      const order = Object.keys(plans).length;
+      plans[id] = {
+        id,
+        label: labelTrim,
+        days: daysVal,
+        price: priceVal,
+        discountNote: discountNote ? String(discountNote).trim() || null : null,
+        tariffId: tariffIdVal,
+        order
+      };
+      saveSubscriptionPlans(plans);
+
+      return sendJSON(res, 200, { ok: true, plan: plans[id] });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/subscription-plan-update') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, label, days, price, discountNote, tariffId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+
+      const plans = loadSubscriptionPlans();
+      const plan = plans[id];
+      if (!plan) return sendJSON(res, 200, { ok: false, reason: 'Reja topilmadi.' });
+
+      const labelTrim = String(label || '').trim();
+      if (!labelTrim) return sendJSON(res, 200, { ok: false, reason: 'Reja nomini kiriting.' });
+
+      const daysVal = parseInt(days, 10);
+      if (!Number.isInteger(daysVal) || daysVal <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Muddat (kun) musbat butun son bo\'lishi kerak.' });
+      }
+
+      const priceVal = Number(price);
+      if (!Number.isFinite(priceVal) || priceVal < 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
+      }
+
+      let tariffIdVal = null;
+      if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
+        const tariffs = loadTariffs();
+        if (!tariffs.some(t => t.id === tariffId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Tanlangan tarif topilmadi.' });
+        }
+        tariffIdVal = tariffId;
+      }
+
+      plan.label = labelTrim;
+      plan.days = daysVal;
+      plan.price = priceVal;
+      plan.discountNote = discountNote ? String(discountNote).trim() || null : null;
+      plan.tariffId = tariffIdVal;
+      saveSubscriptionPlans(plans);
+
+      return sendJSON(res, 200, { ok: true, plan });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/subscription-plan-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+
+      const plans = loadSubscriptionPlans();
+      if (!plans[id]) return sendJSON(res, 200, { ok: false, reason: 'Reja topilmadi.' });
+      // Eslatma: bu rejani ilgari tanlagan so'rovlar (subscriptionPaymentRequest)
+      // o'zining planLabel/amount/days "suratini" saqlaydi, shuning uchun
+      // reja shu yerdan o'chirilsa ham eski so'rovlar buzilmaydi.
+      delete plans[id];
+      Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((p, i) => { p.order = i; });
+      saveSubscriptionPlans(plans);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // Serverning umumiy holatini (ishlash vaqti, xotira, xodimlar/buyurtmalar
   // soni, ma'lumot fayllari hajmi, webhook statistikasi) bitta so'rovda
   // qaytaradi — faqat admin ko'ra oladi.
@@ -8160,7 +8341,13 @@ const server = http.createServer((req, res) => {
       const access = getOwnerSubscriptionAccess(owner);
       const requisites = loadPaymentRequisites();
       const plans = loadSubscriptionPlans();
-      const plansList = Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0));
+      const tariffs = loadTariffs();
+      const plansList = Object.values(plans)
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map(p => {
+          const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
+          return { ...p, tariffLabel: tariff ? tariff.name : null };
+        });
 
       return sendJSON(res, 200, {
         ok: true,
