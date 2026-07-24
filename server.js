@@ -673,6 +673,107 @@ function archiveOwnerOrders(owner) {
   saveArchivedOrders(archive);
 }
 
+// ==================== C-bo'lim (16-22-bosqich): "Savatcha" (o'chirilgan
+// do'kon egalarini vaqtincha saqlash) ====================
+// Ilgari /api/remove-owner ownerni owners.json'dan BUTUNLAY, DARHOL
+// o'chirib yuborardi (faqat buyurtmalar tarixi alohida arxivlanardi —
+// menyu, xodimlar, sozlamalar esa qaytarib bo'lmaydigan tarzda yo'qolardi).
+// Endi shu o'rniga owner TO'LIQ holicha (barcha maydonlari bilan) "Savatcha"
+// (trash.json) ga ko'chiriladi va TRASH_AUTO_PURGE_DAYS muddat ichida:
+//   - admin xohlagan payt admin paneldan to'g'ridan-to'g'ri tiklashi mumkin;
+//   - YOKI o'chirilgan owner o'zi botga /start yozganda "tiklashni so'rash"
+//     tugmasini bosadi -> so'rov BARCHA adminlarga boradi -> admin
+//     tasdiqlasa (✅/❌ tugmalari bilan, boshqa hech kim emas — 21-bosqich)
+//     owner AYNAN o'sha holatida (sozgamalari bilan, 20-bosqich) qaytariladi.
+// Muddat o'tsa (19-bosqich) — avtomatik, qaytarib bo'lmaydigan tarzda
+// o'chiriladi (faqat buyurtmalar tarixi archiveOwnerOrders() orqali
+// saqlanib qoladi, xuddi ilgarigidek). Har bir voqea (trashed/restore
+// so'ralgan/tiklandi/rad etildi/butunlay o'chirildi) trash_log.json'ga
+// yoziladi (22-bosqich).
+const TRASH_FILE = path.join(DATA_DIR, 'trash.json');
+const TRASH_LOG_FILE = path.join(DATA_DIR, 'trash_log.json');
+const TRASH_AUTO_PURGE_DAYS = 3;
+
+function loadTrash() { return loadJSONArray(TRASH_FILE); }
+function saveTrash(list) { saveJSONArray(TRASH_FILE, list); }
+function loadTrashLog() { return loadJSONArray(TRASH_LOG_FILE); }
+function saveTrashLog(list) { saveJSONArray(TRASH_LOG_FILE, list); }
+
+// 22-bosqich: Savatcha bilan bog'liq har bir voqea shu yerga yoziladi —
+// admin keyinchalik "kim, qachon, nima uchun o'chirilgan/tiklangan" ni
+// tekshira olishi uchun (owner o'chirilgan taqdirda ham log qolaveradi).
+function logTrashEvent(action, owner, extra) {
+  const log = loadTrashLog();
+  log.push(Object.assign({
+    id: crypto.randomBytes(6).toString('hex'),
+    action, // 'trashed' | 'restore_requested' | 'restored' | 'restore_rejected' | 'purged'
+    ownerId: owner ? owner.id : null,
+    ownerLabel: owner ? ownerLabel(owner) : null,
+    at: new Date().toISOString()
+  }, extra || {}));
+  saveTrashLog(log);
+}
+
+// 16-bosqich: ownerni butunlay o'chirish o'rniga shu funksiya chaqiriladi.
+function moveOwnerToTrash(owner, trashedByUserId) {
+  const trash = loadTrash();
+  const trashedAt = new Date();
+  const autoPurgeAt = new Date(trashedAt.getTime() + TRASH_AUTO_PURGE_DAYS * 86400000);
+  trash.push({
+    id: crypto.randomBytes(6).toString('hex'),
+    ownerSnapshot: owner,
+    trashedAt: trashedAt.toISOString(),
+    autoPurgeAt: autoPurgeAt.toISOString(),
+    trashedBy: trashedByUserId ? String(trashedByUserId) : null,
+    restoreStatus: 'none', // 'none' | 'pending' | 'rejected'
+    restoreRequestedAt: null
+  });
+  saveTrash(trash);
+  logTrashEvent('trashed', owner, { trashedBy: trashedByUserId ? String(trashedByUserId) : null });
+}
+
+function findTrashEntry(trash, trashId) {
+  return trash.find(t => t.id === trashId);
+}
+
+function findTrashEntryByOwnerId(trash, ownerId) {
+  return trash.find(t => String(t.ownerSnapshot && t.ownerSnapshot.id) === String(ownerId));
+}
+
+// 20-bosqich: tiklanganda ownerSnapshot TO'LIQ (barcha sozlamalari,
+// menyusi, xodimlari, buyurtmalari bilan) owners.json'ga qaytariladi —
+// admin yoki owner hech narsani qayta sozlashi shart emas.
+function restoreOwnerFromTrash(trashEntry) {
+  const owners = loadOwners();
+  if (findOwner(owners, trashEntry.ownerSnapshot.id)) {
+    return { ok: false, reason: 'Bu ID bilan allaqachon boshqa do\'kon egasi mavjud.' };
+  }
+  owners.push(trashEntry.ownerSnapshot);
+  saveOwners(owners);
+  return { ok: true };
+}
+
+// 19-bosqich: har soatlik interval (checkOwnerExpirations bilan bir
+// vaqtda) TRASH_AUTO_PURGE_DAYS muddati o'tgan yozuvlarni butunlay,
+// qaytarib bo'lmaydigan tarzda o'chiradi — faqat buyurtmalar tarixi
+// (archiveOwnerOrders orqali) alohida saqlanib qoladi.
+async function checkTrashAutoPurge() {
+  const trash = loadTrash();
+  const now = Date.now();
+  const remaining = [];
+  let purgedAny = false;
+  for (const entry of trash) {
+    if (new Date(entry.autoPurgeAt).getTime() <= now) {
+      purgedAny = true;
+      archiveOwnerOrders(entry.ownerSnapshot);
+      logTrashEvent('purged', entry.ownerSnapshot, { reason: 'auto_3_kun' });
+    } else {
+      remaining.push(entry);
+    }
+  }
+  if (purgedAny) saveTrash(remaining);
+}
+
 // ====== Shaxsiy profil (ism, familiya, telefon) — har bir bot foydalanuvchisi
 // (mijoz, xodim, egasi) uchun umumiy, bitta martalik ro'yxatdan o'tish ======
 function loadProfiles() { return loadJSONArray(PROFILES_FILE); }
@@ -1819,6 +1920,24 @@ async function handleStartCommand(chatId, from, text) {
       await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
       return;
     }
+    // 17-bosqich: agar bu foydalanuvchi "Savatcha"da bo'lsa (admin tomonidan
+    // o'chirilgan, lekin hali TRASH_AUTO_PURGE_DAYS muddati o'tmagan) —
+    // ro'yxatdan o'tish o'rniga tiklashni so'rash imkoni ko'rsatiladi.
+    const trash = loadTrash();
+    const trashEntry = findTrashEntryByOwnerId(trash, from.id);
+    if (trashEntry) {
+      if (trashEntry.restoreStatus === 'pending') {
+        await sendMessage(chatId,
+          '🕓 Oshxonangizni tiklash so\'rovingiz allaqachon adminga yuborilgan, tasdiqlanishini kuting.');
+        return;
+      }
+      const daysLeft = Math.max(0, Math.ceil((new Date(trashEntry.autoPurgeAt).getTime() - Date.now()) / 86400000));
+      await sendMessage(chatId,
+        `⚠️ Oshxonangiz o'chirilgan (Savatchada saqlanmoqda, ${daysLeft} kun ichida tiklash mumkin).\n` +
+        `Barcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib turibdi. Tiklashni so'rasangiz, so'rovingiz administratorga yuboriladi.`,
+        { inline_keyboard: [[{ text: '🔄 Tiklashni so\'rash', callback_data: `request_restore:${trashEntry.id}` }]] });
+      return;
+    }
     // 10-bosqich: avval bu yerda "sizga taklif havolasi kerak" deb qat'iy
     // to'xtatilardi — endi notanish foydalanuvchi ham o'zi ro'yxatdan
     // o'tishi mumkin, taklif havolasiz.
@@ -2273,6 +2392,87 @@ async function handleTelegramUpdate(update) {
       }
       pendingSelfRegistration.add(String(from.id));
       await sendMessage(from.id, 'Oshxonangiz nomini yozib yuboring (masalan: "Sardor Osh Markazi").');
+      return;
+    }
+
+    // ---- 17-bosqich: o'chirilgan (Savatchadagi) egasi "🔄 Tiklashni
+    // so'rash" tugmasini bosadi -> so'rov BARCHA adminlarga ✅/❌ tugmali
+    // xabar bilan boradi. ----
+    if (data.startsWith('request_restore:')) {
+      const trashId = data.slice('request_restore:'.length);
+      await answerCallbackQuery(cq.id);
+      const trash = loadTrash();
+      const entry = findTrashEntry(trash, trashId);
+      if (!entry) {
+        await sendMessage(from.id, 'Bu so\'rov muddati o\'tgan yoki allaqachon ko\'rib chiqilgan.');
+        return;
+      }
+      if (String(entry.ownerSnapshot.id) !== String(from.id)) {
+        await sendMessage(from.id, 'Bu so\'rov sizga tegishli emas.');
+        return;
+      }
+      if (entry.restoreStatus === 'pending') {
+        await sendMessage(from.id, '🕓 So\'rovingiz allaqachon adminga yuborilgan, tasdiqlanishini kuting.');
+        return;
+      }
+      entry.restoreStatus = 'pending';
+      entry.restoreRequestedAt = new Date().toISOString();
+      saveTrash(trash);
+      logTrashEvent('restore_requested', entry.ownerSnapshot, {});
+
+      await sendMessage(from.id, '📤 So\'rovingiz administratorga yuborildi, tasdiqlanishini kuting.');
+      const restaurantName = (entry.ownerSnapshot.profile && entry.ownerSnapshot.profile.name) || 'oshxona';
+      const daysLeft = Math.max(0, Math.ceil((new Date(entry.autoPurgeAt).getTime() - Date.now()) / 86400000));
+      const kb = {
+        inline_keyboard: [[
+          { text: '✅ Tiklash', callback_data: `restore_approve:${trashId}` },
+          { text: '❌ Rad etish', callback_data: `restore_reject:${trashId}` }
+        ]]
+      };
+      for (const adminId of allAdminIds()) {
+        await sendMessage(adminId,
+          `🔄 <b>Tiklash so'ralmoqda</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b> (ID: <code>${entry.ownerSnapshot.id}</code>)\n` +
+          `Savatchadan avtomatik o'chirilishiga: ${daysLeft} kun qoldi.`, kb);
+      }
+      return;
+    }
+
+    // ---- 21-bosqich: FAQAT admin tasdig'i bilan tiklanadi. Owner o'zi
+    // yoki xodimlari bu tugmani bosolmaydi (isAdminId tekshiruvi). ----
+    if (data.startsWith('restore_approve:') || data.startsWith('restore_reject:')) {
+      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
+      const isApprove = data.startsWith('restore_approve:');
+      const trashId = data.slice((isApprove ? 'restore_approve:' : 'restore_reject:').length);
+      const trash = loadTrash();
+      const entry = findTrashEntry(trash, trashId);
+      if (!entry) { await answerCallbackQuery(cq.id, 'Bu yozuv Savatchada topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
+
+      const restaurantName = (entry.ownerSnapshot.profile && entry.ownerSnapshot.profile.name) || 'oshxona';
+
+      if (isApprove) {
+        const result = restoreOwnerFromTrash(entry);
+        if (!result.ok) { await answerCallbackQuery(cq.id, result.reason, true); return; }
+        saveTrash(trash.filter(t => t.id !== trashId));
+        logTrashEvent('restored', entry.ownerSnapshot, { restoredBy: String(from.id), via: 'bot_request' });
+
+        await answerCallbackQuery(cq.id, '✅ Tiklandi.');
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId, `✅ <b>Tiklandi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
+        }
+        await sendMessage(entry.ownerSnapshot.id,
+          `✅ <b>Oshxonangiz tiklandi!</b>\nBarcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib qolgan. Mini App tugmasi orqali oching.`);
+      } else {
+        entry.restoreStatus = 'rejected';
+        saveTrash(trash);
+        logTrashEvent('restore_rejected', entry.ownerSnapshot, { rejectedBy: String(from.id) });
+
+        await answerCallbackQuery(cq.id, '❌ Rad etildi.');
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId, `❌ <b>Rad etildi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
+        }
+        await sendMessage(entry.ownerSnapshot.id,
+          '❌ Afsuski, tiklash so\'rovingiz rad etildi. Savollar bo\'lsa, administrator bilan bog\'laning.');
+      }
       return;
     }
 
@@ -7811,14 +8011,111 @@ const server = http.createServer((req, res) => {
       let owners = loadOwners();
       const before = owners.length;
       const target = findOwner(owners, id);
-      // 69-bosqich: owner o'chirilishidan OLDIN uning buyurtmalar tarixini
-      // arxivga ko'chiramiz — aks holda owner.orders owner bilan birga
-      // butunlay yo'qolib ketardi.
-      if (target) archiveOwnerOrders(target);
+      // 16-bosqich: endi butunlay o'chirilmaydi — TO'LIQ holicha "Savatcha"ga
+      // ko'chiriladi (3 kun ichida tiklash mumkin, qarang: moveOwnerToTrash).
+      if (target) moveOwnerToTrash(target, userId);
       owners = owners.filter(o => String(o.id) !== String(id));
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, removed: before !== owners.length });
+    });
+    return;
+  }
+
+  // ==================== C-bo'lim (16-22-bosqich): Savatcha API'lari ====================
+  // ---- API: Savatchadagi barcha yozuvlar ro'yxati (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/trash-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const now = Date.now();
+      const list = loadTrash().map(t => ({
+        id: t.id,
+        ownerId: t.ownerSnapshot.id,
+        ownerLabel: ownerLabel(t.ownerSnapshot),
+        restaurantName: (t.ownerSnapshot.profile && t.ownerSnapshot.profile.name) || null,
+        trashedAt: t.trashedAt,
+        autoPurgeAt: t.autoPurgeAt,
+        daysLeft: Math.max(0, Math.ceil((new Date(t.autoPurgeAt).getTime() - now) / 86400000)),
+        restoreStatus: t.restoreStatus
+      })).sort((a, b) => new Date(a.autoPurgeAt) - new Date(b.autoPurgeAt));
+
+      return sendJSON(res, 200, { ok: true, trash: list });
+    });
+    return;
+  }
+
+  // ---- API: Savatchadan to'g'ridan-to'g'ri tiklash (faqat admin, owner
+  // so'rovini kutmasdan ham qila oladi — 21-bosqich: baribir FAQAT admin
+  // orqali amalga oshadi). ----
+  if (req.method === 'POST' && req.url === '/api/trash-restore') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, trashId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin tiklay oladi' });
+      if (!trashId) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const trash = loadTrash();
+      const entry = findTrashEntry(trash, trashId);
+      if (!entry) return sendJSON(res, 200, { ok: false, reason: 'Bu yozuv Savatchada topilmadi.' });
+
+      const result = restoreOwnerFromTrash(entry);
+      if (!result.ok) return sendJSON(res, 200, { ok: false, reason: result.reason });
+
+      saveTrash(trash.filter(t => t.id !== trashId));
+      logTrashEvent('restored', entry.ownerSnapshot, { restoredBy: userId, via: 'admin_panel' });
+      sendMessage(entry.ownerSnapshot.id,
+        `✅ <b>Oshxonangiz tiklandi!</b>\nBarcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib qolgan. Mini App tugmasi orqali oching.`)
+        .catch(() => {});
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: Savatchadan muddatidan oldin, qo'lda butunlay o'chirish
+  // (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/trash-purge-now') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, trashId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+      if (!trashId) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const trash = loadTrash();
+      const entry = findTrashEntry(trash, trashId);
+      if (!entry) return sendJSON(res, 200, { ok: false, reason: 'Bu yozuv Savatchada topilmadi.' });
+
+      archiveOwnerOrders(entry.ownerSnapshot);
+      logTrashEvent('purged', entry.ownerSnapshot, { reason: 'admin_qolda', purgedBy: userId });
+      saveTrash(trash.filter(t => t.id !== trashId));
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: Savatcha bilan bog'liq loglar (faqat admin, 22-bosqich) ----
+  if (req.method === 'POST' && req.url === '/api/trash-log') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const log = loadTrashLog().slice().sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 200);
+      return sendJSON(res, 200, { ok: true, log });
     });
     return;
   }
@@ -8043,6 +8340,14 @@ server.listen(PORT, async () => {
   checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
   setInterval(() => {
     checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
+  }, EXPIRY_CHECK_INTERVAL_MS);
+
+  // 19-bosqich: "Savatcha"dagi 3 kundan oshgan yozuvlarni avtomatik
+  // (qaytarib bo'lmaydigan tarzda) tozalash — xuddi obuna tekshiruvi kabi,
+  // darhol bir marta va keyin har soatda.
+  checkTrashAutoPurge().catch(e => console.error('Savatchani tozalashda xatolik:', e.message));
+  setInterval(() => {
+    checkTrashAutoPurge().catch(e => console.error('Savatchani tozalashda xatolik:', e.message));
   }, EXPIRY_CHECK_INTERVAL_MS);
 
   if (PUBLIC_URL) {
