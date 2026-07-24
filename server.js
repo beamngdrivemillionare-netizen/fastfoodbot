@@ -6986,6 +6986,43 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: to'lov rekvizitlarini olish (faqat admin) — "💳 Obuna"
+  // bo'limida egaga ko'rsatiladigan karta/Click/Payme ma'lumotlari. ----
+  if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-get') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      return sendJSON(res, 200, { ok: true, requisites: loadPaymentRequisites() });
+    });
+    return;
+  }
+
+  // ---- API: to'lov rekvizitlarini tahrirlash (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-set') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, cardNumber, cardHolder, clickNumber, paymeNumber } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+
+      const updated = savePaymentRequisites({
+        cardNumber: String(cardNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardNumber,
+        cardHolder: String(cardHolder || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardHolder,
+        clickNumber: String(clickNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.clickNumber,
+        paymeNumber: String(paymeNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.paymeNumber
+      });
+
+      return sendJSON(res, 200, { ok: true, requisites: updated });
+    });
+    return;
+  }
+
   // ---- API: tariflar ro'yxati (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/tariff-list') {
     readBody(req, (err, payload) => {
