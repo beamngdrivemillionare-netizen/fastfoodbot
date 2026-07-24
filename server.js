@@ -1,143 +1,52 @@
-// Eng yengil Telegram Mini App backend — tashqi kutubxonalarsiz (faqat Node.js o'zi)
-// Ishga tushirish: BOT_TOKEN va ADMIN_ID ni sozlab, `node server.js`
-
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-// ====== SOZLAMALAR (o'zingiznikiga almashtiring) ======
 const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN_BU_YERGA';
-const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA'; // masalan: 123456789
+const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA';
 const PORT = process.env.PORT || 3000;
-// BOT_USERNAME — taklif havolasini (t.me/BOT_USERNAME?start=...) yasash uchun kerak, @ belgisiz yozing
+
 const BOT_USERNAME = (process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA').replace(/^@/, '');
-// PUBLIC_URL — serveringizning ochiq (https) manzili, masalan: https://sizning-domeningiz.com
-// Agar shu sozlansa, server ishga tushganda Telegram webhook'ni avtomatik o'rnatadi.
+
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
-// WEBHOOK_SECRET — ixtiyoriy, webhook so'rovlari haqiqatan Telegram'dan kelayotganini tekshirish uchun
+
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
-// DATA_DIR — Railway'da Volume ulaganda shu yerga mount yo'lini yozing (masalan: /data)
-// Agar sozlanmasa, owners.json shu loyiha papkasida saqlanadi (Volume'siz, deploy'da o'chib ketishi mumkin)
+
 const DATA_DIR = process.env.DATA_DIR || __dirname;
-// ANTHROPIC_API_KEY — ixtiyoriy. Sozlansa, "AI savol-javob" bo'limi haqiqiy AI (Claude) orqali javob beradi.
-// Sozlanmasa, shu bo'lim tayyor qoidalar asosida (foyda, top taom, pik vaqt, kam qolgan mahsulot) javob beradi.
+
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
-// 72-BOSQICH: Obuna trial/grace muddatlari — ENV orqali sozlanadi, sozlanmasa
-// hisob-kitob-bot'dagidek standart qiymatlar ishlatiladi (config.py:
-// SUBSCRIPTION_TRIAL_DAYS=14, SUBSCRIPTION_GRACE_DAYS=3).
-// - SUBSCRIPTION_TRIAL_DAYS: o'zi ro'yxatdan o'tgan yangi oshxona egasiga
-//   admin tasdiqlaganda taklif qilinadigan standart sinov kunlari soni
-//   (admin buni tasdiqlash paytida boshqa songa o'zgartirishi ham mumkin —
-//   qarang: kelgusi "trial tasdiqlash oqimi" bosqichi).
-// - SUBSCRIPTION_GRACE_DAYS: subscriptionUntil o'tgandan keyin ham kirish
-//   hali ochiq turadigan "muhlat" kunlari — shu muddat ichida owner
-//   bloklanmaydi, lekin ⏳ belgisi bilan ogohlantiriladi (qarang: kelgusi
-//   "grace period va o'chirishni bekor qilish" bosqichi).
+
 const SUBSCRIPTION_TRIAL_DAYS = parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS, 10) || 14;
 const SUBSCRIPTION_GRACE_DAYS = parseInt(process.env.SUBSCRIPTION_GRACE_DAYS, 10) || 3;
 const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
-// admins.json — 78-BOSQICH: bootstrap ADMIN_ID'dan tashqari qo'shimcha
-// adminlar ro'yxati (hisob-kitob-bot'dagi access_control.py'dagi
-// `_extra_admin_ids` kabi). Har bir yozuv: { id, addedAt, addedBy }.
-// Bootstrap ADMIN_ID bu faylda YO'Q — u doim ENV orqali, alohida ustuvor
-// tarzda tekshiriladi (qarang: isAdminId()). Server ishga tushganda
-// EXTRA_ADMIN_IDS xotiradagi Set'iga yuklanadi (qarang: reloadAdminsCache()),
-// shunda har bir so'rovda faylni qayta o'qishga hojat qolmaydi.
+
 const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
 const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
-// profiles.json — har bir bot foydalanuvchisining (mijoz, xodim, egasi — hammasi
-// uchun umumiy, oshxonaga bog'liq emas) ism/familiya/telefon ma'lumotlari.
-// Qarang: "Ro'yxatdan o'tish" bo'limi (handleTelegramUpdate ichida).
-const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
-// tariffs.json — admin belgilaydigan obuna tariflari katalogi (F-bo'lim,
-// 51-70-bosqich). Har bir do'kon egasiga shu ro'yxatdan bitta tarif
-// biriktiriladi (owner.tariffId — 55-bosqichda tarif o'chirishda tekshiriladi,
-// egaga biriktirish UI'si 57-bosqichda qo'shiladi).
-const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
-// payments.json — har bir "to'landi" deb belgilangan voqea alohida yozuv
-// sifatida shu yerga yoziladi (67-bosqich: admin dashboardida umumiy
-// daromadni FAQAT joriy holat snapshoti emas, balki haqiqiy tarix bo'yicha
-// hisoblash uchun). Bitta yozuv: { id, ownerId, amount, tariffId, at }.
-// owner.json'dagi paid/paidAt/price — joriy holatning "hozirgi surat"i,
-// bu fayl esa — vaqt bo'yicha to'liq jurnal (owner o'chirilsa ham saqlanadi,
-// 69-bosqich talabiga mos).
-const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
-// archived_orders.json — 69-bosqich: do'kon egasi (obunachi) admin tomonidan
-// o'chirilganda, egasi bilan birga owner.orders massivi ham yo'qolib
-// ketmasligi uchun, o'chirishdan OLDIN shu yerga arxivlanadi. Bitta yozuv —
-// bitta o'chirilgan egaga tegishli barcha buyurtmalar: { ownerId, ownerLabel,
-// removedAt, orders: [...] }. owners.json'dan o'chirilgandan keyin ham
-// buyurtmalar tarixi shu faylda saqlanib qoladi.
-const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
-// subscription_plans.json — 73-bosqich: TARIFFS_FILE'dan ATAYLAB ajratilgan.
-// tariffs.json (F-bo'lim) — "qaysi FUNKSIYALAR ochiq" katalogi (owner.tariffId
-// orqali biriktiriladi, admin qo'lda belgilaydi). subscription_plans.json esa —
-// "necha oyga qancha to'lash kerak" narxlar ro'yxati (hisob-kitob-bot'dagi
-// config.SUBSCRIPTION_PLANS bilan bir xil vazifa): owner "💳 Obuna" bo'limida
-// shu ro'yxatdan birini tanlab, TO'LOV qilib, subscriptionUntil'ni o'zi
-// uzaytiradi. Ikkalasi mustaqil: bitta owner istalgan funksiya-tarifda
-// bo'lishi mumkin, obuna reja narxi esa faqat muddatga ta'sir qiladi.
-const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
-// settings.json — 74-bosqich: obuna to'lovlari uchun rekvizitlar (karta,
-// Click, Payme raqamlari) — hisob-kitob-bot'dagi db.get_payment_requisites()
-// bilan bir xil vazifa. Owner "💳 Obuna" bo'limida tarif tanlaganda shu
-// rekvizitlar ko'rsatiladi. Admin panelidan o'zgartirilishi mumkin bo'ladi
-// (UI keyingi bosqichda qo'shiladi) — hozircha faqat standart qiymatlar bilan
-// avtomatik yaratiladi.
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-// broadcasts.json — 48-51-bosqich: admin tomonidan yuborilgan har bir
-// umumiy e'lon/broadcast xabari shu yerga jurnallanadi (matn, rasm, tugma,
-// qabul qiluvchi turi, yuborilgan/yetib bormagan sonlar). Faqat tarix —
-// qayta yuborish uchun ishlatilmaydi.
-const BROADCASTS_FILE = path.join(DATA_DIR, 'broadcasts.json');
-// ========================================================
 
-// ==================== G-bo'lim: Obuna va oshxona egalari boshqaruvi ====================
-// (hisob-kitob-bot'dagi access_control.py + handlers/subscription.py bilan bir xil
-// mantiqqa o'tkazish uchun yangi reja, 71-bosqichdan boshlanadi — F-bo'lim (tarif/
-// funksiya tizimi, 51-70-bosqich) bilan almashtirilmaydi, ustiga qo'shiladi.)
-//
-// 71-BOSQICH: Obuna sxemasini kengaytirish.
-// Hozirgacha owner.expiresAt/paid/price orqali "muddat tugadimi" degan savolga
-// oddiy ha/yo'q javob berilardi va muddat tugashi bilan pruneExpiredOwners()
-// ownerni BUTUNLAY o'chirib yuborardi (menyu, xodimlar, buyurtmalar bilan birga).
-// Bu — hisob-kitob-bot'dagi yumshoq bloklash (grace period) mantig'iga zid.
-//
-// Shu bosqichda owner obyektiga quyidagi yangi maydonlar qo'shiladi (eski
-// expiresAt/paid/price maydonlari ORQAGA MOSLIK uchun saqlanadi, hozircha
-// o'chirilmaydi — ular hali boshqa joylarda ishlatilyapti):
-//   - subscriptionStatus: 'pending_trial' | 'active' | 'blocked'
-//   - subscriptionUntil: ISO sana yoki null (null = muddatsiz/doimiy ruxsat)
-//   - graceUntil: ISO sana yoki null (subscriptionUntil o'tgach ham
-//     shu sanagacha kirish hali ochiq turadi — SUBSCRIPTION_GRACE_DAYS)
-//   - trialGivenAt: ISO sana yoki null (birinchi marta sinov muddati
-//     tasdiqlangan payt, statistik/audit maqsadida)
-//
-// MUHIM: bu bosqichda hali hech qanday BLOKLASH mantig'i o'zgarmaydi —
-// isOwnerAccessValid/pruneExpiredOwners hozircha eski holicha ishlayveradi.
-// Yangi maydonlar faqat owners.json'ga "orqa fonda" qo'shib qo'yiladi va
-// keyingi bosqichlarda (grace period, obuna menyusi, to'lov oqimi) shular
-// asosida ishlatiladi. Shu tufayli bu o'zgarish TO'LIQ orqaga moslashuvchan —
-// eski kod ham, eski owners.json yozuvlari ham buzilmaydi.
+const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
+
+const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
+
+const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
+
+const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
+
+const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
+
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
+
+const BROADCASTS_FILE = path.join(DATA_DIR, 'broadcasts.json');
+
 const SUBSCRIPTION_STATUS = {
   PENDING_TRIAL: 'pending_trial',
   ACTIVE: 'active',
   BLOCKED: 'blocked'
 };
 
-// Bitta owner obyektida yangi obuna maydonlari yo'q bo'lsa (eski yozuv yoki
-// admin tomonidan qo'lda /api/add-owner orqali qo'shilgan yozuv), ularni
-// MAVJUD expiresAt/paid asosida "taxmin qilib" to'ldiradi — hech narsani
-// o'zgartirmaydi/saqlamaydi (faqat xotirada, o'qish paytida), shuning uchun
-// bu funksiyani xohlagancha marta chaqirish xavfsiz.
-//
-// Qoida: agar owner.expiresAt bo'lmasa (doimiy) yoki hali tugamagan bo'lsa —
-// 'active'; aks holda — 'blocked' (grace period hisobini keyingi bosqich
-// qo'shadi, hozircha faqat maydon mavjudligini ta'minlaydi).
 function ensureSubscriptionFields(owner) {
   if (!owner) return owner;
   if (owner.subscriptionStatus === undefined) {
@@ -153,21 +62,15 @@ function ensureSubscriptionFields(owner) {
   if (owner.trialGivenAt === undefined) {
     owner.trialGivenAt = null;
   }
-  // 76-bosqich: "bloklandi" xabari faqat bir marta yuborilishi uchun
-  // (checkOwnerExpirations() ishlatadi) — qarang shu funksiya izohi.
+
   if (owner.blockedNotifiedAt === undefined) {
     owner.blockedNotifiedAt = null;
   }
-  // Mijozlar "karta" to'lovini tanlaganda ko'radigan, DO'KON EGASINING O'ZI
-  // to'ldiradigan karta raqami/egasi. Bu — subscriptionPaymentRequisites'dan
-  // (platforma egasining obuna kartasi) FARQLI: har bir do'kon o'zining
-  // mijozlaridan pul qabul qilish uchun o'z kartasini kiritadi.
+
   if (owner.customerPaymentCard === undefined) {
     owner.customerPaymentCard = { cardNumber: '', cardHolder: '' };
   }
-  // Joriy TASDIQLANGAN rejaning "kunlik narxi" (proratsiya hisob-kitobi
-  // uchun, qarang: createSubscriptionPaymentRequest / decideSubscriptionPayment).
-  // Bu maydonlar faqat tariffId biriktiruvchi reja tasdiqlanganda yangilanadi.
+
   if (owner.activePlanDailyPrice === undefined) {
     owner.activePlanDailyPrice = null;
   }
@@ -177,26 +80,12 @@ function ensureSubscriptionFields(owner) {
   return owner;
 }
 
-// 73-BOSQICH: Obuna rejalari (1/3/12 oylik narxlar).
-// hisob-kitob-bot'dagi config.SUBSCRIPTION_PLANS'ga o'xshab, kalit sifatida
-// barqaror id ('1m'/'3m'/'12m') ishlatiladi — kelgusi bosqichlarda owner
-// tanlagan reja shu id orqali eslab qolinadi (narx keyin o'zgarsa ham,
-// tanlangan paytdagi narxdan to'laydi, xuddi hisob-kitob'dagidek).
-// Narxlar so'mda, admin panelidan keyinchalik o'zgartirilishi mumkin bo'ladi
-// (hozircha faqat standart qiymatlar — sozlash UI'si keyingi bosqichda).
-// tariffId: reja tasdiqlanganda owner'ga AVTOMATIK biriktiriladigan F-bo'lim
-// tarifi (qarang: decideSubscriptionPayment). null bo'lsa — owner'ning joriy
-// tarifi o'zgarmaydi (faqat muddat uzayadi). Bu maydon admin panelidan
-// "Obuna rejalari" bo'limida sozlanadi (qarang: /api/subscription-plan-*).
 const DEFAULT_SUBSCRIPTION_PLANS = {
   '1m': { id: '1m', label: '1 oy', days: 30, price: 50000, discountNote: null, tariffId: null, order: 0 },
   '3m': { id: '3m', label: '3 oy', days: 90, price: 135000, discountNote: 'chegirmali', tariffId: null, order: 1 },
   '12m': { id: '12m', label: '12 oy', days: 365, price: 480000, discountNote: 'chegirmali', tariffId: null, order: 2 }
 };
 
-// Fayl hali mavjud bo'lmasa (birinchi ishga tushirish) — standart rejalar
-// bilan avtomatik yaratadi, shunda admin hech narsa qo'lda sozlamasa ham
-// "💳 Obuna" bo'limi bo'sh qolib ketmaydi.
 function loadSubscriptionPlans() {
   try {
     if (!fs.existsSync(SUBSCRIPTION_PLANS_FILE)) {
@@ -223,11 +112,6 @@ function saveSubscriptionPlans(plans) {
   }
 }
 
-// 74-BOSQICH: To'lov rekvizitlari (karta/Click/Payme).
-// Owner chek/skrinshot yubormasdan oldin shu ma'lumotlarni ko'radi. Admin
-// haqiqiy rekvizitlarni sozlagunga qadar "***" bilan boshlangan ko'rinishda
-// turadi — bu admin hali sozlamaganini bildiradi (tasodifan soxta/bo'sh
-// karta raqami ko'rsatilib qolmasligi uchun).
 const DEFAULT_PAYMENT_REQUISITES = {
   cardNumber: '**** **** **** ****',
   cardHolder: 'ADMIN ISM FAMILIYA',
@@ -251,10 +135,6 @@ function loadPaymentRequisites() {
   }
 }
 
-// MUHIM: settings.json kelgusida boshqa umumiy sozlamalarni ham saqlashi
-// mumkin bo'lgani uchun, bu funksiya butun faylni EMAS, faqat
-// paymentRequisites bo'limini almashtiradi — mavjud boshqa kalitlar (agar
-// bo'lsa) saqlanib qoladi.
 function savePaymentRequisites(requisites) {
   let current = {};
   try {
@@ -273,43 +153,16 @@ function savePaymentRequisites(requisites) {
   return current.paymentRequisites;
 }
 
-// ==================== 82-BOSQICH: Egasi o'zi obuna sotib olishi ====================
-// (avtomatik so'rov + admin tasdig'i). Owner "💳 Obuna" bo'limida (Mini App'da
-// yoki bot ichida /obuna_menyu orqali) tarif tanlaydi -> to'lov skrinshotini
-// shu botga rasm qilib yuboradi -> BARCHA adminlarga (allAdminIds()) ✅/❌
-// tugmali xabar boradi -> admin tasdiqlasa subscriptionUntil AVTOMATIK
-// tanlangan tarif muddatiga uzaytiriladi va to'lov payments.json'ga yoziladi.
-//
-// owner.subscriptionPaymentRequest — bitta owner uchun FAQAT bitta joriy
-// so'rov saqlanadi (yangi tarif tanlansa eskisi ustidan yoziladi):
-//   { id, planId, planLabel, amount, days,
-//     status: 'kutilmoqda_skrinshot' | 'kutilmoqda_tasdiq' | 'tasdiqlandi' | 'rad_etildi',
-//     screenshotFileId, requestedAt, screenshotSentAt, decidedAt, decidedBy }
-// PRORATSIYA (tarif yuqorilashida narx farqi): agar owner hali tugamagan
-// "qoldiq kunlar"ga ega bo'lsa (masalan, arzon Starter rejasidan 29 kun
-// qolgan) va yangi tanlangan reja BOSHQA (va qimmatroq) F-bo'lim tarifiga
-// bog'langan bo'lsa (masalan, Business), o'sha qoldiq kunlar ESKI (arzon)
-// narxda emas, YANGI (qimmat) tarif narxida hisoblanishi kerak — aks holda
-// owner "narxlar farqi"ni umuman to'lamay, qoldiq kunlarni yangi qimmat
-// tarifda bepul ishlatib qoladi (shu funksiyaning yuqoridagi izohidagi
-// ekspluatatsiya). Shu sabab: qoldiq kunlar uchun (yangi_kunlik_narx −
-// eski_kunlik_narx) farqi qo'shimcha to'lov sifatida qo'shiladi.
-// Eslatma: faqat YUQORILASHDA (farq musbat bo'lganda) qo'llanadi — pastroq
-// tarifga o'tishda (yoki tariffId o'zgarmasa) hech qanday ustama olinmaydi,
-// owner shunchaki yangi reja narxini to'lab davom etadi.
 function calcTariffUpgradeSurcharge(owner, plan) {
   const result = { surcharge: 0, remainingDays: 0, isUpgrade: false, oldDailyPrice: 0, newDailyPrice: 0 };
   if (!plan || !plan.tariffId || !plan.days) return result;
-  // Owner hali biror tarifda bo'lmasa (yangi ro'yxatdan o'tgan yoki
-  // tariffId'siz reja bilan boshlagan) — solishtiradigan "eski narx" yo'q,
-  // ustama hisoblanmaydi (bu birinchi tarif tanlovi, "yuqorilash" emas).
+
   if (!owner.activePlanTariffId) return result;
-  // Tarif o'zgarmasa (xuddi shu tariffId'ga qayta/uzaytirib sotib olish) —
-  // ustama yo'q, oddiy uzaytirish.
+
   if (owner.activePlanTariffId === plan.tariffId) return result;
   const untilMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
   const remainingMs = (Number.isFinite(untilMs) && untilMs > Date.now()) ? (untilMs - Date.now()) : 0;
-  if (remainingMs <= 0) return result; // qoldiq kun yo'q — ustama uchun asos yo'q
+  if (remainingMs <= 0) return result;
   const remainingDays = Math.ceil(remainingMs / 86400000);
   const oldDailyPrice = owner.activePlanDailyPrice || 0;
   const newDailyPrice = plan.price / plan.days;
@@ -328,10 +181,7 @@ function createSubscriptionPaymentRequest(owner, planId) {
   const plans = loadSubscriptionPlans();
   const plan = plans[planId];
   if (!plan) return null;
-  // Reja qaysi F-bo'lim tarifini bilan bog'langan bo'lsa (admin
-  // "Obuna rejalari"da sozlagan), shu tarif nomini ham so'rovga
-  // "suratga olib" saqlaymiz — keyin tarif o'chirilsa/o'zgarsa ham
-  // so'rovdagi ko'rsatilgan nom to'g'ri qoladi.
+
   let tariffLabel = null;
   if (plan.tariffId) {
     const tariff = loadTariffs().find(t => t.id === plan.tariffId);
@@ -359,8 +209,6 @@ function createSubscriptionPaymentRequest(owner, planId) {
   return owner.subscriptionPaymentRequest;
 }
 
-// Owner "💳 Obuna" bo'limini ochganda ko'radigan matn+tugmalar (bot ichida
-// ham, Mini App'dan "skrinshot yuboring" bosqichiga o'tishda ham ishlatiladi).
 async function sendObunaPlansMenu(owner, chatId) {
   const requisites = loadPaymentRequisites();
   const plans = loadSubscriptionPlans();
@@ -382,9 +230,6 @@ async function sendObunaPlansMenu(owner, chatId) {
   await sendMessage(chatId, text, kb);
 }
 
-// Admin ✅/❌ bosganda (bot callback'dan) VA admin panelidan (Mini App API'dan)
-// bir xil natija chiqishi uchun qaror mantiqi shu YAGONA joyda. Chaqiruvchi
-// tomon saveOwners(owners)ni O'ZI qiladi (bu funksiya faylga yozmaydi).
 function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
   const reqData = owner && owner.subscriptionPaymentRequest;
   if (!reqData || reqData.status !== 'kutilmoqda_tasdiq') {
@@ -395,31 +240,24 @@ function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
     const plans = loadSubscriptionPlans();
     const plan = plans[reqData.planId];
     const days = (plan && plan.days) || reqData.days || 30;
-    // Muddat hali tugamagan bo'lsa - USHBU muddatning USTIGA qo'shiladi (grace
-    // davrida bo'lsa yoki allaqachon tugagan bo'lsa - hozirgi vaqtdan boshlanadi).
+
     const baseMs = (owner.subscriptionUntil && new Date(owner.subscriptionUntil).getTime() > Date.now())
       ? new Date(owner.subscriptionUntil).getTime()
       : Date.now();
     const newUntil = new Date(baseMs + days * 86400000);
     owner.subscriptionUntil = newUntil.toISOString();
-    owner.expiresAt = owner.subscriptionUntil; // orqaga moslik uchun eski maydon ham yangilanadi
+    owner.expiresAt = owner.subscriptionUntil;
     owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
     owner.graceUntil = null;
     owner.blockedNotifiedAt = null;
-    owner.reminderSentAt = null; // keyingi muddat uchun eslatma qaytadan yuborilishi kerak
+    owner.reminderSentAt = null;
     owner.paid = true;
     owner.paidAt = new Date().toISOString();
-    // Reja bilan F-bo'lim tarifi ham bog'langan bo'lsa (admin "Obuna
-    // rejalari"da tariffId sozlagan), owner'ning funksiya-tarifi ham shu
-    // rejaga mos tarifga AVTOMATIK o'zgaradi. tariffId yo'q (null) bo'lsa —
-    // owner'ning joriy tarifi tegilmaydi (faqat muddat uzayadi).
+
     const grantedTariffId = plan ? (plan.tariffId || null) : null;
     if (grantedTariffId) {
       owner.tariffId = grantedTariffId;
-      // Keyingi safar (agar owner yana boshqa tarifga o'tsa) proratsiya
-      // to'g'ri hisoblanishi uchun, HOZIR tasdiqlangan rejaning kunlik
-      // narxini "joriy tarif narxi" sifatida eslab qolamiz (qarang:
-      // calcTariffUpgradeSurcharge).
+
       owner.activePlanTariffId = grantedTariffId;
       owner.activePlanDailyPrice = plan.days ? (plan.price / plan.days) : 0;
     }
@@ -457,19 +295,6 @@ function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
   return { ok: false, reason: 'Noma\'lum amal.' };
 }
 
-
-// (hisob-kitob-bot'dagi access_control.check_subscription_access() bilan bir
-// xil vazifa). Bitta owner obyekti uchun holatni hisoblaydi:
-//   - pending_trial — admin hali trial muddatini tasdiqlamagan (kirish yo'q).
-//   - subscriptionUntil yo'q (null) — muddatsiz/doimiy ruxsat.
-//   - subscriptionUntil hali o'tmagan — faol, daysLeft bilan.
-//   - subscriptionUntil o'tgan, lekin graceUntil (yoki standart
-//     SUBSCRIPTION_GRACE_DAYS) ichida — hali ruxsat bor, lekin inGrace:true
-//     (⏳ ogohlantirish uchun, keyingi bosqichda ishlatiladi).
-//   - graceUntil ham o'tgan — bloklangan.
-// DIQQAT: bu funksiya hali hech qayerdan CHAQIRILMAYDI — faqat tayyorlab
-// qo'yilyapti. Haqiqiy bloklash (Mini App API va bot xabarlari darajasida)
-// keyingi ikkita bosqichda ulanadi.
 function getOwnerSubscriptionAccess(owner) {
   if (!owner) return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
 
@@ -488,8 +313,6 @@ function getOwnerSubscriptionAccess(owner) {
     return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft, inGrace: false };
   }
 
-  // Muddat tugagan — graceUntil belgilangan bo'lsa shundan, bo'lmasa
-  // SUBSCRIPTION_GRACE_DAYS asosida standart muhlat hisoblanadi.
   const graceMs = owner.graceUntil
     ? new Date(owner.graceUntil).getTime()
     : (Number.isFinite(untilMs) ? untilMs + SUBSCRIPTION_GRACE_DAYS * 86400000 : NaN);
@@ -500,9 +323,6 @@ function getOwnerSubscriptionAccess(owner) {
   return { allowed: false, status: SUBSCRIPTION_STATUS.BLOCKED, daysLeft: null, inGrace: false };
 }
 
-// Foydalanuvchi ID bo'yicha (admin/owner/xodim — kim bo'lishidan qat'iy
-// nazar) yagona tekshiruv. `owners` ixtiyoriy — chaqiruvchi allaqachon
-// loadOwners() qilgan bo'lsa, qayta o'qimaslik uchun uzatilishi mumkin.
 function checkSubscriptionAccess(userId, owners) {
   if (isAdminId(userId)) {
     return { allowed: true, status: 'admin', daysLeft: null, inGrace: false };
@@ -522,25 +342,6 @@ function checkSubscriptionAccess(userId, owners) {
   return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
 }
 
-// 77-BOSQICH: Mini App API darajasida bloklash. `resolveOwnerContext()` (va
-// bir nechta joyda to'g'ridan-to'g'ri `isOwnerAccessValid()`) allaqachon
-// muddati (grace period bilan) chindan tugagan egalar/xodimlarni "topilmadi"
-// (null / ruxsat yo'q) deb hisoblab, ularni amaldagi funksiyalarga
-// kiritmaydi — ya'ni HAQIQIY bloklash allaqachon ishlayapti.
-//
-// Lekin bu holatda frontend'ga qaytadigan xabar boshqa har qanday "ruxsat
-// yo'q" holati (masalan, umuman ro'yxatdan o'tmagan begona foydalanuvchi)
-// bilan bir xil edi — frontend ular orasidagi farqni bilolmasdi, shuning
-// uchun ✋ "obunani uzaytiring" ekranini emas, oddiy xato xabarini ko'rsatib
-// qo'yardi. Quyidagi ikkita funksiya shu farqni chiqaradi:
-//   - getBlockedOwnerAccess(): userId biror EGA yoki XODIM ekanini (hatto
-//     bloklangan bo'lsa ham) aniqlaydi va aynan SHU sabab (obuna) tufayli
-//     ruxsat yo'qligini alohida ko'rsatadi (aks holda null qaytaradi —
-//     ya'ni muammo obunada emas, masalan foydalanuvchi umuman egasi/xodim
-//     emas yoki roli mos kelmayapti).
-//   - subscriptionBlockedJSON(): endpoint javobini tayyorlaydi — agar sabab
-//     aynan obuna bo'lsa maxsus { reason:'subscription_blocked', access }
-//     shaklida, aks holda avvalgidek oddiy fallbackReason bilan.
 function getBlockedOwnerAccess(owners, userId) {
   if (isAdminId(userId)) return null;
 
@@ -566,20 +367,8 @@ function subscriptionBlockedJSON(owners, userId, fallbackReason) {
   return { ok: false, reason: fallbackReason };
 }
 
-// 79-BOSQICH: Telegram bot darajasida bloklash (8-bosqichdagi Mini App API
-// bloklashning bot tomonidagi jufti — hisob-kitob-bot'dagi
-// OwnerOnlyMiddleware._send_blocked_screen andozasida). Owner yoki uning
-// xodimi bot ichida biror amal (guruh biriktirish, buyurtmani "qabul
-// qilish"/"tayyor" deb belgilash, to'lovni tasdiqlash va h.k.) bajarmoqchi
-// bo'lganda, lekin obunasi (grace period bilan birga) chindan tugagan
-// bo'lsa — shu ekran chiqadi. `/start` va kelgusi "Ro'yxatdan o'tish"
-// (10-bosqich) bu tekshiruvdan MUSTASNO — ular har doim ishlaydi, chunki
-// ular handleStartCommand() ichida, bu funksiyani chaqirmasdan alohida
-// ishlaydi.
 async function sendSubscriptionBlockedScreen(chatId, access) {
-  // 10-bosqich: o'zi ro'yxatdan o'tgan, lekin admin hali tasdiqlamagan
-  // ("pending_trial") holat — "obunangiz TUGAGAN" degan matn noto'g'ri
-  // bo'lardi (u hali boshlanmagan ham), shuning uchun alohida xabar.
+
   if (access.status === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
     await sendMessage(chatId,
       "🕓 <b>So'rovingiz hali ko'rib chiqilmoqda</b>\n" +
@@ -593,10 +382,6 @@ async function sendSubscriptionBlockedScreen(chatId, access) {
     { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
 }
 
-// Berilgan ownerId (callback_data'dagi) egasi obuna sababli bloklanganmi —
-// tekshiradi, bloklangan bo'lsa callback'ga qisqa javob + shaxsiy chatga
-// to'liq bloklash ekranini yuboradi va true qaytaradi (chaqiruvchi shu
-// holda darhol `return` qilishi kerak). Bloklanmagan bo'lsa false qaytadi.
 async function guardCallbackSubscription(cq, owners, ownerId) {
   const owner = findOwner(owners, ownerId);
   const access = getOwnerSubscriptionAccess(owner);
@@ -606,9 +391,6 @@ async function guardCallbackSubscription(cq, owners, ownerId) {
   return true;
 }
 
-// ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
-// Faqat xotirada saqlanadi (server qayta ishga tushsa — 0'dan boshlanadi),
-// bazaga yozilmaydi — shunchaki joriy server holatini ko'rsatish uchun.
 const SERVER_STARTED_AT = new Date().toISOString();
 const webhookStats = { received: 0, errors: 0, lastAt: null };
 
@@ -632,7 +414,6 @@ function verifyTelegramInitData(initData, botToken) {
     return { ok: false, reason: 'imzo mos emas (soxta so\'rov)' };
   }
 
-  // auth_date freshness tekshiruvi (24 soatdan eski bo'lsa rad etamiz)
   const authDate = parseInt(params.get('auth_date') || '0', 10);
   const now = Math.floor(Date.now() / 1000);
   if (now - authDate > 86400) {
@@ -646,15 +427,7 @@ function verifyTelegramInitData(initData, botToken) {
   return { ok: true, user };
 }
 
-// ====== Login/parol orqali kirish (oshxona egasi uchun, Telegram tashqarisidan ham) ======
-// Admin har bir oshxona egasiga login+parol biriktirib qo'yishi mumkin (owner.login,
-// owner.passwordHash — "tuz:hash" ko'rinishida, scrypt bilan). Owner shu login/parol
-// bilan /api/owner-login orqali kirsa, unga "sess_<token>" ko'rinishidagi sessiya
-// beriladi — frontend buni xuddi Telegram initData o'rniga ishlatadi. Shu sababli
-// pastdagi verifyAuth() BARCHA endpoint'larda verifyTelegramInitData o'rniga
-// chaqiriladi va ikkala usulni ham (Telegram initData YOKI sess_ token) tushunadi —
-// shu bilan minglab qatordagi endpoint kodini o'zgartirmasdan ikkala kirish usuli ham ishlaydi.
-const SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 kun
+const SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -680,10 +453,6 @@ function normalizeLogin(login) {
   return String(login || '').trim().toLowerCase();
 }
 
-// initData ham Telegram'dan (imzolangan), ham login/parol orqali olingan
-// "sess_<token>" bo'lishi mumkin — shu yerda ikkalasi ham tekshiriladi va
-// natija har doim bir xil shaklda ({ok, user:{id,...}} yoki {ok:false, reason})
-// qaytariladi, shunda pastdagi barcha /api/... endpoint'lar o'zgarishsiz ishlayveradi.
 function verifyAuth(initData) {
   if (typeof initData === 'string' && initData.startsWith('sess_')) {
     const token = initData.slice('sess_'.length);
@@ -705,7 +474,6 @@ function verifyAuth(initData) {
   return verifyTelegramInitData(initData, BOT_TOKEN);
 }
 
-// ====== Do'kon egalari (owners) — oddiy JSON fayl orqali saqlanadi ======
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
 
 function loadJSONArray(file) {
@@ -722,11 +490,6 @@ function saveJSONArray(file, arr) {
   fs.writeFileSync(file, JSON.stringify(arr, null, 2), 'utf8');
 }
 
-// 71-bosqich: har bir o'qishda owner obyektlariga yangi obuna maydonlarini
-// (mavjud bo'lmasa) to'ldirib beradi — shu bilan owners.json faylini qo'lda
-// migratsiya qilmasdan turib ham, kod ichida hamma joyda yangi maydonlar
-// (subscriptionStatus/subscriptionUntil/graceUntil/trialGivenAt) doim mavjud
-// bo'lishi kafolatlanadi.
 function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
 function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
 
@@ -736,20 +499,15 @@ function saveInvites(invites) { saveJSONArray(INVITES_FILE, invites); }
 function loadRequests() { return loadJSONArray(REQUESTS_FILE); }
 function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
 
-// ====== To'lovlar tarixi (67-bosqich) — har bir "to'landi" voqeasi alohida
-// yozuv sifatida saqlanadi, shunda admin dashboardida haqiqiy (joriy holat
-// emas, balki vaqt bo'yicha) daromad hisoblanadi. Owner o'chirilsa/muddati
-// tugasa ham bu yozuvlar saqlanib qoladi (69-bosqich).
 function loadPayments() { return loadJSONArray(PAYMENTS_FILE); }
 function savePayments(list) { saveJSONArray(PAYMENTS_FILE, list); }
 
-// ====== E'lon/broadcast tarixi (48-51-bosqich) ======
 function loadBroadcasts() { return loadJSONArray(BROADCASTS_FILE); }
 function saveBroadcasts(list) { saveJSONArray(BROADCASTS_FILE, list); }
 
 function recordPayment(owner, amount, extra) {
   const amountVal = Number(amount) || 0;
-  if (amountVal <= 0) return; // 0 so'mlik "to'lov"ni jurnalga yozmaymiz
+  if (amountVal <= 0) return;
   const payments = loadPayments();
   payments.push({
     id: crypto.randomBytes(6).toString('hex'),
@@ -757,18 +515,12 @@ function recordPayment(owner, amount, extra) {
     ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
     amount: amountVal,
     tariffId: owner.tariffId || null,
-    // 15-bosqich (B-bo'lim): agar bu to'lov "💳 Obuna" (tarif muddatini
-    // uzaytirish) orqali bo'lgan bo'lsa, qaysi reja/necha kunlik ekanligi
-    // ham saqlanadi — owner o'ziga tegishli "Obuna tarixi"ni ko'rishi uchun
-    // (qarang: /api/subscription-history). Boshqa manbalardan (masalan,
-    // admin qo'lda "to'landi" belgilashi) kelgan to'lovlarda bu maydonlar
-    // shunchaki null bo'lib qoladi — orqaga moslik buzilmaydi.
+
     planId: (extra && extra.planId) || null,
     planLabel: (extra && extra.planLabel) || null,
     days: (extra && extra.days) || null,
     source: (extra && extra.source) || null,
-    // Tarif yuqorilashida qo'shilgan ustama (agar bo'lsa) — hisobot/audit
-    // uchun asosiy narxdan alohida saqlanadi (qarang: calcTariffUpgradeSurcharge).
+
     baseAmount: (extra && extra.baseAmount != null) ? extra.baseAmount : null,
     upgradeSurcharge: (extra && extra.upgradeSurcharge) || 0,
     at: new Date().toISOString()
@@ -776,16 +528,14 @@ function recordPayment(owner, amount, extra) {
   savePayments(payments);
 }
 
-// ====== Buyurtmalar arxivi (69-bosqich) — obunachi (do'kon egasi) o'chirilganda
-// owner.orders shu yerga ko'chiriladi, shunda buyurtmalar tarixi yo'qolmaydi ======
 function loadArchivedOrders() { return loadJSONArray(ARCHIVED_ORDERS_FILE); }
 function saveArchivedOrders(list) { saveJSONArray(ARCHIVED_ORDERS_FILE, list); }
 function archiveOwnerOrders(owner) {
   const orders = owner && owner.orders;
-  if (!orders || !orders.length) return; // buyurtmasi bo'lmagan egani arxivlashning hojati yo'q
+  if (!orders || !orders.length) return;
   const archive = loadArchivedOrders();
   archive.push({
-    type: 'owner_removed', // butunlay o'chirilgan owner'ning buyurtmalari (Savatcha/tozalash oqimi)
+    type: 'owner_removed',
     ownerId: owner.id,
     ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
     removedAt: new Date().toISOString(),
@@ -794,19 +544,9 @@ function archiveOwnerOrders(owner) {
   saveArchivedOrders(archive);
 }
 
-// ====== Buyurtmalar retensiyasi (100-bosqich) — owners.json cheksiz
-// o'sib ketmasligi uchun, ESKI (ORDERS_RETENTION_DAYS'dan katta) buyurtmalar
-// owner.orders'dan olib tashlanadi va shu YUQORIDAGI arxiv fayliga
-// ('archived_orders.json', type: 'retention') ko'chiriladi — O'CHIRILMAYDI,
-// faqat asosiy (har so'rovda to'liq o'qib-yoziladigan) fayldan chiqariladi.
-// Bu bilan: 1) owners.json hajmi va har bir yozish tezligi vaqt o'tishi bilan
-// cheksiz o'smaydi; 2) statistikaga (cashflow, AI Direktor, xodimlar
-// hisoboti) ta'sir qilmaydi, chunki ular hammasi oxirgi 30-90 kunga qaraydi,
-// bu esa ORDERS_RETENTION_DAYS'dan ancha kam; 3) ma'lumot yo'qolmaydi —
-// kerak bo'lsa archived_orders.json'dan tiklash/ko'rish mumkin.
 const ORDERS_RETENTION_DAYS = parseInt(process.env.ORDERS_RETENTION_DAYS, 10) || 120;
-const ORDERS_ARCHIVE_HOUR = 4; // Toshkent vaqti, tungi soat 04:00 — eng kam yuklama vaqti
-let lastOrdersArchiveDateKey = null; // shu kun uchun allaqachon ishlaganini bildiradi (qayta-qayta ishlab ketmasligi uchun)
+const ORDERS_ARCHIVE_HOUR = 4;
+let lastOrdersArchiveDateKey = null;
 
 function archiveOldOrdersAcrossOwners() {
   const owners = loadOwners();
@@ -823,7 +563,7 @@ function archiveOldOrdersAcrossOwners() {
     const old = [];
     for (const o of orders) {
       const t = new Date(o.createdAt).getTime();
-      // createdAt noto'g'ri/yo'q bo'lsa — xavfsiz tomonda qolamiz: o'chirmaymiz.
+
       if (Number.isFinite(t) && t < cutoffTime) old.push(o);
       else keep.push(o);
     }
@@ -849,8 +589,6 @@ function archiveOldOrdersAcrossOwners() {
   return totalArchived;
 }
 
-// Har 10 daqiqada tekshiradi: Toshkent vaqti ORDERS_ARCHIVE_HOUR bo'lganda
-// va bugun hali ishlamagan bo'lsa — bir marta arxivlashni ishga tushiradi.
 setInterval(() => {
   try {
     if (aiDirTashkentHour(new Date()) !== ORDERS_ARCHIVE_HOUR) return;
@@ -864,23 +602,6 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-// ==================== C-bo'lim (16-22-bosqich): "Savatcha" (o'chirilgan
-// do'kon egalarini vaqtincha saqlash) ====================
-// Ilgari /api/remove-owner ownerni owners.json'dan BUTUNLAY, DARHOL
-// o'chirib yuborardi (faqat buyurtmalar tarixi alohida arxivlanardi —
-// menyu, xodimlar, sozlamalar esa qaytarib bo'lmaydigan tarzda yo'qolardi).
-// Endi shu o'rniga owner TO'LIQ holicha (barcha maydonlari bilan) "Savatcha"
-// (trash.json) ga ko'chiriladi va TRASH_AUTO_PURGE_DAYS muddat ichida:
-//   - admin xohlagan payt admin paneldan to'g'ridan-to'g'ri tiklashi mumkin;
-//   - YOKI o'chirilgan owner o'zi botga /start yozganda "tiklashni so'rash"
-//     tugmasini bosadi -> so'rov BARCHA adminlarga boradi -> admin
-//     tasdiqlasa (✅/❌ tugmalari bilan, boshqa hech kim emas — 21-bosqich)
-//     owner AYNAN o'sha holatida (sozgamalari bilan, 20-bosqich) qaytariladi.
-// Muddat o'tsa (19-bosqich) — avtomatik, qaytarib bo'lmaydigan tarzda
-// o'chiriladi (faqat buyurtmalar tarixi archiveOwnerOrders() orqali
-// saqlanib qoladi, xuddi ilgarigidek). Har bir voqea (trashed/restore
-// so'ralgan/tiklandi/rad etildi/butunlay o'chirildi) trash_log.json'ga
-// yoziladi (22-bosqich).
 const TRASH_FILE = path.join(DATA_DIR, 'trash.json');
 const TRASH_LOG_FILE = path.join(DATA_DIR, 'trash_log.json');
 const TRASH_AUTO_PURGE_DAYS = 3;
@@ -890,14 +611,11 @@ function saveTrash(list) { saveJSONArray(TRASH_FILE, list); }
 function loadTrashLog() { return loadJSONArray(TRASH_LOG_FILE); }
 function saveTrashLog(list) { saveJSONArray(TRASH_LOG_FILE, list); }
 
-// 22-bosqich: Savatcha bilan bog'liq har bir voqea shu yerga yoziladi —
-// admin keyinchalik "kim, qachon, nima uchun o'chirilgan/tiklangan" ni
-// tekshira olishi uchun (owner o'chirilgan taqdirda ham log qolaveradi).
 function logTrashEvent(action, owner, extra) {
   const log = loadTrashLog();
   log.push(Object.assign({
     id: crypto.randomBytes(6).toString('hex'),
-    action, // 'trashed' | 'restore_requested' | 'restored' | 'restore_rejected' | 'purged'
+    action,
     ownerId: owner ? owner.id : null,
     ownerLabel: owner ? ownerLabel(owner) : null,
     at: new Date().toISOString()
@@ -905,7 +623,6 @@ function logTrashEvent(action, owner, extra) {
   saveTrashLog(log);
 }
 
-// 16-bosqich: ownerni butunlay o'chirish o'rniga shu funksiya chaqiriladi.
 function moveOwnerToTrash(owner, trashedByUserId) {
   const trash = loadTrash();
   const trashedAt = new Date();
@@ -916,7 +633,7 @@ function moveOwnerToTrash(owner, trashedByUserId) {
     trashedAt: trashedAt.toISOString(),
     autoPurgeAt: autoPurgeAt.toISOString(),
     trashedBy: trashedByUserId ? String(trashedByUserId) : null,
-    restoreStatus: 'none', // 'none' | 'pending' | 'rejected'
+    restoreStatus: 'none',
     restoreRequestedAt: null
   });
   saveTrash(trash);
@@ -931,9 +648,6 @@ function findTrashEntryByOwnerId(trash, ownerId) {
   return trash.find(t => String(t.ownerSnapshot && t.ownerSnapshot.id) === String(ownerId));
 }
 
-// 20-bosqich: tiklanganda ownerSnapshot TO'LIQ (barcha sozlamalari,
-// menyusi, xodimlari, buyurtmalari bilan) owners.json'ga qaytariladi —
-// admin yoki owner hech narsani qayta sozlashi shart emas.
 function restoreOwnerFromTrash(trashEntry) {
   const owners = loadOwners();
   if (findOwner(owners, trashEntry.ownerSnapshot.id)) {
@@ -944,10 +658,6 @@ function restoreOwnerFromTrash(trashEntry) {
   return { ok: true };
 }
 
-// 19-bosqich: har soatlik interval (checkOwnerExpirations bilan bir
-// vaqtda) TRASH_AUTO_PURGE_DAYS muddati o'tgan yozuvlarni butunlay,
-// qaytarib bo'lmaydigan tarzda o'chiradi — faqat buyurtmalar tarixi
-// (archiveOwnerOrders orqali) alohida saqlanib qoladi.
 async function checkTrashAutoPurge() {
   const trash = loadTrash();
   const now = Date.now();
@@ -965,8 +675,6 @@ async function checkTrashAutoPurge() {
   if (purgedAny) saveTrash(remaining);
 }
 
-// ====== Shaxsiy profil (ism, familiya, telefon) — har bir bot foydalanuvchisi
-// (mijoz, xodim, egasi) uchun umumiy, bitta martalik ro'yxatdan o'tish ======
 function loadProfiles() { return loadJSONArray(PROFILES_FILE); }
 function saveProfiles(list) { saveJSONArray(PROFILES_FILE, list); }
 function findProfile(userId) { return loadProfiles().find(p => String(p.id) === String(userId)); }
@@ -975,20 +683,9 @@ function isRegisteredUser(userId) {
   return !!(p && p.registeredAt);
 }
 
-// ====== Obuna tariflari (F-bo'lim, 51-70-bosqich) — admin belgilaydigan katalog ======
 function loadTariffs() { return loadJSONArray(TARIFFS_FILE); }
 function saveTariffs(list) { saveJSONArray(TARIFFS_FILE, list); }
 
-// ====== 53-bosqich: tizimdagi barcha funksiyalar ro'yxati ======
-// Bu — kod ichida qattiq belgilangan (hardcoded) katalog, chunki bular
-// tizimning haqiqiy imkoniyatlari (kod bo'limlari), admin ularni
-// qo'shmaydi/o'chirmaydi — faqat har bir tarifga qaysi funksiyalar
-// kirishini (54-bosqich, ✅/❌ jadval) belgilaydi. Har bir yozuv:
-//  - id: barqaror kalit — tariff.features{} ichida shu kalit bilan
-//        ✅/❌ saqlanadi (54-bosqich), va bloklash tekshiruvida (59-60)
-//        shu id orqali ruxsat so'raladi.
-//  - name: admin panelida ko'rinadigan o'zbekcha nom.
-//  - group: 54-bosqichdagi jadvalni guruhlab ko'rsatish uchun.
 const FEATURE_GROUPS = [
   { id: 'boshqaruv', name: "Boshqaruv va xodimlar" },
   { id: 'menyu', name: "Menyu va mahsulotlar" },
@@ -999,7 +696,7 @@ const FEATURE_GROUPS = [
   { id: 'tizim', name: "Tizim va xavfsizlik" }
 ];
 const FEATURE_CATALOG = [
-  // Boshqaruv va xodimlar
+
   { id: 'cashier-panel', name: "Kassir paneli", group: 'boshqaruv' },
   { id: 'courier-panel', name: "Kuryer paneli", group: 'boshqaruv' },
   { id: 'kitchen-panel', name: "Oshpaz paneli", group: 'boshqaruv' },
@@ -1007,34 +704,34 @@ const FEATURE_CATALOG = [
   { id: 'staff-roles', name: "Xodim rollari va huquqlari", group: 'boshqaruv' },
   { id: 'branch-manage', name: "Filiallar boshqaruvi", group: 'boshqaruv' },
   { id: 'shift-toggle', name: "Smena boshlash/tugatish", group: 'boshqaruv' },
-  // Menyu va mahsulotlar
+
   { id: 'menu-manage', name: "Menyu boshqaruvi", group: 'menyu' },
   { id: 'category-manage', name: "Kategoriyalar boshqaruvi", group: 'menyu' },
   { id: 'combo-manage', name: "Combo boshqaruvi", group: 'menyu' },
   { id: 'promo-manage', name: "Aksiya/promo boshqaruvi", group: 'menyu' },
   { id: 'banner-manage', name: "Reklama banner boshqaruvi", group: 'menyu' },
-  // Buyurtmalar va yetkazish
+
   { id: 'orders-manage', name: "Buyurtmalarni boshqarish", group: 'buyurtma' },
   { id: 'delivery-group', name: "Dostavka guruh xabarnomasi", group: 'buyurtma' },
   { id: 'kitchen-group', name: "Oshxona guruh xabarnomasi", group: 'buyurtma' },
   { id: 'courier-report', name: "Kuryer hisoboti", group: 'buyurtma' },
-  // Ombor va moliya
+
   { id: 'stock-manage', name: "Ombor boshqaruvi", group: 'ombor_moliya' },
   { id: 'expense-manage', name: "Xarajatlar", group: 'ombor_moliya' },
   { id: 'cashflow', name: "Kassa oqimi", group: 'ombor_moliya' },
   { id: 'z-report', name: "Z-hisobot", group: 'ombor_moliya' },
   { id: 'bonus-settings', name: "Bonus sozlamalari", group: 'ombor_moliya' },
-  // Statistika va AI
+
   { id: 'dashboard', name: "Boshqaruv paneli (Dashboard)", group: 'statistika' },
   { id: 'staff-performance', name: "Xodimlar statistikasi", group: 'statistika' },
   { id: 'ai-analytics', name: "AI tahlil", group: 'statistika' },
   { id: 'ai-director', name: "AI Direktor", group: 'statistika' },
   { id: 'audit', name: "Auditlar", group: 'statistika' },
-  // Mijozlar (mini-ilova)
+
   { id: 'customer-menu', name: "Mijoz uchun menyu va buyurtma", group: 'mijoz' },
   { id: 'customer-account', name: "Mijoz profili va tarixi", group: 'mijoz' },
   { id: 'support-chat', name: "Tezkor qo'llab-quvvatlash chat", group: 'mijoz' },
-  // Tizim va xavfsizlik
+
   { id: 'restaurant-brand', name: "Restoran brendi (logo, nom)", group: 'tizim' },
   { id: 'system-status', name: "Tizim holati paneli", group: 'tizim' },
   { id: 'notification-log', name: "Xatolik jurnali", group: 'tizim' }
@@ -1047,12 +744,6 @@ function getFeatureCatalogGrouped() {
   }));
 }
 
-// ====== 59-bosqich: tarifda yo'q funksiyaga kirishni bloklash ======
-// Muhim: owner.tariffId belgilanmagan (yoki tarif o'chirilgan) bo'lsa —
-// CHEKLOVSIZ. Bu — eski, tarif tizimidan oldingi do'kon egalari (57-bosqich
-// hali ularga tarif biriktirmagan) ishlashda davom etishi uchun muhim.
-// Faqat admin ongli ravishda bir tarifni biriktirganda, o'sha tarifning
-// features{} xaritasi amal qila boshlaydi.
 function ownerCanUseFeature(owner, featureId) {
   if (!owner || !owner.tariffId) return true;
   const tariff = loadTariffs().find(t => t.id === owner.tariffId);
@@ -1060,8 +751,6 @@ function ownerCanUseFeature(owner, featureId) {
   return !!(tariff.features && tariff.features[featureId] === true);
 }
 
-// 60-bosqich: bloklangan joyda aniq va tushunarli xabar — qaysi funksiya
-// va nima uchun yopilganini bildiradi (admin bilan bog'lanishni so'raydi).
 function featureBlockedResult(featureId) {
   const feature = FEATURE_CATALOG.find(f => f.id === featureId);
   const label = feature ? feature.name : 'Bu funksiya';
@@ -1073,31 +762,23 @@ function featureBlockedResult(featureId) {
   };
 }
 
-// 78-BOSQICH: Ko'p adminli tizim.
-// admins.json'ni o'qiydi/yozadi. Har bir yozuv: { id, addedAt, addedBy }.
 function loadAdmins() { return loadJSONArray(ADMINS_FILE); }
 function saveAdmins(admins) {
   saveJSONArray(ADMINS_FILE, admins);
   reloadAdminsCache(admins);
 }
 
-// Xotiradagi Set — har bir so'rovda faylni qayta o'qimaslik uchun. Server
-// ishga tushganda (server.listen ichida) va admins.json har safar
-// o'zgartirilganda (saveAdmins() orqali) yangilanadi.
 let EXTRA_ADMIN_IDS = new Set();
 function reloadAdminsCache(admins) {
   const list = admins || loadAdmins();
   EXTRA_ADMIN_IDS = new Set(list.map(a => String(a.id)));
 }
 
-// Qo'shimcha admin qo'shish/o'chirish (keyingi bosqichda admin panelidagi
-// "Adminlar" bo'limi shu funksiyalarni chaqiradi). Bootstrap ADMIN_ID bu
-// yerga hech qachon qo'shilmaydi — u alohida, ENV orqali ustuvor tekshiriladi.
 function addExtraAdmin(id, addedBy) {
   const idStr = String(id);
-  if (idStr === String(ADMIN_ID)) return loadAdmins(); // bootstrap allaqachon admin — qo'shishning hojati yo'q
+  if (idStr === String(ADMIN_ID)) return loadAdmins();
   const admins = loadAdmins();
-  if (admins.some(a => String(a.id) === idStr)) return admins; // allaqachon bor
+  if (admins.some(a => String(a.id) === idStr)) return admins;
   admins.push({ id: idStr, addedAt: new Date().toISOString(), addedBy: addedBy ? String(addedBy) : null });
   saveAdmins(admins);
   return admins;
@@ -1109,17 +790,11 @@ function removeExtraAdmin(id) {
   return admins;
 }
 
-// Bootstrap ADMIN_ID (ENV) YOKI admins.json'dagi (xotiraga yuklangan)
-// qo'shimcha adminlardan biri bo'lsa — admin hisoblanadi.
 function isAdminId(userId) {
   const idStr = String(userId);
   return idStr === String(ADMIN_ID) || EXTRA_ADMIN_IDS.has(idStr);
 }
 
-// 10-bosqich: o'zi ro'yxatdan o'tgan yangi oshxona egasi haqidagi xabar
-// BARCHA adminlarga (bootstrap ADMIN_ID + admins.json'dagi qo'shimchalar)
-// yuborilishi kerak — faqat bittasiga emas (78-bosqichdagi ko'p adminli
-// tizimga mos).
 function allAdminIds() {
   return Array.from(new Set([String(ADMIN_ID), ...EXTRA_ADMIN_IDS]));
 }
@@ -1128,36 +803,10 @@ function findOwner(owners, userId) {
   return owners.find(o => String(o.id) === String(userId));
 }
 
-// 76-BOSQICH: MUHIM TUZATISH. Ilgari bu funksiya faqat owner.expiresAt'ga
-// qarab ha/yo'q javob berardi — grace period (muhlat) tushunchasi umuman
-// yo'q edi. Endi 75-bosqichda tayyorlangan getOwnerSubscriptionAccess()'ga
-// ishlaydi: muddat tugagan bo'lsa ham, SUBSCRIPTION_GRACE_DAYS ichida hali
-// kirish ruxsat etiladi (hisob-kitob-bot'dagi trial+grace mantig'i bilan bir
-// xil). owner.expiresAt endi to'g'ridan-to'g'ri ishlatilmaydi — buning
-// o'rniga owner.subscriptionUntil/subscriptionStatus (71-bosqichda
-// ensureSubscriptionFields orqali expiresAt'dan hosil qilingan) ishlatiladi.
 function isOwnerAccessValid(owner) {
   return getOwnerSubscriptionAccess(owner).allowed;
 }
 
-// 76-BOSQICH: MUHIM TUZATISH. Ilgari bu funksiya nomiga mos ravishda
-// muddati tugagan (isOwnerAccessValid()===false) egalarni owners.json'dan
-// BUTUNLAY O'CHIRIB YUBORARDI — menyu, xodimlar, buyurtmalar tarixi bilan
-// birga. Bu hisob-kitob-bot'dagi yumshoq bloklash (grace period, ma'lumot
-// hech qachon o'chmasligi) mantig'iga ZID edi va eng jiddiy farq shu edi.
-//
-// ENDI BU FUNKSIYA HECH KIMNI O'CHIRMAYDI. Vazifasi: muddati (grace period
-// bilan birga) chindan tugagan egalarning subscriptionStatus maydonini
-// 'blocked' deb belgilab qo'yish (va aksincha — to'lov/uzaytirish natijasida
-// yana faol bo'lib qolganlarni 'active'ga qaytarish), so'ng owners.json'ga
-// saqlash va TO'LIQ ro'yxatni (bloklanganlar ham ichida) qaytarish.
-//
-// Funksiya nomi ATAYLAB eskicha qoldirilgan (pruneExpiredOwners) — bu nom
-// kod bo'ylab 40dan ortiq joyda "joriy owners ro'yxatini olib kelish"
-// ma'nosida chaqirilgan; ularning barchasini qayta yozib, xato qilib
-// qo'yish xavfi o'rniga, xulq shu YAGONA joyda xavfsiz tarzda o'zgartirildi.
-// pending_trial holatidagi egalarga tegilmaydi — ular hali obuna
-// boshlamagan, ularning statusini admin trial tasdiqlash oqimi o'zgartiradi.
 function pruneExpiredOwners() {
   const owners = loadOwners();
   let changed = false;
@@ -1175,7 +824,6 @@ function pruneExpiredOwners() {
   return owners;
 }
 
-// ====== Xodimlar (kassir, oshpaz, sklad, dostavka) — har bir egasining o'z ro'yxati ichida saqlanadi ======
 const STAFF_ROLES = {
   kassir: 'Kassir',
   oshpaz: 'Oshpaz',
@@ -1183,27 +831,20 @@ const STAFF_ROLES = {
   dostavka: 'Kuryer'
 };
 
-// 2-4-bosqich: har bir xodim roliga mos "panel" funksiyasi (tarif orqali
-// yopilishi mumkin bo'lgan FEATURE_CATALOG id'si). `sklad` bu yerda yo'q —
-// uning kirishi allaqachon 'stock-manage' funksiyasi orqali cheklanadi.
 const ROLE_PANEL_FEATURE = {
   kassir: 'cashier-panel',
   oshpaz: 'kitchen-panel',
   dostavka: 'courier-panel'
 };
 
-// Xodimning barcha rollaridan FAQAT egasining joriy tarifida ochiq bo'lganlarini
-// qaytaradi. Tarifda mos panel funksiyasi ❌ qilingan bo'lsa — o'sha rol
-// ro'yxatdan olib tashlanadi (xodim o'sha panelga umuman kira olmaydi).
 function allowedStaffRoles(owner, roles) {
   return (roles || []).filter(r => {
     const featureId = ROLE_PANEL_FEATURE[r];
-    if (!featureId) return true; // bu rol uchun alohida panel-funksiyasi yo'q (masalan sklad) — cheklanmaydi
+    if (!featureId) return true;
     return ownerCanUseFeature(owner, featureId);
   });
 }
 
-// ====== Filiallar (G. Filiallar tizimi) — har bir egasi bir nechta filial ocha oladi ======
 function findBranch(owner, branchId) {
   return (owner.branches || []).find(b => String(b.id) === String(branchId));
 }
@@ -1212,10 +853,8 @@ function generateBranchId() {
   return crypto.randomBytes(6).toString('hex');
 }
 
-// Berilgan branchId bo'yicha sklad "pool"ini aniqlaydi: branchId bo'lmasa — markaziy sklad (owner o'zi),
-// branchId bo'lsa — o'sha filialning o'z sklad massivi (kerak bo'lsa lazy yaratiladi)
 function resolveStockPool(owner, branchId) {
-  if (!branchId) return owner; // markaziy sklad — owner.stock / owner.stockMovements
+  if (!branchId) return owner;
   const branch = findBranch(owner, branchId);
   if (!branch) return null;
   if (!branch.stock) branch.stock = [];
@@ -1223,32 +862,16 @@ function resolveStockPool(owner, branchId) {
   return branch;
 }
 
-// ====== Xarajat kategoriyalari (F. Moliya bo'limi uchun) ======
 const EXPENSE_CATEGORIES = {
   ijara: 'Ijara',
   maosh: 'Maosh',
   kommunal: 'Kommunal',
   mahsulot: 'Mahsulot xaridi',
-  // 7-10-bosqich: sklad-add orqali AVTOMATIK yoziladigan xarajatlar shu
-  // kategoriyada — "Mahsulot xaridi"dan ataylab alohida, chunki u qo'lda
-  // (/api/expense-add) kiritilgan xarajatlar uchun, buni esa foydalanuvchi
-  // qo'lda tanlamaydi, faqat /api/stock-add o'zi yozadi.
+
   sklad_xarid: 'Sklad xaridlari',
   boshqa: 'Boshqa'
 };
 
-// ====== Menyu bo'limlari / kategoriyalari — F-bo'lim (36-40-bosqich) ======
-// Har bir egasi endi o'zining tuzilmali bo'limlar ro'yxatiga ega:
-// owner.categories = [{id, name, order}, ...]. Taom (`menu` item)ning
-// `category` maydoni hamon oddiy matn (nom) sifatida saqlanadi — shu bilan
-// eski kod (menyuni ko'rsatish, guruhlash) o'zgarishsiz ishlayveradi, faqat
-// endi bu nomlar "erkin matn" emas, shu ro'yxatdan tanlanadi.
-//
-// Eski ma'lumotlarda (birinchi marta shu funksiyaga murojaat qilinganda)
-// owner.categories hali yo'q — shu holda owner.menu ichidagi mavjud
-// category qiymatlaridan (takrorlanmas holda, birinchi uchragan tartibda)
-// avtomatik ro'yxat yasaladi (migratsiya). Shundan keyin owner.categories
-// doim massiv deb hisoblanishi mumkin.
 function ensureOwnerCategories(owner) {
   if (!Array.isArray(owner.categories)) {
     const seen = new Set();
@@ -1266,30 +889,14 @@ function ensureOwnerCategories(owner) {
   return owner.categories;
 }
 
-// Tartib (order) bo'yicha saralangan holda qaytaradi — ro'yxatni ko'rsatish/
-// yuborishdan oldin har doim shu orqali o'qish kerak.
 function sortedOwnerCategories(owner) {
   return ensureOwnerCategories(owner).slice().sort((a, b) => a.order - b.order);
 }
 
-// ====== D-bo'lim (28-31-bosqich): Combo — bir nechta taomni birlashtirib,
-// mijozga alohida bo'lim sifatida ko'rinadigan, o'z narxiga ega "to'plam"
-// sifatida sotish. Combo o'zi sklad bilan BEVOSITA bog'lanmaydi — u faqat
-// mavjud menyu taomlarining (owner.menu) qaysi biri va necha donadan
-// tarkibga kirishini saqlaydi (itemIds: [{menuItemId, qty}]). Buyurtma
-// qilinganda combo tarkibidagi HAR BIR taomning o'z retsepti (yoki
-// to'g'ridan-sklad turi) bo'yicha sklad kamayadi — xuddi o'sha taomlar
-// alohida-alohida buyurtma qilingandek (faqat narx combo narxi bo'yicha
-// hisoblanadi, tarkibidagi taomlarning yig'indi narxi emas — buning
-// farqini priceMode belgilaydi: "auto" = tarkib narxlari yig'indisi,
-// "manual" = egasi qo'lda kiritgan narx).
 function findCombo(owner, id) {
   return (owner.combos || []).find(c => c.id === id);
 }
 
-// Combo tarkibidagi taomlar narxining yig'indisini hisoblaydi ("avtomatik"
-// narx rejimi uchun — 31-bosqich). Menyudan o'chirilgan/topilmagan taom
-// bo'lsa, uning ulushi yig'indiga qo'shilmaydi (0 sifatida hisoblanadi).
 function comboAutoPrice(owner, itemIds) {
   return (itemIds || []).reduce((sum, entry) => {
     const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
@@ -1297,11 +904,6 @@ function comboAutoPrice(owner, itemIds) {
   }, 0);
 }
 
-// Combo bitta buyurtma miqdorida (comboQty) qancha sklad mahsuloti talab
-// qilishini hisoblaydi — natija {stockId, qty, viaName} massivi;
-// checkStockAvailability (tekshirish) va haqiqiy kamaytirish (consumption)
-// bir xil shu ro'yxatdan foydalanadi, shu bilan ikkalasida mantiq
-// bir-biridan farq qilib qolmaydi.
 function comboStockNeeds(owner, combo, comboQty) {
   const needs = [];
   for (const entry of ((combo && combo.itemIds) || [])) {
@@ -1320,15 +922,11 @@ function comboStockNeeds(owner, combo, comboQty) {
   return needs;
 }
 
-// 47-bosqich: sklad tugagach taom/combo avtomatik "Tugagan" deb belgilanishi
-// uchun — egasi qo'lda o'chirgan "available" belgisidan MUSTAQIL, real vaqtda
-// hisoblanadigan ko'rsatkich. Taom sklad bilan bog'lanmagan bo'lsa (na
-// directStockId, na recipe) — cheklovsiz, doim mavjud deb hisoblanadi.
 function menuItemOutOfStock(owner, menuItem) {
   if (!menuItem) return false;
   if (menuItem.directStockId) {
     const stockItem = (owner.stock || []).find(s => s.id === menuItem.directStockId);
-    if (!stockItem) return false; // sklad kartochkasi topilmasa — eski xatti-harakat saqlanadi (cheklanmaydi)
+    if (!stockItem) return false;
     return stockItem.qty < 1;
   }
   const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
@@ -1340,9 +938,6 @@ function menuItemOutOfStock(owner, menuItem) {
   });
 }
 
-// Combo uchun xuddi shu qoida — tarkibidagi taomlardan BIRORTASI uchun ham
-// sklad yetarli bo'lmasa, combo ham "Tugagan" deb ko'rsatiladi (bitta
-// combo — comboQty=1 — tayyorlash uchun yetarli sklad bormi tekshiriladi).
 function comboOutOfStock(owner, combo) {
   if (!combo) return false;
   const needs = comboStockNeeds(owner, combo, 1);
@@ -1353,11 +948,6 @@ function comboOutOfStock(owner, combo) {
   });
 }
 
-// ---- Dostavka bekor qilinishi (mijoz javob bermay/telefon o'chirib qo'yib
-// kuryerga yetkazib berilmagan buyurtmalar) takrorlansa - shu mijozga endi
-// "naqd/dostavka orqali" to'lov ko'rsatilmaydi, faqat "Karta" (oldindan
-// to'lov) qoladi. Shunda kuryer behuda yo'lga chiqib, pulini ololmay
-// qolish xavfi kamayadi. ----
 const CARD_ONLY_AFTER_CANCELLED_DELIVERIES = 2;
 function customerCancelledDeliveryCount(owner, userId) {
   return (owner.orders || []).filter(o =>
@@ -1367,19 +957,11 @@ function customerCancelledDeliveryCount(owner, userId) {
   ).length;
 }
 function customerIsCardOnlyRestricted(owner, userId) {
-  // Egasi "Cheklangan mijozlar" ekranidan bu cheklovni qo'lda olib tashlagan
-  // bo'lishi mumkin (masalan, bekor qilishning sababi asosli bo'lgan) —
-  // shunday bo'lsa, bekor qilingan buyurtmalar soni chegaradan oshgan
-  // bo'lsa ham cheklov qo'llanmaydi.
+
   if ((owner.cardOnlyOverrides || []).some(id => String(id) === String(userId))) return false;
   return customerCancelledDeliveryCount(owner, userId) >= CARD_ONLY_AFTER_CANCELLED_DELIVERIES;
 }
 
-// ---- Mijozlar reytingi (65-bosqich): har bir dostavka yetkazilgach mijoz
-// 1-5 yulduz va ixtiyoriy sharh qoldirishi mumkin (qarang: 'rate:' callback
-// va pastdagi pendingReviewComments). Bu funksiya o'sha baholarning
-// o'rtachasini hisoblaydi — admin panelida do'konlarni reyting bo'yicha
-// saralash va egasining o'z "Mijoz sharhlari" ekranida ko'rsatish uchun.
 function ownerRatedOrders(owner) {
   return (owner.orders || []).filter(o => Number.isFinite(o.customerRating));
 }
@@ -1393,35 +975,19 @@ function ownerAverageRating(owner) {
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
 const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
-// "Dostavka orqali" to'langan buyurtmalarda pul avval kuryerning o'z qo'lida
-// turadi — kuryer shu pulni oshxonaga/egasiga jismonan topshirmaguncha
-// (courierCashCollected === true bo'lmaguncha) bu summa hech qanday daromad
-// hisobotiga (kassa, kunlik Z-hisobot, cashflow va h.k.) QO'SHILMAYDI. Karta
-// orqali to'lovda pul to'g'ridan-to'g'ri hisobga/kassaga tushadi va kuryerning
-// qo'lida "yotib qolmaydi", shuning uchun karta har doim darhol daromadga
-// qo'shiladi (eski buyurtmalarda maydon bo'lmasa ham — moslik uchun default true).
+
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
   if (o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false) return 0;
   return o.total || 0;
 }
-// ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
+
 const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
-// 5-bosqich: "Kechikayotgan" tayyor holatida bo'lmagan ma'lumot modelida
-// mavjud emas — shu sababli hisoblab chiqariladi: buyurtma yaratilganidan
-// shuncha daqiqa o'tib ham hali "tayyor" bo'lmasa, kechikkan hisoblanadi.
-// Hozircha taxminiy qiymat — kerak bo'lsa keyinroq moslashtirish mumkin.
+
 const ORDER_DELAY_THRESHOLD_MINUTES = 20;
 
-// ---- Buyurtma yaratishda "ikki marta bosish" / tarmoq qayta yuborishi tufayli ----
-// ---- bitta buyurtmaning ikki marta yaratilib ketishining oldini olish ----
-// Klient har bir chek-aut urinishi uchun bitta `requestId` yuboradi. Shu
-// `requestId` bilan avval muvaffaqiyatli buyurtma yaratilgan bo'lsa, server
-// yangi buyurtma yaratmasdan, oldingi natijani qaytaradi (sklad ham qayta
-// kamaytirilmaydi). Yozuvlar xotirada saqlanadi va bir muddatdan so'ng
-// avtomatik tozalanadi — bu faqat qisqa muddatli himoya, doimiy audit emas.
-const ORDER_REQUEST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 daqiqa
-const orderRequestCache = new Map(); // key: `${ownerId}:${userId}:${requestId}` -> { response, expiresAt }
+const ORDER_REQUEST_CACHE_TTL_MS = 10 * 60 * 1000;
+const orderRequestCache = new Map();
 
 function getCachedOrderResponse(ownerId, userId, requestId) {
   if (!requestId) return null;
@@ -1441,7 +1007,6 @@ function setCachedOrderResponse(ownerId, userId, requestId, response) {
   orderRequestCache.set(key, { response, expiresAt: Date.now() + ORDER_REQUEST_CACHE_TTL_MS });
 }
 
-// Eskirgan keshlarni vaqti-vaqti bilan tozalab turadi (xotira sizib ketmasligi uchun)
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of orderRequestCache) {
@@ -1453,11 +1018,9 @@ function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
 }
 
-// Taom rasmi: https:// havola YOKI galereyadan tanlangan rasm (base64 data URL) bo'lishi mumkin.
-// Base64 rasm hajmi cheklanadi (owners.json fayli haddan tashqari katta bo'lib ketmasligi uchun).
-const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000; // taxminan ~2.2MB dekodlangan rasm (so'rov hajmi cheklovidan kichik)
+const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000;
 function isValidImageValue(value) {
-  if (!value) return true; // bo'sh qiymat ruxsat etiladi (rasm shart emas)
+  if (!value) return true;
   if (/^https?:\/\//i.test(value)) return true;
   if (/^data:image\/(png|jpe?g|webp);base64,/i.test(value)) {
     return value.length <= MAX_MENU_IMAGE_BASE64_CHARS;
@@ -1465,8 +1028,6 @@ function isValidImageValue(value) {
   return false;
 }
 
-// Xodimning rollarini har doim massiv shaklida qaytaradi — eski ma'lumotda
-// bitta `role` (string) saqlangan bo'lishi mumkin, buni ham qo'llab-quvvatlaydi.
 function normalizeStaffRoles(staff) {
   if (!staff) return [];
   if (Array.isArray(staff.roles) && staff.roles.length) {
@@ -1476,36 +1037,24 @@ function normalizeStaffRoles(staff) {
   return [];
 }
 
-// Xodimda berilgan rol bor-yo'qligini tekshiradi (bir nechta rol biriktirilgan bo'lishi mumkin)
 function staffHasRole(staff, role) {
   return normalizeStaffRoles(staff).includes(role);
 }
 
-// ctx (resolveOwnerContext natijasi) berilgan rolga ega-yo'qligini tekshiradi.
-// Egasi uchun ctx.role har doim 'egasi' — xodim uchun ctx.roles massividan tekshiriladi.
 function ctxHasRole(ctx, role) {
   if (!ctx) return false;
   if (ctx.role === 'egasi') return role === 'egasi';
   return Array.isArray(ctx.roles) ? ctx.roles.includes(role) : ctx.role === role;
 }
 
-// ctx berilgan rollardan BIRIGA bo'lsa ham ega bo'lsa true qaytaradi
 function ctxHasAnyRole(ctx, roles) {
   return roles.some(r => ctxHasRole(ctx, r));
 }
 
-// Bir nechta rol nomlarini o'qiladigan matn qilib birlashtiradi (masalan: "Kassir, Oshpaz")
 function rolesLabel(roles) {
   return (roles || []).map(r => STAFF_ROLES[r] || r).join(', ') || '—';
 }
 
-// Berilgan userId qaysi egasining xodimi ekanini (va rol(lar)ini) topadi.
-// 2-4-bosqich: xodimga biriktirilgan rollardan FAQAT tarifda ochiq bo'lgan
-// panellarga mos keladiganlari qaytariladi (masalan owner kassir panelini
-// tarifda yopib qo'ygan bo'lsa — kassir xodimi endi kassir sifatida hech
-// narsaga kira olmaydi, garchi owner.staff'da rol hali ham saqlanayotgan
-// bo'lsa ham). Owner o'z xodimlarini boshqarishda (staff-list) baribir
-// RAW (filtrlanmagan) rollarni ko'radi — u yerda findStaffInfo ishlatilmaydi.
 function findStaffInfo(owners, userId) {
   for (const owner of owners) {
     const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
@@ -1527,15 +1076,8 @@ function findStaffInfo(owners, userId) {
   return null;
 }
 
-// Berilgan userId qaysi oshxonaga tegishli ekanini aniqlaydi (egasining o'zi yoki uning xodimi)
-// Qaytaradi: { owner, role, roles, branchId } — role: 'egasi' yoki xodimning birinchi roli
-// (orqaga moslik uchun), roles: xodimga biriktirilgan BARCHA rollar massivi; topilmasa null
 function resolveOwnerContext(owners, userId, opts) {
-  // 65-bosqich: admin ba'zan yangi/tajribasiz oshxona egasi uchun menyu yoki
-  // skladni o'zi to'ldirib berishi kerak bo'ladi. Shunday holatda so'rov
-  // payload'ida targetOwnerId yuboriladi — bu holda haqiqiy egasi/xodim
-  // aniqlanmay, to'g'ridan-to'g'ri o'sha egasi nomidan "egasi" rolida ishlanadi.
-  // Faqat chaqiruvchi rostdan ham admin bo'lsagina (isAdminId) ishlaydi.
+
   if (opts && opts.targetOwnerId && isAdminId(userId)) {
     const targetOwner = findOwner(owners, opts.targetOwnerId);
     if (!targetOwner) return null;
@@ -1559,8 +1101,6 @@ function resolveOwnerContext(owners, userId, opts) {
   return null;
 }
 
-// ====== J. Mijozlar uchun menyu (38-40-bosqich) — mijozlar, sevimlilar, aksiyalar, bonus ======
-// Owner ichida mijozlarni topadi/kerak bo'lsa yangi yozuv yaratadi (favorites, bonus ballari shu yerda saqlanadi)
 function findCustomer(owner, userId) {
   return (owner.customers || []).find(c => String(c.id) === String(userId));
 }
@@ -1584,18 +1124,12 @@ function findOrCreateCustomer(owner, userId, tgUser) {
   } else {
     if (tgUser && tgUser.username) c.username = tgUser.username;
     if (tgUser && tgUser.first_name) c.firstName = tgUser.first_name;
-    // 56-bosqich: eski mijozlarda "addresses" maydoni bo'lmasligi mumkin
-    // (funksiya qo'shilishidan oldin yaratilgan) — shu yerda to'ldiramiz.
+
     if (!Array.isArray(c.addresses)) c.addresses = [];
   }
   return c;
 }
 
-// ---- H64-bosqich: "AI ofitsiant" — mijozni tanib, doim yoqtiradigan
-// taomlarini va ularga o'xshash (bir xil toifadagi, hali sinab ko'rmagan)
-// taomlarni tavsiya qiladi. Haqiqiy tashqi AI chaqirilmaydi — mijozning
-// o'z xarid tarixi (customer.itemFrequency) tahlil qilinadi, shuning uchun
-// tezkor va bepul ishlaydi, lekin mijozga "meni tanidi" degan tuyg'u beradi.
 function buildAiWaiterRecommendations(owner, userId, availableMenu) {
   const customer = findCustomer(owner, userId);
   const empty = { favorites: [], similar: [] };
@@ -1604,8 +1138,6 @@ function buildAiWaiterRecommendations(owner, userId, availableMenu) {
   const freqEntries = Object.entries(customer.itemFrequency).sort((a, b) => b[1] - a[1]);
   if (!freqEntries.length) return empty;
 
-  // 1) "Doim yoqtiradigan" — eng ko'p buyurtma qilingan, hozir ham menyuda
-  //    mavjud bo'lgan taomlar (eng ko'pi 4 tasi, ko'zni band qilmasin).
   const favorites = [];
   for (const [itemId, count] of freqEntries) {
     const item = availableMenu.find(m => m.id === itemId);
@@ -1614,10 +1146,6 @@ function buildAiWaiterRecommendations(owner, userId, availableMenu) {
   }
   if (!favorites.length) return empty;
 
-  // 2) "Sizga yoqishi mumkin" — eng sevimli 2 ta taomning TOIFASIDAN, mijoz
-  //    HALI SINAB KO'RMAGAN boshqa taomlar (retsept/tarkib emas, toifa
-  //    bo'yicha o'xshashlik — menyu strukturasida mavjud yagona umumiy
-  //    belgi shu).
   const triedIds = new Set(freqEntries.map(([id]) => id));
   const topCategories = [...new Set(favorites.slice(0, 2).map(f => f.category).filter(Boolean))];
   const similar = [];
@@ -1633,14 +1161,12 @@ function buildAiWaiterRecommendations(owner, userId, availableMenu) {
   return { favorites, similar };
 }
 
-
 const MAX_CUSTOMER_ADDRESSES = 15;
 
 function findCustomerAddress(customer, addressId) {
   return (customer.addresses || []).find(a => a.id === addressId);
 }
 
-// Berilgan promoId bo'yicha faol aksiyani topadi va chegirmani hisoblaydi
 function findActivePromo(owner, promoId) {
   if (!promoId) return null;
   const promo = (owner.promotions || []).find(p => p.id === promoId && p.active);
@@ -1655,8 +1181,6 @@ function applyPromoDiscount(owner, promoId, subtotal) {
   return { promo, discountAmount };
 }
 
-// ====== I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ======
-// Har bir muhim amalni (kim, qachon, nima qildi) jurnalga yozadi. errorCount — audit kamomadlari uchun (reyting hisobida ayiriladi)
 function logStaffAction(owner, entry) {
   if (!owner.staffActionLog) owner.staffActionLog = [];
   owner.staffActionLog.unshift(Object.assign({
@@ -1667,7 +1191,6 @@ function logStaffAction(owner, entry) {
   if (owner.staffActionLog.length > 2000) owner.staffActionLog.length = 2000;
 }
 
-// Telegram Bot API'ga so'rov yuborish (masalan @username orqali foydalanuvchini topish uchun)
 function telegramApi(method, params) {
   return new Promise((resolve, reject) => {
     const qs = new URLSearchParams(params).toString();
@@ -1683,12 +1206,6 @@ function telegramApi(method, params) {
   });
 }
 
-// Galereyadan yuklangan rasm (base64 data URL) — oddiy GET so'rov orqali
-// Telegram'ga yuborib bo'lmaydi (binary ma'lumot query string'ga sig'maydi),
-// shuning uchun bu yerda haqiqiy multipart/form-data POST so'rovi qo'lda
-// (tashqi kutubxonasiz) tuziladi. `fields` — matn maydonlari (chat_id,
-// caption va h.k.), `fileFieldName`/`buffer`/`filename`/`mimeType` — fayl
-// qismi. Faqat sendPhoto uchun ishlatiladi (broadcast: galereyadan rasm).
 function telegramApiUploadPhoto(chatId, buffer, mimeType, fields) {
   return new Promise((resolve, reject) => {
     const boundary = '----uzbotBoundary' + crypto.randomBytes(16).toString('hex');
@@ -1732,17 +1249,6 @@ function telegramApiUploadPhoto(chatId, buffer, mimeType, fields) {
   });
 }
 
-// 12-bosqich: Ilgari sendMessage() Telegramdan qaytgan har qanday xatolikni
-// (masalan "Forbidden: bot was blocked by the user" yoki "chat not found" —
-// bular xodim botga hali /start bosmagan yoki uni block qilgan bo'lsa yuz
-// beradi) BUTUNLAY yashirib yuborar edi (`.catch(() => {})`, natijani ham
-// tekshirmasdan). Shu sababli "oshpazga buyurtma tushmayapti" kabi holatlarni
-// aniqlash imkonsiz edi — xabar yuborilmagani hech qayerda ko'rinmasdi.
-// Endi: Telegram `ok:false` qaytarsa ham, tarmoq xatosi bo'lsa ham — sabab
-// konsolga (server logiga) chiqariladi. Chaqiruvchi funksiyalar xatti-harakati
-// o'zgarmaydi (hamon reject qilmaydi, oldingidek natija bilan davom etadi) —
-// faqat endi sabab KO'RINADIGAN bo'ldi. To'liq, ilova ichida ko'rinadigan
-// xatolik jurnali 17-bosqichda qo'shiladi.
 function sendMessage(chatId, text, replyMarkup) {
   const params = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
@@ -1758,20 +1264,8 @@ function sendMessage(chatId, text, replyMarkup) {
   });
 }
 
-// 17-bosqich: bir nechta xodimga (notifyTargets ro'yxati) bir xil matnni
-// yuboradigan umumiy yordamchi. Ilgari har bir chaqiruv joyida
-// `for (const targetId of new Set(notifyTargets)) sendMessage(targetId, text)`
-// deb takrorlanardi — endi bitta joyda, va MUHIMI: yetkazib bo'lmagan har bir
-// xabar sababi bilan birga `owner.notificationErrors`ga yoziladi (oxirgi 50
-// tasi saqlanadi), shunda egasi ilova ichida ("Bildirishnoma xatolari"
-// kartochkasi, Sozlamalar) buni ko'ra oladi — Telegram/server logiga
-// kirish shart emas. Chaqiruvchi tomon o'zgarishdan keyin owner obyektini
-// saqlashi (saveOwners) kerak — bu funksiya faylga o'zi yozmaydi.
 function notifyStaffList(owner, targetIds, text, context, category) {
-  // 59-bosqich: agar `category` berilgan bo'lsa va egasi shu toifani
-  // o'chirib qo'ygan bo'lsa (owner.notificationPrefs[category] === false),
-  // EGANING o'ziga xabar yubormaymiz — lekin xodimlarga baribir boradi
-  // (bu sozlama faqat egasi uchun, xodimlar o'z xabarlarini o'chira olmaydi).
+
   const ownerMuted = category && isNotificationCategoryMuted(owner, category);
   const uniqueIds = [...new Set((targetIds || []).map(String))]
     .filter(id => !(ownerMuted && id === String(owner.id)));
@@ -1794,11 +1288,6 @@ function notifyStaffList(owner, targetIds, text, context, category) {
   return Promise.all(promises);
 }
 
-// 59-bosqich: owner.notificationPrefs — { newOrder, lowStock, staffActions }
-// (hammasi standart bo'yicha yoqilgan — maydon umuman yo'q yoki `undefined`
-// bo'lsa MUTED emas deb hisoblanadi, faqat ANIQ `false` o'chirilgan deb
-// hisoblanadi). Obuna/to'lov/tasdiqlash kabi MUHIM xabarlar bu yerga
-// kirmaydi — ular hech qachon o'chirib bo'lmaydi.
 const NOTIFICATION_CATEGORIES = {
   newOrder: 'Yangi buyurtma xabarlari',
   lowStock: 'Ombordagi kam qoldiq ogohlantirishlari'
@@ -1822,9 +1311,6 @@ function editMessageText(chatId, messageId, text, replyMarkup) {
   return telegramApi('editMessageText', params).catch(() => {});
 }
 
-// To'lov skrinshoti kabi RASM (caption) xabarlarini tahrirlash uchun -
-// editMessageText FAQAT matnli xabarlarda ishlaydi, rasm/caption'li
-// xabarlarda Telegram xato qaytaradi, shuning uchun alohida.
 function editMessageCaption(chatId, messageId, caption, replyMarkup) {
   const params = { chat_id: chatId, message_id: messageId, caption, parse_mode: 'HTML' };
   if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
@@ -1832,9 +1318,6 @@ function editMessageCaption(chatId, messageId, caption, replyMarkup) {
   return telegramApi('editMessageCaption', params).catch(() => {});
 }
 
-// Mijoz yuborgan skrinshotni (from_chat_id/message_id) qayta yuklamasdan,
-// "Forwarded from" belgisisiz kassir/egasiga ko'chirib yuboradi - caption va
-// tasdiqlash tugmalari bilan birga.
 function copyMessageWithKeyboard(targetChatId, fromChatId, messageId, caption, replyMarkup) {
   const params = {
     chat_id: targetChatId, from_chat_id: fromChatId, message_id: messageId,
@@ -1844,8 +1327,6 @@ function copyMessageWithKeyboard(targetChatId, fromChatId, messageId, caption, r
   return telegramApi('copyMessage', params).catch(() => {});
 }
 
-// Lokatsiya (lat/lng) berilgan bo'lsa - Google Maps havolasiga aylantiradi
-// (dostavka guruhi/oshxona xabarida bosib ochish uchun).
 function locationMapsLink(location) {
   if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') return null;
   return `https://maps.google.com/?q=${location.lat},${location.lng}`;
@@ -1857,11 +1338,6 @@ function displayName(user) {
   return name || (user.username ? '@' + user.username : String(user.id));
 }
 
-// Mijoz "Tanishuv" shaklida o'zi kiritgan Ism+Familiyani birinchi navbatda
-// ishlatadi — buyurtmalarda "Mijoz:" sifatida shu ko'rsatiladi. Bu Telegram
-// profilidagi (taxallus bo'lishi mumkin bo'lgan) ismdan ko'ra ishonchliroq,
-// chunki mijoz buni ro'yxatdan o'tishda bevosita o'zi yozgan. Ro'yxatdan
-// o'tmagan bo'lsa (masalan eski buyurtmalar) Telegram nomiga qaytadi.
 function customerDisplayName(userId, tgUser) {
   const profile = findProfile(userId);
   if (profile && profile.firstName) {
@@ -1870,20 +1346,12 @@ function customerDisplayName(userId, tgUser) {
   return displayName(tgUser);
 }
 
-// Xodimlarga (kassir/oshpaz/dostavka guruhi) yuboriladigan xabarlarda mijoz
-// ism-familiyasi VA telefon raqami har doim birga ko'rsatilishi uchun —
-// order.customerPhone mavjud bo'lsa qo'shimcha qator qo'shiladi.
 function orderCustomerContactLabel(order) {
   const lines = [`Mijoz: ${escapeHtmlServer(order.customerName)}`];
   if (order.customerPhone) lines.push(`Tel: ${escapeHtmlServer(order.customerPhone)}`);
   return lines.join('\n');
 }
 
-// 1-bosqich: xodimlar hisobotlarida (reyting, amallar jurnali) F.I.Sh
-// (to'liq ism-familiya) ko'rsatish uchun. Xodim /api/profile-register orqali
-// (mijozlar bilan bir xil umumiy ro'yxatdan o'tish oqimi — profiles.json)
-// ism-familiyasini kiritgan bo'lsa, o'sha F.I.Sh qaytariladi; aks holda
-// @username'ga, u ham bo'lmasa Telegram ID'siga qaytiladi.
 function staffDisplayName(staff) {
   if (!staff) return null;
   const profile = findProfile(staff.id);
@@ -1893,27 +1361,20 @@ function staffDisplayName(staff) {
   return staff.username ? '@' + staff.username : `ID: ${staff.id}`;
 }
 
-// 71-BOSQICH: raqamlarni o'qishga oson qilib chiqarish uchun (1000 -> "1 000",
-// 100000 -> "100 000"). Pul summalari va boshqa katta raqamlar shu orqali chiqariladi.
 function fmtNum(n) {
   const num = Math.round(Number(n) || 0);
   return num.toLocaleString('ru-RU').replace(/,/g, ' ');
 }
 
-// Telegram xabarlari HTML parse_mode bilan yuborilgani uchun, foydalanuvchi kiritgan matnni xavfsiz qilib chiqaramiz
 function escapeHtmlServer(str) {
   return String(str).replace(/[&<>"']/g, c => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
 
-// Buyurtma haqida oshxonaning biriktirilgan (dostavka) admin guruhiga xabar yuboradi
-// ("Qabul qilish" / "Tayyor" tugmalari bilan — bosilganda mijozga avtomatik xabar boradi).
-// Sarlavha buyurtma turiga qarab moslashadi (Dostavka/Stolga/Olib ketish) — chunki endi
-// guruhga barcha buyurtma turlari yuboriladi, faqat dostavka emas.
 function notifyDeliveryGroup(owner, order, creatorLabel) {
   if (!owner.deliveryGroupId) return;
-  if (!ownerCanUseFeature(owner, 'delivery-group')) return; // 11-bosqich: tarif keyin o'zgartirilgan bo'lsa ham xabar ketmasin
+  if (!ownerCanUseFeature(owner, 'delivery-group')) return;
   const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
   const mapsLink = locationMapsLink(order.location);
   const addressLines = [
@@ -1946,25 +1407,9 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
   });
 }
 
-// 13-bosqich: "Oshpazga buyurtma tushmayapti" muammosining bir qismi — ba'zi
-// oshxonalarda oshpazlar bot bilan shaxsiy chatni ochmagan/bloklagan bo'ladi,
-// shu sababli ularga individual (staff.id bo'yicha) xabar UMUMAN yetib
-// bormaydi. Yechim: dostavka admin guruhiga o'xshab, oshxona egasi alohida
-// bir Telegram guruhini ("Oshpazlar guruhi") ham biriktira oladi — shu
-// guruhga HAR BIR yangi buyurtma (turi qanday bo'lishidan qat'iy nazar)
-// alohida, "✅ Qabul qilish" / "🏁 Tayyor" tugmalari bilan yuboriladi. Bu
-// dostavka guruhidan MUSTAQIL — ikkalasi bir vaqtda biriktirilgan bo'lishi
-// mumkin (masalan, kassirlar bitta guruhda, oshpazlar boshqa guruhda
-// ishlaydi).
-//
-// 14-bosqich: ikkalasi (dostavka guruhi + oshpazlar guruhi) BIR XIL
-// order.status maydonidan foydalanadi — shu sababli qaysi guruhda birinchi
-// bosilishidan qat'iy nazar, ikkinchi guruhdagi tugma "allaqachon bajarilgan"
-// deb javob beradi (dublikat yo'q), va ikkala guruhdagi xabar ham
-// yangilanadi (qarang: syncGroupMessagesForOrder).
 function notifyKitchenGroup(owner, order, creatorLabel) {
   if (!owner.kitchenGroupId) return;
-  if (!ownerCanUseFeature(owner, 'kitchen-group')) return; // 11-bosqich: tarif keyin o'zgartirilgan bo'lsa ham xabar ketmasin
+  if (!ownerCanUseFeature(owner, 'kitchen-group')) return;
   try {
     const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
@@ -1993,12 +1438,6 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
   }
 }
 
-// 14/15-bosqich: dostavka guruhi va oshpazlar guruhidagi xabarlarni (agar
-// ikkalasi ham biriktirilgan bo'lsa), shuningdek buyurtma holati Mini App
-// orqali (kassir/oshpaz/egasi tomonidan, guruh tugmalarisiz) o'zgarganda ham
-// ikkala guruh xabaridagi tugmalarni joriy holatga mos ravishda yangilaydi —
-// shu bilan "bir joyda qabul qilindi, boshqa joyda hali ham eski tugma
-// ko'rinadi" kabi chalkashliklarning oldi olinadi.
 function syncGroupMessagesForOrder(owner, order) {
   const targets = [
     { chatId: owner.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
@@ -2025,20 +1464,14 @@ function syncGroupMessagesForOrder(owner, order) {
   }
 }
 
-// ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
-const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000; // har soatda tekshiradi
-// 65-bosqich: eslatma qancha kun oldin yuborilishi endi tarifga bog'liq —
-// har bir tarif o'zining reminderDays qiymatini belgilashi mumkin (admin
-// panelida, Tarif tahrirlash oynasi). Tarif biriktirilmagan yoki
-// reminderDays ko'rsatilmagan bo'lsa — standart qiymat shu yerdan olinadi
-// (eski, tarif tizimidan oldingi umumiy 1 kunlik xulq bilan bir xil).
+const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+
 const DEFAULT_REMINDER_DAYS = 1;
 
 function ownerLabel(owner) {
   return owner.username ? '@' + owner.username : `ID: ${owner.id}`;
 }
 
-// Shu do'kon egasi uchun eslatma necha kun oldin yuborilishini aniqlaydi.
 function ownerReminderBeforeMs(owner) {
   let reminderDays = DEFAULT_REMINDER_DAYS;
   if (owner.tariffId) {
@@ -2050,26 +1483,12 @@ function ownerReminderBeforeMs(owner) {
   return reminderDays * 24 * 60 * 60 * 1000;
 }
 
-// 76-BOSQICH (davomi): Bu funksiya YUQORIDAGI pruneExpiredOwners()dan
-// MUSTAQIL, alohida yo'l bilan har soatda (setInterval, server.listen
-// ichida) ishga tushadi va u ham xuddi shunday muddati tugagan egalarni
-// owners.json'dan BUTUNLAY o'chirib yuborardi (stillActive massivi orqali).
-// Ya'ni faqat pruneExpiredOwners()ni tuzatish YETARLI EMAS edi — bu funksiya
-// ham xuddi shu muammoga ega edi. Endi ikkalasi ham bir xil: hech kimni
-// o'chirmaydi, faqat subscriptionStatus'ni yangilaydi.
-//
-// "Bloklandi" xabari endi FAQAT BIR MARTA yuboriladi (owner.blockedNotifiedAt
-// orqali kuzatiladi) — aks holda har soat qayta-qayta kelaverardi. Owner
-// qayta faol bo'lib qolsa (to'lov/uzaytirish natijasida), shu maydon
-// tozalanadi — keyingi safar chindan bloklansa, xabar yana yuboriladi.
 async function checkOwnerExpirations() {
   const owners = loadOwners();
   let changed = false;
 
   for (const owner of owners) {
-    // O'zi ro'yxatdan o'tib, admin hali trial muddatini tasdiqlamagan
-    // egalarga bu yerda tegilmaydi — ularning holati faqat admin
-    // tasdiqlash/rad etish oqimi orqali o'zgaradi.
+
     if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) continue;
 
     const access = getOwnerSubscriptionAccess(owner);
@@ -2091,8 +1510,6 @@ async function checkOwnerExpirations() {
       continue;
     }
 
-    // Hali ruxsat bor (faol yoki grace davrida) — status shunga mos
-    // yangilanadi va eski bloklanish belgisi tozalanadi.
     if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.ACTIVE) {
       owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
       changed = true;
@@ -2121,7 +1538,6 @@ async function checkOwnerExpirations() {
   if (changed) saveOwners(owners);
 }
 
-// ====== Bir martalik taklif havolalari (invites) ======
 function createInvite() {
   const token = crypto.randomBytes(16).toString('hex');
   const invites = loadInvites();
@@ -2141,7 +1557,6 @@ function markInviteUsed(token, userId) {
   if (inv) { inv.used = true; inv.usedBy = String(userId); inv.usedAt = new Date().toISOString(); saveInvites(invites); }
 }
 
-// ====== Adminga yuborilgan so'rovlar (do'kon egasi bo'lish uchun) ======
 function createRequest(user, token) {
   const reqId = crypto.randomBytes(4).toString('hex');
   const reqs = loadRequests();
@@ -2183,15 +1598,8 @@ function daysKeyboard(reqId) {
   };
 }
 
-// ====== "Boshqa son" — admin qo'lda kun sonini yozmoqchi bo'lganda, shu so'rov navbatda kutib turadi ======
 const AWAITING_FILE = path.join(DATA_DIR, 'awaiting.json');
 
-// ==================== 52-54-BOSQICH: DB zaxira (backup) eksport/import ====================
-// Butun bazani (DATA_DIR ichidagi barcha .json fayllar) bitta faylga
-// jamlab yuklab olish (52), o'sha faylni yuklab bazani tiklash (53) va
-// buni xavfsiz, ikki bosqichli tasdiqlash bilan qilish (54).
-// MUHIM: bu ro'yxat DATA_DIR'dagi HAMMA fayl konstantalarini o'z ichiga
-// olishi kerak — yangi *_FILE qo'shilsa, shu yerga ham (key + file) qo'shing.
 const BACKUP_FILE_DEFS = [
   { key: 'owners', file: OWNERS_FILE },
   { key: 'admins', file: ADMINS_FILE },
@@ -2209,13 +1617,11 @@ const BACKUP_FILE_DEFS = [
   { key: 'awaiting', file: AWAITING_FILE }
 ];
 const BACKUP_FORMAT_VERSION = 1;
-// Tiklashdan OLDIN joriy holatni avtomatik saqlab qo'yish uchun papka —
-// noto'g'ri/eskirgan zaxira yuklansa ham, oldingi holatga qaytish imkoni bo'lsin.
+
 const PRE_RESTORE_BACKUP_DIR = path.join(DATA_DIR, 'pre_restore_backups');
-// Tasdiqlash kodlari xotirada saqlanadi (server qayta ishga tushsa, eskiradi —
-// bu ataylab shunday: xavfsizlik uchun kod umr bo'yi kuchda qolmasligi kerak).
-const pendingBackupRestores = new Map(); // token -> { adminId, contentHash, createdAt, snapshot }
-const BACKUP_RESTORE_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 daqiqa
+
+const pendingBackupRestores = new Map();
+const BACKUP_RESTORE_TOKEN_TTL_MS = 10 * 60 * 1000;
 
 function readJSONFileRaw(file) {
   try {
@@ -2227,7 +1633,6 @@ function readJSONFileRaw(file) {
   }
 }
 
-// 52-bosqich: barcha DB fayllarini bitta obyektga jamlaydi.
 function buildBackupSnapshot(adminId) {
   const files = {};
   const counts = {};
@@ -2246,9 +1651,6 @@ function buildBackupSnapshot(adminId) {
   };
 }
 
-// 53-bosqich: zaxiradan olingan fayllarni DATA_DIR'ga qaytaradi. Har bir
-// fayl avval vaqtinchalik nomga yoziladi, so'ng almashtiriladi (atomik) —
-// yozish paytida xatolik chiqib qolsa ham eski fayl buzilmaydi.
 function writeJSONFileAtomic(file, value) {
   const tmp = file + '.tmp' + crypto.randomBytes(4).toString('hex');
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
@@ -2258,17 +1660,16 @@ function writeJSONFileAtomic(file, value) {
 function applyBackupSnapshot(snapshot) {
   const applied = [];
   for (const def of BACKUP_FILE_DEFS) {
-    if (!snapshot.files || !(def.key in snapshot.files)) continue; // zaxirada yo'q — teginilmaydi
+    if (!snapshot.files || !(def.key in snapshot.files)) continue;
     const value = snapshot.files[def.key];
     if (value === null || value === undefined) continue;
     writeJSONFileAtomic(def.file, value);
     applied.push(def.key);
   }
-  reloadAdminsCache(); // admins.json to'g'ridan-to'g'ri yozildi — xotiradagi Set yangilanishi shart
+  reloadAdminsCache();
   return applied;
 }
 
-// Tiklashdan oldin joriy holatni diskka saqlab qo'yadi (xavfsizlik).
 function savePreRestoreSafetySnapshot(adminId) {
   try {
     fs.mkdirSync(PRE_RESTORE_BACKUP_DIR, { recursive: true });
@@ -2276,7 +1677,7 @@ function savePreRestoreSafetySnapshot(adminId) {
     const filename = `pre_restore_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     const filePath = path.join(PRE_RESTORE_BACKUP_DIR, filename);
     fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), 'utf8');
-    // Faqat oxirgi 10 tasini saqlaymiz — disk to'lib ketmasligi uchun.
+
     const files = fs.readdirSync(PRE_RESTORE_BACKUP_DIR).filter(f => f.startsWith('pre_restore_')).sort();
     while (files.length > 10) {
       const old = files.shift();
@@ -2289,7 +1690,6 @@ function savePreRestoreSafetySnapshot(adminId) {
   }
 }
 
-// Eski (muddati o'tgan) tasdiqlash kodlarini vaqti-vaqti bilan tozalab turadi.
 setInterval(() => {
   const now = Date.now();
   for (const [token, entry] of pendingBackupRestores.entries()) {
@@ -2310,10 +1710,6 @@ function setAwaitingCustom(reqId, promptMessageId) {
   fs.writeFileSync(AWAITING_FILE, JSON.stringify({ kind: 'approve_days', reqId, promptMessageId }), 'utf8');
 }
 
-// 10-bosqich: admin obuna to'lovini rad etayotganda sababni yozib yuborishini
-// kutish uchun (yuqoridagi setAwaitingCustom bilan bir xil AWAITING_FILE'ni
-// ishlatadi, lekin `kind` orqali ajratiladi — bir vaqtda faqat bitta admin
-// amali "kutilayotgan" bo'lishi mumkin, bu butun botdagi umumiy naqshga mos).
 function setAwaitingSubRejectReason(ownerId, chatId, messageId, hasPhoto, originalContent) {
   fs.writeFileSync(AWAITING_FILE, JSON.stringify({ kind: 'sub_reject_reason', ownerId, chatId, messageId, hasPhoto, originalContent }), 'utf8');
 }
@@ -2322,14 +1718,11 @@ function clearAwaitingCustom() {
   try { fs.unlinkSync(AWAITING_FILE); } catch (e) {}
 }
 
-// Juda oddiy telefon raqam tekshiruvi — bo'shliq/tire/qavslarni olib tashlab,
-// +xxxxxxxxxxx yoki xxxxxxxxxxx ko'rinishini tekshiradi (qarang: /api/profile-register)
 function isPlausiblePhone(str) {
   const cleaned = String(str).replace(/[\s\-()]/g, '');
   return /^\+?\d{7,15}$/.test(cleaned);
 }
 
-// Bitta so'rovni belgilangan kun soni (yoki doimiy, days=null) bilan tasdiqlash — tugma va matn orqali kirish uchun umumiy funksiya
 function approveRequest(reqInfo, days) {
   const expiresAt = days === null ? null : new Date(Date.now() + days * 86400000).toISOString();
   const owners = loadOwners();
@@ -2355,24 +1748,11 @@ function approveRequest(reqInfo, days) {
   return label;
 }
 
-// ====== 10-BOSQICH: o'z-o'zidan ro'yxatdan o'tish (self-registration) ======
-// Notanish foydalanuvchi "📝 Ro'yxatdan o'tish" tugmasini bossa, uning
-// keyingi yuboradigan xabarini OSHXONA NOMI sifatida kutamiz. Xotirada
-// saqlanadi (server qayta ishga tushsa tozalanadi — foydalanuvchi tugmani
-// qayta bossa yetarli, ma'lumot yo'qolmaydi, chunki hali owner sifatida
-// SAQLANMAGAN).
-const pendingSelfRegistration = new Set(); // userId(string) larni saqlaydi
-// 65-bosqich: mijoz yulduz bilan baholagach, keyingi (buyruq bo'lmagan)
-// matnli xabarini shu buyurtmaga sharh sifatida bog'laymiz. Key: mijoz
-// telegram ID'si (string) -> { ownerId, orderId, expiresAt }. 30 daqiqadan
-// keyin eskirgan deb hisoblanadi (pastda tekshiriladi) — shundan keyin
-// kelgan oddiy xabar sharh sifatida qabul qilinmaydi.
+const pendingSelfRegistration = new Set();
+
 const pendingReviewComments = new Map();
 const REVIEW_COMMENT_WINDOW_MS = 30 * 60 * 1000;
 
-// /start buyrug'ining asosiy mantiqi (taklif havolasi, mijoz menyu havolasi va h.k.) —
-// alohida funksiyaga ajratildi, chunki ro'yxatdan o'tish tugagandan keyin ham
-// xuddi shu logikani (asl /start matni bilan) qayta ishga tushirish kerak bo'ladi.
 async function handleStartCommand(chatId, from, text) {
   const parts = text.split(' ');
   const payload = parts.length > 1 ? parts[1].trim() : '';
@@ -2387,9 +1767,7 @@ async function handleStartCommand(chatId, from, text) {
       await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
       return;
     }
-    // 17-bosqich: agar bu foydalanuvchi "Savatcha"da bo'lsa (admin tomonidan
-    // o'chirilgan, lekin hali TRASH_AUTO_PURGE_DAYS muddati o'tmagan) —
-    // ro'yxatdan o'tish o'rniga tiklashni so'rash imkoni ko'rsatiladi.
+
     const trash = loadTrash();
     const trashEntry = findTrashEntryByOwnerId(trash, from.id);
     if (trashEntry) {
@@ -2405,9 +1783,7 @@ async function handleStartCommand(chatId, from, text) {
         { inline_keyboard: [[{ text: '🔄 Tiklashni so\'rash', callback_data: `request_restore:${trashEntry.id}` }]] });
       return;
     }
-    // 10-bosqich: avval bu yerda "sizga taklif havolasi kerak" deb qat'iy
-    // to'xtatilardi — endi notanish foydalanuvchi ham o'zi ro'yxatdan
-    // o'tishi mumkin, taklif havolasiz.
+
     await sendMessage(chatId,
       `👋 <b>KitchenOS</b>ga xush kelibsiz!\n` +
       `Bu — oshxonangiz uchun buyurtma qabul qilish va boshqarish tizimi (menyu, xodimlar, sklad, hisobotlar).\n\n` +
@@ -2416,12 +1792,6 @@ async function handleStartCommand(chatId, from, text) {
     return;
   }
 
-  // Mijoz uchun oshxona menyusi havolasi: /start menu_<ownerId>
-  // 57-bosqich: QR-kod orqali stolga bog'langan havola bo'lsa —
-  // /start menu_<ownerId>_table_<stolRaqami> ko'rinishida keladi (qarang:
-  // /api/table-qr-link — egasi shu havoladan stol uchun QR yaratadi).
-  // Bunday holatda Mini App to'g'ridan-to'g'ri o'sha stol raqami bilan,
-  // "Stolga" buyurtma turi oldindan tanlangan holda ochiladi.
   if (payload.startsWith('menu_')) {
     let rest = payload.replace(/^menu_/, '').trim();
     let tableNumber = null;
@@ -2453,7 +1823,6 @@ async function handleStartCommand(chatId, from, text) {
     return;
   }
 
-  // Xodim uchun bir martalik taklif havolasi: /start staffinv_<ownerId>_<token>
   if (payload.startsWith('staffinv_')) {
     const rest = payload.replace(/^staffinv_/, '');
     const sepIdx = rest.indexOf('_');
@@ -2539,7 +1908,6 @@ async function handleStartCommand(chatId, from, text) {
   await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
 }
 
-// ====== Telegram yangilanishlarini (webhook) qayta ishlash ======
 async function handleTelegramUpdate(update) {
   if (update.message && update.message.text) {
     const msg = update.message;
@@ -2547,7 +1915,6 @@ async function handleTelegramUpdate(update) {
     const from = msg.from;
     const chatId = msg.chat.id;
 
-    // ---- Guruhda /biriktir: oshxona egasi shu guruhni dostavka admin guruhi sifatida bog'laydi ----
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, from.id);
@@ -2570,7 +1937,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- Guruhda /bekor_biriktir: bog'lanishni bekor qilish ----
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/bekor_biriktir(@\S+)?$/.test(text)) {
       const owners = loadOwners();
       const owner = findOwner(owners, from.id);
@@ -2583,10 +1949,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 13-bosqich: Guruhda /oshpaz_biriktir — shu guruhni "Oshpazlar
-    // guruhi" sifatida bog'laydi. Dostavka guruhidan MUSTAQIL — ikkalasi
-    // bir vaqtda biriktirilgan bo'lishi mumkin (masalan, kassirlar bitta
-    // guruhda, oshpazlar boshqa guruhda ishlashi uchun). ----
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, from.id);
@@ -2609,8 +1971,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 13-bosqich: Guruhda /oshpaz_bekor_biriktir — Oshpazlar guruhi
-    // bog'lanishini bekor qilish ----
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_bekor_biriktir(@\S+)?$/.test(text)) {
       const owners = loadOwners();
       const owner = findOwner(owners, from.id);
@@ -2623,10 +1983,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 65-bosqich: yulduz bilan baholagandan keyin so'ralgan ixtiyoriy
-    // sharh — mijoz yozgan keyingi (buyruq bo'lmagan) oddiy xabarni shu
-    // buyurtmaga sharh sifatida yozib qo'yamiz va egasi/adminlarga xabar
-    // qilamiz (ular buni "Mijoz sharhlari" ekranida ham ko'rishadi). ----
     if (!text.startsWith('/') && pendingReviewComments.has(String(from.id))) {
       const pending = pendingReviewComments.get(String(from.id));
       pendingReviewComments.delete(String(from.id));
@@ -2658,9 +2014,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 10-bosqich: "📝 Ro'yxatdan o'tish" bosilgandan keyin, foydalanuvchi
-    // yuborgan keyingi (buyruq bo'lmagan) xabarni OSHXONA NOMI sifatida
-    // qabul qilamiz va pending_trial holatida yangi owner yaratamiz. ----
     if (!isAdminId(from.id) && !text.startsWith('/') && pendingSelfRegistration.has(String(from.id))) {
       const restaurantName = text.trim();
       if (restaurantName.length < 2 || restaurantName.length > 60) {
@@ -2670,8 +2023,7 @@ async function handleTelegramUpdate(update) {
       pendingSelfRegistration.delete(String(from.id));
 
       const owners = loadOwners();
-      // Ehtiyot chorasi: shu vaqt ichida boshqa yo'l bilan (masalan admin
-      // qo'lda) allaqachon ro'yxatga qo'shilgan bo'lishi mumkin.
+
       if (findOwner(owners, from.id)) {
         await sendMessage(chatId, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
         return;
@@ -2685,8 +2037,7 @@ async function handleTelegramUpdate(update) {
         price: 0,
         paid: false,
         paidAt: null,
-        // pending_trial — admin tasdiqlaguncha kirish yo'q (qarang:
-        // getOwnerSubscriptionAccess). Tasdiqlash — 11-bosqich.
+
         subscriptionStatus: SUBSCRIPTION_STATUS.PENDING_TRIAL,
         subscriptionUntil: null,
         graceUntil: null,
@@ -2718,7 +2069,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
     if (isAdminId(from.id) && !text.startsWith('/')) {
       const awaiting = getAwaitingCustom();
       if (awaiting && awaiting.kind === 'approve_days' && awaiting.reqId) {
@@ -2746,7 +2096,6 @@ async function handleTelegramUpdate(update) {
         return;
       }
 
-      // 10-bosqich: admin obuna to'lovini rad etish sababini yozmoqda
       if (awaiting && awaiting.kind === 'sub_reject_reason' && awaiting.ownerId) {
         const owners = loadOwners();
         const owner = findOwner(owners, awaiting.ownerId);
@@ -2791,10 +2140,6 @@ async function handleTelegramUpdate(update) {
     return;
   }
 
-  // ---- Mijoz to'lov skrinshotini shaxsiy chatga RASM qilib yuborganda ----
-  // (faqat paymentType === 'karta' bo'lgan va hali "kutilmoqda"/"rad_etildi"
-  // holatidagi buyurtmalar uchun - qarang: /api/customer-order'dagi
-  // paymentProofStatus va pastdagi 'payok'/'payrej' callback'lari)
   if (update.message && update.message.photo && update.message.chat && update.message.chat.type === 'private') {
     const msg = update.message;
     const from = msg.from;
@@ -2817,14 +2162,13 @@ async function handleTelegramUpdate(update) {
     }
 
     if (!targetOwner || !targetOrder) {
-      // Buyurtma to'lovi topilmadi - balki bu OSHXONA EGASINING o'ZI tanlagan
-      // OBUNA TARIFI uchun skrinshot bo'lishi mumkin (82-bosqich).
+
       const subOwner = findOwner(owners, userId);
       if (subOwner && subOwner.subscriptionPaymentRequest &&
           subOwner.subscriptionPaymentRequest.status === 'kutilmoqda_skrinshot') {
         const reqData = subOwner.subscriptionPaymentRequest;
         const photos = msg.photo;
-        const bestPhoto = photos[photos.length - 1]; // Telegram eng kattasini oxiriga qo'yadi
+        const bestPhoto = photos[photos.length - 1];
         reqData.screenshotFileId = bestPhoto.file_id;
         reqData.status = 'kutilmoqda_tasdiq';
         reqData.screenshotSentAt = new Date().toISOString();
@@ -2848,13 +2192,12 @@ async function handleTelegramUpdate(update) {
           copyMessageWithKeyboard(adminId, chatId, msg.message_id, caption, subKb);
         }
       }
-      // Kutilayotgan karta to'lovi ham, obuna so'rovi ham topilmadi - bu oddiy
-      // rasm bo'lishi mumkin, jim o'tkazib yuboramiz (xato deb hisoblamaymiz).
+
       return;
     }
 
     const photos = msg.photo;
-    const bestPhoto = photos[photos.length - 1]; // Telegram eng kattasini oxiriga qo'yadi
+    const bestPhoto = photos[photos.length - 1];
     targetOrder.paymentProofFileId = bestPhoto.file_id;
     targetOrder.paymentProofStatus = 'kutilmoqda';
     targetOrder.paymentProofSentAt = new Date().toISOString();
@@ -2887,10 +2230,6 @@ async function handleTelegramUpdate(update) {
     const chatId = cq.message && cq.message.chat && cq.message.chat.id;
     const messageId = cq.message && cq.message.message_id;
 
-    // ---- 79-BOSQICH: "💳 Obunani uzaytirish" tugmasi (sendSubscriptionBlockedScreen
-    // orqali chiqadigan bloklash ekranida). To'liq tarif tanlash/to'lov oqimi
-    // 12-15-bosqichlarda qo'shiladi — hozircha faqat administrator bilan
-    // bog'lanishga yo'naltiradi, tugma "o'lik" bo'lib qolmasligi uchun. ----
     if (data === 'obuna_menyu') {
       await answerCallbackQuery(cq.id);
       const owners = loadOwners();
@@ -2903,8 +2242,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 82-BOSQICH: owner "💳 Obuna" menyusidan biror tarifni tanlaganda
-    // (sendObunaPlansMenu orqali chiqqan tugmalardan biri bosilganda) ----
     if (data.startsWith('subplan:')) {
       const [, planId] = data.split(':');
       const owners = loadOwners();
@@ -2926,8 +2263,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 10-bosqich: "📝 Ro'yxatdan o'tish" tugmasi (payloadsiz /start
-    // ekranida, notanish foydalanuvchiga ko'rsatiladi) ----
     if (data === 'self_register_start') {
       await answerCallbackQuery(cq.id);
       if (isAdminId(from.id)) {
@@ -2948,9 +2283,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 17-bosqich: o'chirilgan (Savatchadagi) egasi "🔄 Tiklashni
-    // so'rash" tugmasini bosadi -> so'rov BARCHA adminlarga ✅/❌ tugmali
-    // xabar bilan boradi. ----
     if (data.startsWith('request_restore:')) {
       const trashId = data.slice('request_restore:'.length);
       await answerCallbackQuery(cq.id);
@@ -2990,8 +2322,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 21-bosqich: FAQAT admin tasdig'i bilan tiklanadi. Owner o'zi
-    // yoki xodimlari bu tugmani bosolmaydi (isAdminId tekshiruvi). ----
     if (data.startsWith('restore_approve:') || data.startsWith('restore_reject:')) {
       if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
       const isApprove = data.startsWith('restore_approve:');
@@ -3029,11 +2359,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 11-bosqich: admin (yoki qo'shimcha adminlardan biri) o'zi
-    // ro'yxatdan o'tgan oshxonaning sinov muddatini tasdiqlaydi — standart
-    // SUBSCRIPTION_TRIAL_DAYS beriladi (kunlar sonini qo'lda kiritish
-    // keyingi nozik sozlash sifatida qo'shilishi mumkin, hozircha standart
-    // yetarli va tugmani "o'lik" qoldirmaydi). ----
     if (data.startsWith('approve_trial:')) {
       if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
       const ownerId = data.slice('approve_trial:'.length);
@@ -3061,10 +2386,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 11-bosqich: admin so'rovni rad etadi — owner yozuvi butunlay
-    // o'chiriladi (hali hech qanday ma'lumot — menyu, xodim, buyurtma —
-    // yaratilmagan, faqat "ariza" bosqichida edi, shuning uchun bu yerda
-    // 6-bosqichdagi "o'chirishni bekor qilish" qoidasiga zid emas). ----
     if (data.startsWith('reject_trial:')) {
       if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin rad eta oladi.', true); return; }
       const ownerId = data.slice('reject_trial:'.length);
@@ -3087,9 +2408,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- Mijoz "Yetkazildi" xabaridagi yulduzcha tugmasini bosib xizmatni
-    // baholaydi (1-5 ball). Faqat shu buyurtmaning mijozi o'zi bosishi mumkin,
-    // va har bir buyurtma faqat bir marta baholanadi. ----
     if (data.startsWith('rate:')) {
       const [, ownerId, orderId, starsRaw] = data.split(':');
       const stars = Number(starsRaw);
@@ -3122,9 +2440,6 @@ async function handleTelegramUpdate(update) {
       }
       await answerCallbackQuery(cq.id, 'Bahoyingiz uchun rahmat! 🙏');
 
-      // 65-bosqich: yulduzdan keyin ixtiyoriy matnli sharh so'raymiz — mijoz
-      // yozgan keyingi (buyruq bo'lmagan) xabar shu buyurtmaga sharh sifatida
-      // yoziladi (qarang: pendingReviewComments, matn xabarlari bo'limi).
       pendingReviewComments.set(String(from.id), {
         ownerId: String(owner.id),
         orderId: String(order.id),
@@ -3132,8 +2447,6 @@ async function handleTelegramUpdate(update) {
       });
       await sendMessage(from.id, '✍️ Fikr-mulohazangiz bo\'lsa, shu yerga yozib qoldiring (ixtiyoriy — o\'tkazib yuborishingiz ham mumkin).');
 
-      // Past baho (1-3) qo'yilsa — egasi va kassirlarga darhol xabar, shikoyatga
-      // tezroq javob berish imkoni bo'lishi uchun.
       if (stars <= 3) {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const alertText = `⚠️ <b>Past baho olindi</b> (${starsText})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nMijoz: ${orderCustomerContactLabel(order)}`;
@@ -3146,15 +2459,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- Dostavka guruhi VA Oshpazlar guruhi: "Qabul qilish" / "Tayyor"
-    // tugmalari (guruh a'zolari uchun, admin cheklovisiz). 13-bosqichdan
-    // boshlab ikkala guruh turi ("dg" = dostavka, "kg" = oshpaz) bir xil
-    // mantiq bilan, umumiy holda ishlanadi. 14-bosqich: ikkalasi ham
-    // ORDER.STATUS'NI umumiy manba sifatida ishlatadi — shu sababli qaysi
-    // guruhda birinchi bosilishidan qat'iy nazar, ikkinchisida bosilsa
-    // "allaqachon bajarilgan" javobi qaytadi (dublikat status o'zgarishi
-    // bo'lmaydi), va syncGroupMessagesForOrder orqali ikkala guruhdagi
-    // xabar tugmalari ham yangilanadi. ----
     if (data.startsWith('dgaccept:') || data.startsWith('dgready:') || data.startsWith('kgaccept:') || data.startsWith('kgready:')) {
       const [action, ownerId, orderId] = data.split(':');
       const isKitchen = action.startsWith('kg');
@@ -3172,8 +2476,7 @@ async function handleTelegramUpdate(update) {
 
       if (action === 'dgaccept' || action === 'kgaccept') {
         if (order.status !== 'yangi') {
-          // Boshqa guruhda (yoki Mini App'da) allaqachon qabul qilingan —
-          // dublikat qilib qayta ishlanmaydi, faqat shu haqda xabar beriladi.
+
           await answerCallbackQuery(cq.id, 'Allaqachon qabul qilingan.');
           syncGroupMessagesForOrder(owner, order);
           return;
@@ -3181,11 +2484,7 @@ async function handleTelegramUpdate(update) {
         order[stageField] = 'qabul_qilindi';
         order[acceptedByField] = from.id;
         order[acceptedAtField] = new Date().toISOString();
-        // Guruhdagi "Qabul qilish" bosilganda buyurtmaning asosiy status'i ham
-        // yangilanadi ("tayyorlanmoqda"), aks holda u Mini App bosqichlaridan
-        // uzilib qoladi (masalan, keyinroq "tayyor" belgilanganda kuryerga
-        // ko'rinmay qoladi — chunki kuryer ro'yxati order.status'ga qarab
-        // filtrlanadi, *GroupStage maydoniga emas).
+
         order.status = 'tayyorlanmoqda';
         order.updatedAt = new Date().toISOString();
         order.updatedBy = String(from.id);
@@ -3211,9 +2510,7 @@ async function handleTelegramUpdate(update) {
           syncGroupMessagesForOrder(owner, order);
           return;
         }
-        // "Tayyor" tugmasi faqat "Qabul qilish" bosilgandan keyin ishlashi kerak —
-        // aks holda ketma-ketlik buzilib, buyurtma hech kim qabul qilmasdan
-        // tayyor deb belgilanib qolar edi.
+
         if (order.status !== 'tayyorlanmoqda') {
           await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
           return;
@@ -3221,9 +2518,7 @@ async function handleTelegramUpdate(update) {
         order[stageField] = 'tayyor';
         order[readyByField] = from.id;
         order[readyAtField] = new Date().toISOString();
-        // Asosiy status ham "tayyor"ga o'tkaziladi — shu maydon orqali
-        // kuryerlarga buyurtmalar ro'yxati (/api/orders-list) filtrlanadi,
-        // shu jumladan guruhga yangi qo'shilgan kuryer uchun ham.
+
         order.status = 'tayyor';
         order.updatedAt = new Date().toISOString();
         order.updatedBy = String(from.id);
@@ -3241,9 +2536,7 @@ async function handleTelegramUpdate(update) {
             : '🏁 Buyurtmangiz tayyor!';
           await sendMessage(order.customerId, readyMsg);
         }
-        // Kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga ham
-        // Mini App'dagi "Tayyor" tugmasidagi kabi avtomatik bildirishnoma
-        // yuboriladi, xabarni o'zi yuborgan xodimdan tashqari.
+
         {
           const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
           const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
@@ -3261,8 +2554,6 @@ async function handleTelegramUpdate(update) {
       }
     }
 
-    // ---- To'lov skrinshotini tasdiqlash/rad etish (kassir yoki egasi uchun,
-    // admin cheklovisiz - dgaccept/dgready bilan bir xil joyga qo'yilgan) ----
     if (data.startsWith('payok:') || data.startsWith('payrej:')) {
       const [action, ownerId, orderId] = data.split(':');
       const owners = loadOwners();
@@ -3279,10 +2570,6 @@ async function handleTelegramUpdate(update) {
         return;
       }
 
-      // "naqd_kassa" (stolga+naqd) tasdiqlash oddiy MATN xabar bilan yuboriladi,
-      // "skrinshot" (karta) tasdiqlash esa RASM (caption) bilan - shu sababli
-      // tahrirlash uchun to'g'ri Telegram metodini tanlash kerak (aks holda
-      // "message is not modified"/"there is no caption in the message" xatosi).
       const editConfirmMessage = (extraLine) => {
         if (!chatId || !messageId) return Promise.resolve();
         if (cq.message && cq.message.photo) {
@@ -3303,8 +2590,6 @@ async function handleTelegramUpdate(update) {
         order.paymentProofApprovedAt = new Date().toISOString();
         saveOwners(owners);
 
-        // ENDI (va FAQAT ENDI) - to'lov tasdiqlangach - oshxona/kassir/
-        // dostavka guruhiga xabar ketadi (customer-order'dagi bilan bir xil).
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
@@ -3349,8 +2634,6 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
-    // ---- 82-BOSQICH: admin owner'ning obuna to'lov skrinshotini ✅/❌ qilganda
-    // (sendObunaPlansMenu -> subplan -> skrinshot -> shu tugmalar zanjiri) ----
     if (data.startsWith('subok:') || data.startsWith('subrej:')) {
       const [action, ownerId] = data.split(':');
       const owners = loadOwners();
@@ -3373,7 +2656,7 @@ async function handleTelegramUpdate(update) {
       }
 
       if (action === 'subrej') {
-        // 10-bosqich: darhol rad etish o'rniga, avval adminning sababini kutamiz
+
         const hasPhoto = !!(cq.message && cq.message.photo);
         const originalContent = hasPhoto ? (cq.message.caption || '') : (cq.message.text || '');
         setAwaitingSubRejectReason(owner.id, chatId, messageId, hasPhoto, originalContent);
@@ -3443,21 +2726,17 @@ async function handleTelegramUpdate(update) {
   }
 }
 
-// Admin kiritgan matnni (ID yoki username/link) haqiqiy Telegram ID'ga aylantirish
 async function resolveUserInput(input) {
   const trimmed = String(input || '').trim();
   if (!trimmed) return { error: 'Ma\'lumot kiritilmagan' };
 
-  // 1) To'g'ridan-to'g'ri raqamli ID (masalan: 123456789)
   if (/^\d{5,}$/.test(trimmed)) {
     return { id: trimmed };
   }
 
-  // 2) tg://user?id=123456789 ko'rinishidagi havola
   let m = trimmed.match(/id=(\d{5,})/);
   if (m) return { id: m[1] };
 
-  // 3) @username yoki https://t.me/username ko'rinishidagi havola
   m = trimmed.match(/(?:t\.me\/|@)([a-zA-Z0-9_]{4,32})/i);
   if (m) {
     const username = m[1];
@@ -3480,7 +2759,6 @@ function sendJSON(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-// 4MB — galereyadan tanlangan taom rasmi (base64, kichraytirilgan holda) + boshqa maydonlar sig'ishi uchun
 const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
 function readBody(req, cb) {
   let body = '';
@@ -3501,20 +2779,7 @@ function readBody(req, cb) {
   });
 }
 
-// =============================================================================
-// AI DIREKTOR: har tongi avtomatik hisobot (Telegram xabari).
-// Quyidagi funksiyalar pastdagi `server` (http.createServer) ichidagi
-// computeCashflow/computeStockForecast/computeTopItems bilan BIR XIL
-// mantiqqa asoslangan, lekin ATAYLAB shu yerda (modul darajasida) ALOHIDA
-// yozilgan — chunki o'sha funksiyalar so'rov handler'ining o'zi ICHIDA
-// joylashgan (har bir HTTP so'rovda qayta e'lon qilinadi) va pastdagi
-// kunlik setInterval'dan (bu ham modul darajasida, so'rovdan tashqarida
-// ishlashi kerak) chaqirib bo'lmaydi. Hisoblash formulalari bir xil,
-// faqat joylashuvi boshqa — ikkalasini ham o'zgartirsangiz ikkalasida ham
-// yangilang.
-// =============================================================================
-
-const AI_DIRECTOR_HOUR = 8; // Toshkent vaqti bilan soat nechada yuborilishi (08:00)
+const AI_DIRECTOR_HOUR = 8;
 const AI_DIRECTOR_TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
 
 function aiDirDateKey(input) {
@@ -3531,17 +2796,13 @@ function aiDirTashkentHour(input) {
   const d = (input instanceof Date) ? input : new Date(input);
   return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCHours();
 }
-// Haftalik hisobot (30-bosqich) qaysi kuni yuborilishi — 1 = Dushanba
-// (JS getUTCDay(): 0=Yakshanba..6=Shanba). Kunlik hisobot bilan bir xil
-// soatda (AI_DIRECTOR_HOUR) yuboriladi, faqat haftada bir marta.
+
 const AI_DIRECTOR_WEEKLY_DAY = 1;
 function aiDirTashkentWeekday(input) {
   const d = (input instanceof Date) ? input : new Date(input);
   return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCDay();
 }
-// Haftalik hisobot qayta yuborilmasligi uchun "kalit" — joriy haftaning
-// Dushanba sanasi (Toshkent vaqti bo'yicha), masalan "2026-07-20". ISO
-// hafta raqamlash kutubxonasiz, yil chegarasida ham xato bermaydi.
+
 function aiDirWeekKey(input) {
   const d = (input instanceof Date) ? input : new Date(input);
   const tashkent = new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS);
@@ -3552,7 +2813,6 @@ function aiDirWeekKey(input) {
   return monday.toISOString().slice(0, 10);
 }
 
-// [fromDate, toDate) oralig'idagi kirim/xarajat/foyda/buyurtmalar soni.
 function aiDirCashBucket(owner, fromDate, toDate) {
   const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
   const expenses = (owner.expenses || []).filter(e => { const t = new Date(e.createdAt); return t >= fromDate && t < toDate; });
@@ -3561,7 +2821,6 @@ function aiDirCashBucket(owner, fromDate, toDate) {
   return { income, expense, net: income - expense, orderCount: orders.length };
 }
 
-// [fromDate, toDate) oralig'ida taom bo'yicha sotilgan miqdor/tushum (Map: id -> {name, qty, revenue})
 function aiDirItemStats(owner, fromDate, toDate) {
   const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
   const byId = new Map();
@@ -3576,11 +2835,6 @@ function aiDirItemStats(owner, fromDate, toDate) {
   return byId;
 }
 
-// Oxirgi 7 kunni undan oldingi 7 kun bilan solishtirib, sezilarli (kamida
-// 15%) kamaygan taomlarni topadi. Juda kam sondagi (haftasiga 5 donadan
-// kam) taomlar hisobga olinmaydi — kichik sonlarda foiz ma'nosiz katta
-// chiqib ketishi mumkin (masalan 1 donadan 0 taga - "100% kamaydi" degani
-// chalg'ituvchi bo'lardi).
 function aiDirDecliningItems(owner) {
   const todayStart = aiDirDayStart(new Date());
   const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
@@ -3602,9 +2856,6 @@ function aiDirDecliningItems(owner) {
   return declining;
 }
 
-// Sklad: qaysi mahsulotlar necha kunga (taxminan) yetishini hisoblaydi
-// (markaziy sklad + BARCHA filiallar birga) - oxirgi 7 kunlik "chiqim"
-// (buyurtma orqali sarflangan) harakatlar o'rtachasi asosida.
 function aiDirStockRunway(owner) {
   const since = new Date(Date.now() - 7 * 86400000);
   const pools = [owner, ...(owner.branches || [])];
@@ -3629,9 +2880,6 @@ function aiDirStockRunway(owner) {
   return result;
 }
 
-// Eng ko'p TUSHUM keltirgan taom (oxirgi 7 kun). Diqqat: menyu taomlarida
-// tan narxi (cost) kuzatilmagani sabab bu "eng FOYDALI" emas — halol,
-// chalg'itmaydigan atama sifatida "eng ko'p tushum keltirgan" ishlatiladi.
 function aiDirTopItem(owner) {
   const todayStart = aiDirDayStart(new Date());
   const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
@@ -3643,8 +2891,6 @@ function aiDirTopItem(owner) {
   return top;
 }
 
-// To'liq "AI Direktor" kunlik hisobotini Telegram uchun tayyor (HTML) matn
-// qilib tuzadi - qoidaviy (AI kaliti kerak emas, har doim ishlaydi).
 function buildAiDirectorText(owner) {
   const todayStart = aiDirDayStart(new Date());
   const yestStart = new Date(todayStart.getTime() - 86400000);
@@ -3687,10 +2933,6 @@ function buildAiDirectorText(owner) {
   return lines.join('\n');
 }
 
-// Bitta egaga AI Direktor hisobotini yuboradi va yuborilgan sanani
-// (bugungi.zayta yubormaslik uchun) yozib qo'yadi. `force` — Mini App'dan
-// "Hozir yubor" bosilganda bugun allaqachon yuborilgan bo'lsa ham qayta
-// yuborish uchun.
 async function sendAiDirectorDigest(owner, force) {
   const todayKey = aiDirDateKey(new Date());
   if (!force && owner.aiDirectorLastSent === todayKey) return false;
@@ -3700,11 +2942,6 @@ async function sendAiDirectorDigest(owner, force) {
   return true;
 }
 
-// 30-bosqich (2-yarmi): "Haftalik hisobot" — kunlik hisobotdagi bilan bir
-// xil ma'lumot manbalaridan (aiDirCashBucket/aiDirItemStats/aiDirStockRunway/
-// aiDirDecliningItems) foydalanadi, faqat oxirgi 7 kunni BUTUNLIGICHA
-// (kechagi bitta kun emas) umumlashtiradi — shu sababli alohida funksiya
-// emas, mavjudlarning ustiga qurilgan.
 function buildAiWeeklyDirectorText(owner) {
   const now = new Date();
   const weekAgo = new Date(now.getTime() - 7 * 86400000);
@@ -3754,8 +2991,6 @@ function buildAiWeeklyDirectorText(owner) {
   return lines.join('\n');
 }
 
-// sendAiDirectorDigest'ga o'xshaydi, faqat haftada BIR MARTA (aiDirWeekKey
-// asosida) yuboradi va owner.aiWeeklyLastSent'ga yozadi.
 async function sendAiWeeklyDirectorDigest(owner, force) {
   const weekKey = aiDirWeekKey(new Date());
   if (!force && owner.aiWeeklyLastSent === weekKey) return false;
@@ -3765,14 +3000,6 @@ async function sendAiWeeklyDirectorDigest(owner, force) {
   return true;
 }
 
-// Har 10 daqiqada bir marta tekshiradi: Toshkent vaqti bilan soat
-// AI_DIRECTOR_HOUR bo'lgan (va bugun hali yuborilmagan) har bir egaga
-// avtomatik yuboradi. `aiDirectorEnabled` egasi tomonidan o'chirilgan
-// bo'lsa (=== false), o'sha egaga yuborilmaydi (standart holat - yoqilgan).
-// Xuddi shu tekshiruv ichida — agar bugun AI_DIRECTOR_WEEKLY_DAY (Dushanba)
-// bo'lsa — haftalik hisobot ham (alohida `aiWeeklyEnabled` bayrog'i bilan)
-// yuboriladi. Ikkalasi bitta intervalda birlashtirilgan — ikkita alohida
-// setInterval o'rniga.
 setInterval(() => {
   if (aiDirTashkentHour(new Date()) !== AI_DIRECTOR_HOUR) return;
   const isWeeklyDay = aiDirTashkentWeekday(new Date()) === AI_DIRECTOR_WEEKLY_DAY;
@@ -3795,7 +3022,7 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 const server = http.createServer((req, res) => {
-  // ---- API: initData tekshirish (mini app ochilganda) ----
+
   if (req.method === 'POST' && req.url === '/api/verify') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3811,10 +3038,7 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       const ownerOk = isOwnerAccessValid(owner);
       const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
-      // 2-4-bosqich: xodimga rol(lar) biriktirilgan, lekin ULARNING BARCHASI
-      // joriy tarifda yopilgan bo'lsa (findStaffInfo.roles bo'sh massiv
-      // qaytaradi) — bu xodimni "ok:false" deb hisoblaymiz, aks holda u
-      // rolsiz (bo'sh panel) holatda kirib qolardi.
+
       const staffBlocked = !!(staffInfo && staffInfo.rawRoles.length > 0 && staffInfo.roles.length === 0);
       const ok = admin || ownerOk || !!(staffInfo && !staffBlocked);
 
@@ -3829,9 +3053,7 @@ const server = http.createServer((req, res) => {
         ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : (ownerOk ? ((owner.profile && owner.profile.logoUrl) || null) : null),
         ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : (ownerOk ? ((owner.profile && owner.profile.brandColor) || null) : null),
         hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
-        // Egasi uchun admin login/parol o'rnatib qo'ygan bo'lsa — Telegram orqali
-        // kirganda ham (initData avtomatik bo'lsa-da) bir martalik parol so'raladi
-        // (qarang: frontend'dagi owner password-gate va /api/owner-confirm-password).
+
         hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
         personRegistered: admin || isRegisteredUser(userId),
         reason: ok
@@ -3844,9 +3066,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: Mini App ichidan ism, familiya, telefon raqam bilan ro'yxatdan o'tish ----
-  // (mijoz, xodim, egasi — barchasi uchun umumiy, botning shaxsiy chatiga
-  // chiqishga hojat qoldirmaydi; qarang: findProfile/isRegisteredUser)
   if (req.method === 'POST' && req.url === '/api/profile-register') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3887,7 +3106,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasining o'z xodimlari ro'yxatini olish ----
   if (req.method === 'POST' && req.url === '/api/staff-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3904,7 +3122,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi xodim qo'shadi (kassir/oshpaz/sklad/dostavka — bir nechta rol birga bo'lishi mumkin) ----
   if (req.method === 'POST' && req.url === '/api/add-staff') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -3917,7 +3134,6 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi'));
 
-      // `roles` massiv sifatida keladi (checkbox'lar) — eski frontend hali bitta `role` yuborsa ham ishlaydi
       const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
       const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole);
       if (!uniqueRoles.length) {
@@ -3952,7 +3168,7 @@ const server = http.createServer((req, res) => {
       owner.staff.push({
         id: resolved.id,
         username: resolved.username || null,
-        role: uniqueRoles[0], // orqaga moslik uchun (eski kod shu maydonni o'qishi mumkin)
+        role: uniqueRoles[0],
         roles: uniqueRoles,
         branchId: branchIdVal,
         addedAt: new Date().toISOString()
@@ -3967,12 +3183,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: xodim qo'shish uchun BIR MARTALIK havola yaratish (faqat egasi) ----
-  // Manager Telegram ID/username so'ramasdan, tayyor lavozim(lar) va filial
-  // bilan havola yaratadi — xodim shu havolani bosib botni ochsa, avtomatik
-  // (tasdiqlashsiz) o'sha lavozim(lar) bilan jamoaga qo'shiladi. Havola FAQAT
-  // bir marta ishlatiladi (birinchi bosgan odam qo'shiladi, keyin yaroqsiz
-  // bo'lib qoladi) va 24 soatdan keyin muddati tugaydi.
   if (req.method === 'POST' && req.url === '/api/create-staff-invite') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4006,7 +3216,7 @@ const server = http.createServer((req, res) => {
 
       const token = crypto.randomBytes(16).toString('hex');
       if (!owner.staffInvites) owner.staffInvites = [];
-      // Eskirgan/ishlatilgan takliflarni tozalab boramiz — fayl cheksiz o'sib ketmasligi uchun
+
       owner.staffInvites = owner.staffInvites.filter(inv => !inv.used && new Date(inv.expiresAt) > new Date());
       owner.staffInvites.push({
         token,
@@ -4026,7 +3236,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi xodimning lavozimlarini o'zgartiradi (checkbox bilan - bir nechtasi bo'lishi mumkin) ----
   if (req.method === 'POST' && req.url === '/api/set-staff-roles') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4050,7 +3259,7 @@ const server = http.createServer((req, res) => {
       }
 
       staff.roles = uniqueRoles;
-      staff.role = uniqueRoles[0]; // orqaga moslik uchun
+      staff.role = uniqueRoles[0];
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, staff });
@@ -4058,7 +3267,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi xodimning filialini o'zgartiradi (bo'sh branchId = markaziy) ----
   if (req.method === 'POST' && req.url === '/api/set-staff-branch') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4088,7 +3296,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi xodimni o'chiradi ----
   if (req.method === 'POST' && req.url === '/api/remove-staff') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4110,7 +3317,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasining filiallar ro'yxatini olish (egasi va uning xodimlari ko'ra oladi) ----
   if (req.method === 'POST' && req.url === '/api/branch-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4127,7 +3333,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yangi filial qo'shish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/branch-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4163,7 +3368,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: filial ma'lumotlarini tahrirlash (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/branch-rename') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4195,7 +3399,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: filialni o'chirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/branch-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4217,7 +3420,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: menyuni olish (egasi yoki uning xodimlari — masalan kassir) ----
   if (req.method === 'POST' && req.url === '/api/menu-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4235,13 +3437,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== F. Bo'lim (kategoriya) boshqaruvi (36-40-bosqich) ====================
-  // Bo'limlar (menyu kategoriyalari) — egasi endi ularni tuzilmali ro'yxat
-  // sifatida boshqaradi (qo'shish/o'chirish/tartiblash), o'sha ro'yxatdan esa
-  // taom qo'shish/tahrirlash formasida (select) va mijoz/kassir menyusidagi
-  // bo'lim tartibida (qarang: sortedOwnerCategories) foydalaniladi.
-
-  // ---- API: bo'limlar ro'yxatini olish (egasi yoki uning xodimlari) ----
   if (req.method === 'POST' && req.url === '/api/category-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4258,7 +3453,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yangi bo'lim qo'shish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/category-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4290,11 +3484,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bo'limni o'chirish (faqat egasi) ----
-  // ESLATMA: shu bo'limdan foydalanayotgan taomlar avtomatik boshqa bo'limga
-  // ko'chirilmaydi — ularning `category` maydoni o'zgarishsiz qoladi, lekin
-  // endi ro'yxatda bo'lmagani uchun mijoz/kassir menyusida "Boshqa" bo'limi
-  // ostida chiqadi (qarang: public/app.js — groupMenuItems).
   if (req.method === 'POST' && req.url === '/api/category-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4312,7 +3501,7 @@ const server = http.createServer((req, res) => {
 
       ensureOwnerCategories(owner);
       owner.categories = owner.categories.filter(c => c.id !== id);
-      // qolganlarini 0 dan boshlab qayta raqamlaymiz — bo'shliq qolmasin
+
       owner.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
       saveOwners(owners);
 
@@ -4321,12 +3510,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bo'limlar tartibini o'zgartirish (faqat egasi) ----
-  // Frontend to'liq tartiblangan id ro'yxatini yuboradi (masalan, ikkita
-  // qo'shni bo'limni ↑/↓ tugmalari bilan almashtirgandan keyin butun
-  // ro'yxatni qayta joylashtirib). Kelmagan (frontendda ko'rinmayotgan)
-  // id'lar bo'lsa ham xato bermaymiz — ular oxiriga, o'zaro nisbiy
-  // tartibini saqlagan holda qo'shiladi.
   if (req.method === 'POST' && req.url === '/api/category-reorder') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4349,8 +3532,7 @@ const server = http.createServer((req, res) => {
         const c = byId.get(String(id));
         if (c) { c.order = nextOrder++; byId.delete(String(id)); }
       });
-      // ro'yxatda ko'rsatilmagan qolganlari (agar bo'lsa) — eski nisbiy
-      // tartibini saqlab, oxiriga qo'shiladi.
+
       categories.slice().sort((a, b) => a.order - b.order)
         .filter(c => byId.has(c.id))
         .forEach(c => { c.order = nextOrder++; });
@@ -4361,17 +3543,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: menyuga taom qo'shish (faqat egasi) ----
-  // C-bo'lim (11-18-bosqich): "Skladdan to'g'ridan sotuvga chiqadigan mahsulot".
-  // Odatdagi taom retsept (recipe: [{stockId, qty}, ...]) orqali bir nechta
-  // ingredientdan tayyorlanadi. Ba'zi "taomlar" esa aslida sklad mahsulotining
-  // o'zi to'g'ridan-to'g'ri sotiladi (masalan shishada suv, banka ichimlik) —
-  // bunday holda alohida retsept tuzishning hojati yo'q, taom bevosita bitta
-  // sklad mahsulotiga bog'lanadi (menuItem.directStockId, faqat MARKAZIY
-  // skladdagi mahsulotga — xuddi recipe.stockId kabi, filial skladiga emas,
-  // chunki buyurtma vaqtida sklad ham shu tarzda faqat markaziydan kamayadi:
-  // qarang pastdagi /api/create-order). Ikkalasi bir vaqtda bo'lishi mumkin
-  // emas: yo retsept, yo directStockId (yoki hech qaysisi — oddiy taom).
   if (req.method === 'POST' && req.url === '/api/menu-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4395,12 +3566,6 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
       }
 
-      // 12-bosqich: directStockId ixtiyoriy — berilsa, markaziy skladda
-      // shunday mahsulot borligini tekshiramiz. Yangi taomda recipe hali
-      // yo'q (u alohida /api/menu-set-recipe orqali qo'shiladi), shuning
-      // uchun bu yerda retsept bilan to'qnashuv bo'lishi mumkin emas —
-      // to'qnashuvning oldini olish /api/menu-set-recipe tomonida qilinadi
-      // (o'sha yerda directStockId allaqachon borligini tekshiradi).
       let directStockIdVal = null;
       if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
         const stockItem = findStockItem(owner, directStockId);
@@ -4428,7 +3593,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: menyudagi taom ma'lumotlarini tahrirlash / ko'rinish holatini almashtirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/menu-update') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4468,17 +3632,12 @@ const server = http.createServer((req, res) => {
       }
       if (available !== undefined) item.available = !!available;
 
-      // 17-bosqich: taomning turini ("Tayyorlanadigan" / "To'g'ridan skladdan")
-      // tahrirlash oynasidan ham o'zgartirish mumkin. Bo'sh qator ('') yuborilsa —
-      // "to'g'ridan skladdan" turi bekor qilinib, oddiy (retseptli) taomga qaytadi.
       if (directStockId !== undefined) {
         const directTrim = String(directStockId || '').trim();
         if (!directTrim) {
           item.directStockId = null;
         } else {
-          // Retsepti bor taomni to'g'ridan-sklad turiga o'tkazib bo'lmaydi —
-          // avval retseptni tozalash kerak (aks holda ikkalasi ham ishlaydigan
-          // noaniq holat paydo bo'ladi).
+
           if (Array.isArray(item.recipe) && item.recipe.length) {
             return sendJSON(res, 200, { ok: false, reason: 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.' });
           }
@@ -4494,7 +3653,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: menyudan taomni o'chirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/menu-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4518,14 +3676,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== D-bo'lim (28-31-bosqich): Combo — CRUD ====================
-  // Combo obyekti: { id, name, itemIds: [{menuItemId, qty}], price, priceMode:
-  // 'auto'|'manual', category, imageUrl, available, addedAt }. "auto" rejimda
-  // narx har safar tarkib narxlari yig'indisidan qayta hisoblanadi (agar
-  // tarkibdagi taomlarning narxi keyinroq o'zgarsa ham to'g'ri bo'lib turadi);
-  // "manual" rejimda egasi kiritgan qiymat saqlanadi.
-
-  // ---- API: combo ro'yxatini olish (egasi yoki uning xodimlari — kassir menyuda ko'rsatishi uchun) ----
   if (req.method === 'POST' && req.url === '/api/combo-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4546,7 +3696,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yangi combo qo'shish (28-bosqich, faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/combo-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4563,7 +3712,6 @@ const server = http.createServer((req, res) => {
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
 
-      // Tarkib — kamida 2 ta taom (aks holda combo emas, oddiy taom bo'lardi)
       if (!Array.isArray(itemIds) || itemIds.length < 2) {
         return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
       }
@@ -4576,7 +3724,6 @@ const server = http.createServer((req, res) => {
         cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
       }
 
-      // 31-bosqich: narx — avtomatik (tarkib yig'indisi) yoki qo'lda
       const priceModeVal = priceMode === 'manual' ? 'manual' : 'auto';
       let priceVal;
       if (priceModeVal === 'manual') {
@@ -4611,7 +3758,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: comboni tahrirlash / ko'rinish holatini almashtirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/combo-update') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4656,7 +3802,7 @@ const server = http.createServer((req, res) => {
           combo.price = priceVal;
         }
       } else {
-        // auto rejimda narx doim tarkibdan qayta hisoblanadi
+
         combo.price = comboAutoPrice(owner, combo.itemIds);
       }
       if (category !== undefined) combo.category = String(category || '').trim() || null;
@@ -4675,7 +3821,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: comboni o'chirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/combo-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4698,9 +3843,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
-
-  // ---- API: egasi uchun mijoz-menyu havolasini olish ----
   if (req.method === 'POST' && req.url === '/api/customer-link') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4719,12 +3861,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 57-bosqich — muayyan stol uchun QR-havola (tez buyurtma) ----
-  // Egasi stol raqamini kiritadi, server shu stol uchun maxsus deep-link
-  // qaytaradi (/start menu_<ownerId>_table_<stol>) — frontend shu havoladan
-  // QR-kod rasmini yasab, chop etish/yuklab olish uchun ko'rsatadi. Mijoz
-  // shu QR-ni skanerlasa, Mini App to'g'ridan-to'g'ri "Stolga" buyurtma
-  // turi va stol raqami oldindan to'ldirilgan holda ochiladi.
   if (req.method === 'POST' && req.url === '/api/table-qr-link') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4748,7 +3884,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: dostavka admin guruhi biriktirilgan-yo'qligini olish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/delivery-group-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4768,7 +3903,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: dostavka admin guruhini bog'lanishdan chiqarish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/delivery-group-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4787,7 +3921,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- 13-bosqich API: Oshpazlar guruhi biriktirilgan-yo'qligini olish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/kitchen-group-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4807,7 +3940,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- 13-bosqich API: Oshpazlar guruhini bog'lanishdan chiqarish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/kitchen-group-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4826,7 +3958,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: aksiyalar ro'yxati (egasi) ----
   if (req.method === 'POST' && req.url === '/api/promo-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4841,7 +3972,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: aksiya/chegirma qo'shish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/promo-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4884,7 +4014,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: aksiyani faol/nofaol qilish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/promo-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4905,7 +4034,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: aksiyani o'chirish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/promo-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4925,32 +4053,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== G-bo'lim: Reklama banner tizimi (45-47-bosqich) ====================
-  // Bannerlar — egasi mijozlar ekraniga (mini-ilova menyusi tepasida) chiqadigan
-  // rasmli reklama/e'lon kartochkalari. Har birida: rasm (majburiy, promo/menyu
-  // rasmlari bilan bir xil qoidada — https:// havola yoki galereyadan tanlangan
-  // base64, qarang: isValidImageValue), sarlavha va bosilganda ochiladigan havola
-  // (ikkalasi ham ixtiyoriy), hamda ixtiyoriy faollik oynasi (startAt/endAt — 47-
-  // bosqich: berilmasa banner cheksiz muddat faol hisoblanadi). owner.promotions
-  // bilan bir xil CRUD naqshiga amal qiladi (46-bosqich: admin/egasi boshqaruvi).
-
-  // 47-bosqich: banner hozir (joriy vaqtda) ko'rsatilishi kerakmi — faqat
-  // active bayrog'i emas, startAt/endAt oynasi ham hisobga olinadi.
   function isBannerWithinWindow(banner) {
     const now = Date.now();
     if (banner.startAt && new Date(banner.startAt).getTime() > now) return false;
     if (banner.endAt && new Date(banner.endAt).getTime() < now) return false;
     return true;
   }
-  // 45-bosqich: mijoz ekraniga chiqadigan, HOZIR faol bannerlar ro'yxati
-  // (customer-menu-list ichida ishlatiladi — qarang pastda).
+
   function activeOwnerBanners(owner) {
     return (owner.banners || [])
       .filter(b => b.active !== false && isBannerWithinWindow(b))
       .map(b => ({ id: b.id, imageUrl: b.imageUrl, title: b.title, link: b.link }));
   }
 
-  // ---- API: bannerlar ro'yxati (egasi, boshqaruv paneli — hammasi, nofaol/rejalashtirilganlari ham) ----
   if (req.method === 'POST' && req.url === '/api/banner-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -4965,7 +4080,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yangi banner qo'shish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/banner-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5014,14 +4128,13 @@ const server = http.createServer((req, res) => {
         endAt: endAtVal,
         createdAt: new Date().toISOString()
       };
-      owner.banners.unshift(banner); // eng yangisi ro'yxat boshida ko'rinsin
+      owner.banners.unshift(banner);
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true, banner });
     });
     return;
   }
 
-  // ---- API: bannerni tahrirlash (egasi) ----
   if (req.method === 'POST' && req.url === '/api/banner-update') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5079,7 +4192,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bannerni faol/nofaol qilish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/banner-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5100,7 +4212,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bannerni o'chirish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/banner-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5120,7 +4231,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bonus tizimi sozlamalarini olish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5136,7 +4246,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bonus tizimi sozlamalarini saqlash (egasi) — qaytgan mijozlarga necha % bonus berish ----
   if (req.method === 'POST' && req.url === '/api/bonus-settings-save') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5160,12 +4269,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijoz — asosiy "Ochish" tugmasi orqali kirganda (havolasiz) faol oshxonalar ro'yxati ----
-  // ---- API: bitta oshxonaning ochiq brend ma'lumoti (nomi, logotipi, rangi) ----
-  // Mijoz ilovasi ochilganda "Tekshirilmoqda..." o'rniga darhol shu oshxonaning
-  // logotipi va "Xush kelibsiz!" yozuvini ko'rsatish uchun — shu sababli bu
-  // yengil va TEZ ishlaydigan, autentifikatsiya/yozuv talab qilmaydigan
-  // so'rov (bir xil ma'lumot allaqachon ochiq menyu sahifasida ko'rinadi).
   if (req.method === 'POST' && req.url === '/api/restaurant-brand') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5205,7 +4308,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijoz — initData tekshirib, oshxona kontekstiga kiradi (avtomatik ro'yxatga oladi) ----
   if (req.method === 'POST' && req.url === '/api/customer-verify') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5244,7 +4346,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijoz uchun katalog-menyu (faqat "available" taomlar) + faol aksiyalar ----
   if (req.method === 'POST' && req.url === '/api/customer-menu-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5258,17 +4359,13 @@ const server = http.createServer((req, res) => {
 
       const menu = (owner.menu || []).filter(m => m.available !== false)
         .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(owner, m) }));
-      // 30-bosqich: combolar ham mijoz menyusiga qo'shiladi — frontend ularni
-      // alohida "Combo" bo'limi sifatida ko'rsatadi (qarang: customerMenuListHtml).
-      // "auto" narx rejimidagilar uchun narx shu yerda qayta hisoblanadi, shunda
-      // tarkibdagi taom narxi keyinroq o'zgargan bo'lsa ham mijozga to'g'ri ko'rinadi.
+
       const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
         price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
         outOfStock: comboOutOfStock(owner, c)
       }));
       const promotions = (owner.promotions || []).filter(p => p.active);
-      // 45-bosqich: rasmli reklama bannerlari — faqat HOZIR faol bo'lganlari
-      // (active=true va startAt/endAt oynasi ichida), qarang: activeOwnerBanners().
+
       const banners = activeOwnerBanners(owner);
       const recommendations = buildAiWaiterRecommendations(owner, String(check.user && check.user.id), menu);
       return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(owner), recommendations });
@@ -5276,7 +4373,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijoz — sevimlilarga qo'shish/olib tashlash ----
   if (req.method === 'POST' && req.url === '/api/customer-favorite-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5302,10 +4398,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 56-bosqich — mijoz uchun manzillar kitobi ----
-  // Mijoz dostavka buyurtmasi berganda har safar qaytadan joylashuv/manzil
-  // yozmasligi uchun — bir necha manzilni (masalan "Uy", "Ish") nom bilan
-  // saqlab qo'yishi va checkout'da shulardan birini tanlashi mumkin.
   if (req.method === 'POST' && req.url === '/api/customer-address-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5406,7 +4498,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijozning o'z buyurtmalari tarixi ----
   if (req.method === 'POST' && req.url === '/api/customer-orders-history') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5430,13 +4521,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 39-bosqich — mijoz uchun bildirishnomalar markazi ----
-  // Owner tomonidagi "Bildirishnomalar" ekrani kabi — alohida bildirishnoma
-  // bazasi kerak emas, mavjud buyurtma maydonlaridan (createdAt/startedAt/
-  // readyAt/deliveredAt/cancelledAt/paymentProof*At) va faol aksiyalardan
-  // ro'yxat hisoblab chiqiladi. "Ko'rilgan" belgisi mijoz tarafida
-  // (localStorage) saqlanadi, shuning uchun bu yerda faqat xom ro'yxat
-  // qaytariladi.
   if (req.method === 'POST' && req.url === '/api/customer-notifications') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5537,21 +4621,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== H63-bosqich: Tezkor qo'llab-quvvatlash chat ====================
-  // Mijoz botning mini-ilovasi ichidan to'g'ridan-to'g'ri oshxonaga savol/muammo
-  // yozib yubora oladi, egasi/kassir esa admin panelidan javob beradi — ikkala
-  // tomon ham xabarlarni Telegram orqali darhol oladi, ilova ichida esa
-  // (pollingda) yangilanib turadi. Har bir owner.supportMessages — yagona tekis
-  // ro'yxat: { id, customerId, from: 'customer'|'staff', text, at,
-  // readByCustomer, readByStaff }. "Thread" (suhbat) shu ro'yxatni customerId
-  // bo'yicha guruhlab hosil qilinadi — alohida saqlash strukturasi shart emas.
   function supportThreadMessages(owner, customerId) {
     return (owner.supportMessages || [])
       .filter(m => String(m.customerId) === String(customerId))
       .sort((a, b) => new Date(a.at) - new Date(b.at));
   }
 
-  // ---- API: mijoz — yordam xabarini yuborish ----
   if (req.method === 'POST' && req.url === '/api/support-send') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5594,7 +4669,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijoz — o'z suhbatini o'qish (pollingda chaqiriladi) ----
   if (req.method === 'POST' && req.url === '/api/support-thread') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5622,7 +4696,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: xodim/egasi — ochiq suhbatlar ro'yxati (oxirgi xabar + o'qilmagan soni) ----
   if (req.method === 'POST' && req.url === '/api/support-inbox') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5665,7 +4738,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: xodim/egasi — bitta mijoz bilan suhbatni o'qish + javob yozish ----
   if (req.method === 'POST' && req.url === '/api/support-thread-staff') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5735,7 +4807,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5749,9 +4820,6 @@ const server = http.createServer((req, res) => {
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
       if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
 
-      // Mijoz hali ism, familiya va telefon raqami bilan botga tanishtirilmagan bo'lsa,
-      // buyurtma qabul qilinmaydi — avval botning shaxsiy chatida /start orqali
-      // ro'yxatdan o'tishi kerak (qarang: handleTelegramUpdate'dagi ro'yxatdan o'tish oqimi).
       if (!isRegisteredUser(userId)) {
         return sendJSON(res, 200, {
           ok: false,
@@ -5759,9 +4827,6 @@ const server = http.createServer((req, res) => {
         });
       }
 
-      // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
-      // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
-      // muvaffaqiyatli javob berilgan bo'lsa, o'shani qaytaramiz.
       const cachedResponse = getCachedOrderResponse(owner.id, userId, requestId);
       if (cachedResponse) return sendJSON(res, 200, cachedResponse);
 
@@ -5777,32 +4842,19 @@ const server = http.createServer((req, res) => {
       if (orderType === 'stol' && !String(tableNumber || '').trim()) {
         return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
       }
-      // Dostavka buyurtmasida "naqd" varianti mavjud emas — kuryer naqd
-      // pulni olsa ham bu "dostavka_orqali" turi bilan hisoblanadi (pastda
-      // qarang: courierCashCollected daromad hisobotlarini to'g'ri yuritish uchun).
+
       if (orderType === 'dostavka' && paymentType === 'naqd') {
         return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
       }
-      // 21/23-bosqich: "Dostavka orqali" to'lov turi FAQAT haqiqiy Dostavka
-      // buyurtmalarida mavjud — Stolga/Olib ketish buyurtmalarida bu
-      // variant mantiqsiz (kuryer yo'q), shuning uchun backend'da ham
-      // rad etiladi (frontendda ko'rsatilmasligidan tashqari — himoya
-      // ikki qavatli bo'lishi kerak).
+
       if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
         return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
       }
-      // YANGI: kuryer avval yetkazib bera olmagan (mijoz javob bermagan/rad
-      // etgan) buyurtmalar takrorlangan mijozlarga endi "dostavka orqali"
-      // (naqd, kuryerga to'lov) taklif qilinmaydi — faqat Karta orqali
-      // oldindan to'lov bilan buyurtma qabul qilinadi (qarang:
-      // customerIsCardOnlyRestricted()).
+
       if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
         return sendJSON(res, 200, { ok: false, reason: 'Avvalgi buyurtma(lar)ingizda kuryer sizga bog\'lana olmagani sababli, endi faqat Karta orqali oldindan to\'lov bilan buyurtma bera olasiz.' });
       }
 
-      // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - kuryer
-      // mijozni topa olishi uchun kamida BITTASI bo'lishi shart: aniqlangan
-      // joylashuv (lokatsiya) YOKI qo'lda yozilgan manzil izohi.
       let deliveryLocation = null;
       if (orderType === 'dostavka') {
         if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
@@ -5813,8 +4865,7 @@ const server = http.createServer((req, res) => {
         if (!deliveryLocation && !addressNoteTrimmed) {
           return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
         }
-        // YANGI: dostavka buyurtmasida qo'shimcha telefon raqam majburiy —
-        // kuryer mijozga bog'lana olmay qolgan holatlar uchun zaxira aloqa.
+
         const extraPhoneDigits = String(extraPhone || '').replace(/\D/g, '');
         if (extraPhoneDigits.length < 7) {
           return sendJSON(res, 200, { ok: false, reason: 'Qo\'shimcha telefon raqamingizni kiriting.' });
@@ -5841,11 +4892,9 @@ const server = http.createServer((req, res) => {
       }
       const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
-      // Aksiya (agar tanlangan bo'lsa) chegirmasi
       const { promo, discountAmount } = applyPromoDiscount(owner, promoId, subtotal);
       let total = Math.max(0, subtotal - discountAmount);
 
-      // Bonus ballaridan foydalanish (1 ball = 1 so'm)
       const customer = findOrCreateCustomer(owner, userId, check.user);
       let pointsUsed = 0;
       if (usePoints) {
@@ -5854,7 +4903,6 @@ const server = http.createServer((req, res) => {
         total -= pointsUsed;
       }
 
-      // Retsept asosida skladdan mahsulot avtomatik yechiladi
       if (!owner.stock) owner.stock = [];
 
       const stockCheck = checkStockAvailability(owner, orderItems, menu);
@@ -5882,9 +4930,7 @@ const server = http.createServer((req, res) => {
           continue;
         }
         const menuItem = menu.find(m => m.id === it.id);
-        // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
-        // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi,
-        // retsept ingredientlari tekshirilmaydi (chunki bunday taomda recipe yo'q).
+
         if (menuItem && menuItem.directStockId) {
           const stockItem = findStockItem(owner, menuItem.directStockId);
           if (stockItem) {
@@ -5916,7 +4962,6 @@ const server = http.createServer((req, res) => {
         }
       }
 
-      // Bonus ballari to'planishi (sozlamada yoqilgan bo'lsa)
       let pointsEarned = 0;
       if (owner.bonusSettings && owner.bonusSettings.enabled) {
         pointsEarned = Math.floor(total * (owner.bonusSettings.earnPercent || 0) / 100);
@@ -5924,10 +4969,7 @@ const server = http.createServer((req, res) => {
       customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
       customer.ordersCount = (customer.ordersCount || 0) + 1;
       customer.totalSpent = (customer.totalSpent || 0) + total;
-      // H64-bosqich: "AI ofitsiant" — mijoz qaysi taomlarni necha marta
-      // olganini kuzatib boramiz (combo va oddiy menyu taomlari birga),
-      // shu asosida keyinchalik "Sizga tavsiya" ro'yxati chiqariladi
-      // (qarang: buildAiWaiterRecommendations()).
+
       if (!customer.itemFrequency || typeof customer.itemFrequency !== 'object') customer.itemFrequency = {};
       for (const it of orderItems) {
         if (!it.id) continue;
@@ -5953,26 +4995,11 @@ const server = http.createServer((req, res) => {
         extraPhone: extraPhoneFinal,
         paymentType,
         status: 'yangi',
-        // YANGI: karta bilan to'lagan mijoz to'lov skrinshotini yubormaguncha
-        // va kassir/egasi shuni tasdiqlamaguncha - buyurtma "kutilmoqda"
-        // holatida turadi, oshxona/dostavka guruhiga XABAR KETMAYDI (qarang:
-        // pastdagi if (paymentType === 'karta') bloki va 'payok'/'payrej'
-        // callback'lari). Naqd/"dostavka orqali" to'lovda bu tekshiruv
-        // kerak emas - shuning uchun null.
-        //
-        // YANA: STOLGA + NAQD buyurtmada ham xuddi shunday - mijoz oldin
-        // kassaga borib to'lashi, kassir "✅ To'lov qabul qilindi" tugmasini
-        // bosishi kerak, SHUNDAN KEYIN oshpazga buyurtma ketadi (ish
-        // boshlanadi). Farqi: skrinshot TALAB QILINMAYDI - kassir mijozni
-        // ko'zi bilan ko'rib, naqd pulni qo'lida ushlab tasdiqlaydi.
-        // paymentConfirmMethod shu ikki holatni bir-biridan ajratadi
-        // (xabar matnlari va UI shunga qarab farqlanadi).
+
         paymentProofStatus: (paymentType === 'karta' || (orderType === 'stol' && paymentType === 'naqd')) ? 'kutilmoqda' : null,
         paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : (orderType === 'stol' && paymentType === 'naqd') ? 'naqd_kassa' : null,
         paymentProofFileId: null,
-        // Kuryer "dostavka orqali" pulni mijozdan qo'lda olgani uchun bu pul
-        // egasi kuryerdan jismonan qabul qilib olmaguncha (/api/courier-collect-cash)
-        // daromad hisobiga qo'shilmaydi — qarang: orderIncomeAmount().
+
         courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
         branchId: null,
         customerId: userId,
@@ -5987,14 +5014,7 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       if (paymentType === 'karta') {
-        // Oshxona/kassir/dostavka guruhiga HALI xabar YUBORILMAYDI - avval
-        // mijoz to'lov skrinshotini shu botning shaxsiy chatiga yuborishi,
-        // keyin kassir/egasi tasdiqlashi kerak (qarang: 'payok' callback -
-        // xuddi shu notifyText/notifyTargets/notifyDeliveryGroup o'sha yerda
-        // takrorlanadi, FAQAT tasdiqlangandan keyin ishga tushadi).
-        // Karta raqami do'kon egasi tomonidan kiritiladi (qarang:
-        // customerPaymentCard, /api/owner-payment-card-set). <code> tegi
-        // Telegram'da bosib-nusxalash imkonini beradi.
+
         const payCard = owner.customerPaymentCard || {};
         const cardLine = payCard.cardNumber
           ? `\n\n💳 To'lov: <code>${escapeHtmlServer(payCard.cardNumber)}</code>` +
@@ -6005,10 +5025,7 @@ const server = http.createServer((req, res) => {
           'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
           'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
       } else if (order.paymentConfirmMethod === 'naqd_kassa') {
-        // YANGI: STOLGA + NAQD - mijozga YUMSHOQ, tushunarli tarzda
-        // tushuntiriladi: avval kassaga to'lov, keyin tayyorlash boshlanadi.
-        // Skrinshot kerak emas - kassir "✅ To'lov qabul qilindi" tugmasini
-        // bosgach (naqd pulni qo'lida ko'rib) - oshpazga yuboriladi.
+
         await sendMessage(userId,
           `🍽 Buyurtmangiz qabul qilindi!\n\n` +
           `Iltimos, xohishingiz bo'lsa avval kassaga borib to'lovni amalga oshiring - ` +
@@ -6050,12 +5067,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- Sklad (ombor) — birliklar, harakatlar tarixi va kam qolish ogohlantirish yordamchilari ----
   function findStockItem(pool, id) {
     return (pool.stock || []).find(s => s.id === id);
   }
 
-  // Sklad harakati (kirim/chiqim/audit tuzatish) tarixga yoziladi — kim, qachon, nima
   function addStockMovement(pool, entry) {
     if (!pool.stockMovements) pool.stockMovements = [];
     pool.stockMovements.unshift(Object.assign({
@@ -6065,7 +5080,6 @@ const server = http.createServer((req, res) => {
     if (pool.stockMovements.length > 500) pool.stockMovements.length = 500;
   }
 
-  // Mahsulot chegaradan kam qolsa — egasi va shu joy (markaziy/filial)dagi sklad xodimlariga bir marta ogohlantirish yuboradi
   function checkLowStockAlert(owner, item, excludeUserId, branchId) {
     if (item.minQty === null || item.minQty === undefined) return;
     if (item.qty <= item.minQty) {
@@ -6085,13 +5099,8 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // Buyurtmadagi barcha taomlar uchun retseptga ko'ra yetarli sklad (ombor) mahsuloti
-  // bor-yo'qligini tekshiradi — hech narsani o'zgartirmaydi, faqat "yetadimi" degan
-  // javob qaytaradi. Bir xil ingredient bir nechta taomda ishlatilsa, talab qilingan
-  // miqdorlar jamlanadi (masalan, 2 xil taom bir xil pomidorni ishlatsa).
-  // Qaytadi: { ok: true } yoki { ok: false, reason, stockName }
   function checkStockAvailability(owner, orderItems, menu) {
-    const needed = new Map(); // stockId -> jami kerak bo'lgan miqdor
+    const needed = new Map();
     for (const it of orderItems) {
       if (it.isCombo) {
         const combo = findCombo(owner, it.id);
@@ -6102,9 +5111,7 @@ const server = http.createServer((req, res) => {
         continue;
       }
       const menuItem = menu.find(m => m.id === it.id);
-      // 16-bosqich: retsept o'rniga directStockId bilan bog'langan taom
-      // bo'lsa - bitta sklad birligi taom donasiga to'g'ri keladi (1:1),
-      // shuning uchun kerakli miqdor to'g'ridan it.qty ga teng.
+
       if (menuItem && menuItem.directStockId) {
         const consumeQty = it.qty;
         needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
@@ -6118,7 +5125,7 @@ const server = http.createServer((req, res) => {
     }
     for (const [stockId, requiredQty] of needed) {
       const stockItem = findStockItem(owner, stockId);
-      if (!stockItem) continue; // sklad kartochkasi yo'q bo'lsa, eski xatti-harakatni saqlab qolamiz (o'tkazib yuboriladi)
+      if (!stockItem) continue;
       if (stockItem.qty < requiredQty) {
         return {
           ok: false,
@@ -6130,47 +5137,33 @@ const server = http.createServer((req, res) => {
     return { ok: true };
   }
 
-  // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
-  // Ruxsat etilgan holat o'tishlari: "yangi" -> "tayyorlanmoqda" -> "tayyor".
-  // Bosqich tashlab ketib bo'lmaydi (masalan, "yangi"dan to'g'ridan-to'g'ri "tayyor"ga).
   const ORDER_STATUS_TRANSITIONS = {
     yangi: ['tayyorlanmoqda'],
     tayyorlanmoqda: ['tayyor'],
     tayyor: []
   };
 
-  // 15-bosqich: buyurtmadagi BARCHA taomlar skladdan to'g'ridan sotiladigan
-  // bo'lsa (retseptsiz, directStockId orqali) - oshpaz tayyorlashi shart emas,
-  // shuning uchun bunday buyurtmalar uchun "tayyorlanmoqda" bosqichi kerak emas.
-  // Buyurtmaning har bir qatorida directStockId saqlanadi (qarang: /api/create-order
-  // va mijoz buyurtmasi endpointi) - shu yerda faqat o'sha belgiga qaraladi.
   function orderNeedsKitchen(order) {
     const items = (order && order.items) || [];
     if (!items.length) return true;
     return items.some(it => !it.directStockId);
   }
 
-  // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi.
-  // `order` — joriy buyurtma obyekti (uning hozirgi status'idan qaysi keyingi
-  // status'larga o'tish mumkinligini aniqlash uchun kerak).
   function canSetOrderStatus(ctx, order, newStatus) {
     if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
 
-    // egasi tuzatish uchun istalgan holatga o'tkaza oladi (bosqichlarni chetlab o'tishi mumkin)
     if (ctxHasRole(ctx, 'egasi')) return true;
 
-    // boshqa rollar uchun faqat ketma-ket bosqichlarga o'tishga ruxsat bor
     const currentStatus = order ? order.status : 'yangi';
     let allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
-    // 15-bosqich: retseptsiz/directStockId buyurtmalarda "yangi" dan to'g'ridan
-    // "tayyor"ga o'tish ham ruxsat etiladi ("tayyorlanmoqda" bosqichi shart emas).
+
     if (currentStatus === 'yangi' && !orderNeedsKitchen(order)) {
       allowedNext = allowedNext.concat('tayyor');
     }
     if (!allowedNext.includes(newStatus)) return false;
 
     if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
-    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true; // kassir ham "Tayyor" tugmasini bosa oladi (faqat "tayyorlanmoqda"dan keyin)
+    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true;
     return false;
   }
 
@@ -6189,9 +5182,6 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir buyurtma yaratishi mumkin' });
       }
 
-      // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
-      // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
-      // muvaffaqiyatli javob berilgan bo'lsa, o'shani qaytaramiz.
       const cachedResponse = getCachedOrderResponse(ctx.owner.id, userId, requestId);
       if (cachedResponse) return sendJSON(res, 200, cachedResponse);
 
@@ -6210,16 +5200,11 @@ const server = http.createServer((req, res) => {
       if (orderType === 'dostavka' && paymentType === 'naqd') {
         return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
       }
-      // 21/23-bosqich: "Dostavka orqali" to'lov turi FAQAT haqiqiy Dostavka
-      // buyurtmalarida mavjud — Stolga/Olib ketish buyurtmalarida bu
-      // variant mantiqsiz (kuryer yo'q), shuning uchun backend'da ham
-      // rad etiladi (frontendda ko'rsatilmasligidan tashqari — himoya
-      // ikki qavatli bo'lishi kerak).
+
       if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
         return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
       }
 
-      // Narxlarni klientdan emas, serverdagi menyudan olamiz (soxtalashtirilmasligi uchun)
       const menu = ctx.owner.menu || [];
       const combosAvailable = ctx.owner.combos || [];
       const orderItems = [];
@@ -6238,7 +5223,6 @@ const server = http.createServer((req, res) => {
       }
       const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
-      // Retsept asosida skladdan mahsulot avtomatik yechiladi (taom tayyorlansa ingredient kamayadi)
       if (!ctx.owner.stock) ctx.owner.stock = [];
 
       const stockCheck = checkStockAvailability(ctx.owner, orderItems, menu);
@@ -6266,8 +5250,7 @@ const server = http.createServer((req, res) => {
           continue;
         }
         const menuItem = menu.find(m => m.id === it.id);
-        // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
-        // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi.
+
         if (menuItem && menuItem.directStockId) {
           const stockItem = findStockItem(ctx.owner, menuItem.directStockId);
           if (stockItem) {
@@ -6310,8 +5293,7 @@ const server = http.createServer((req, res) => {
         paymentType,
         status: 'yangi',
         branchId: orderBranchId,
-        // qarang: orderIncomeAmount() — kuryerda turgan naqd pul egasi
-        // tomonidan olinmaguncha daromadga qo'shilmaydi.
+
         courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
         createdAt: new Date().toISOString(),
         createdBy: userId
@@ -6320,7 +5302,6 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${fmtNum(total)} so'm` });
       saveOwners(owners);
 
-      // Oshxonaga (egaga + oshpazlarga) xabar yuboriladi
       const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
         `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
@@ -6337,7 +5318,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi, kuryer — real-vaqtda polling uchun) ----
   if (req.method === 'POST' && req.url === '/api/orders-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6357,7 +5337,6 @@ const server = http.createServer((req, res) => {
         .slice()
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-      // Kuryerga faqat "Tayyor" bo'lgan, hali hech kim yetkazib bermagan dostavka buyurtmalari ko'rinadi
       if (ctxHasRole(ctx, 'dostavka')) {
         orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
       }
@@ -6368,11 +5347,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- Umumiy yordamchi: sana/xodim/to'lov/turi bo'yicha filtrlangan,
-  // vaqt bo'yicha kamayish tartibida saralangan TO'LIQ buyurtmalar ro'yxatini
-  // qaytaradi (sahifalashsiz) — /api/order-history (sahifalab) va
-  // /api/order-history-export (44-bosqich: Excel/PDF eksport, sahifalashsiz)
-  // ikkalasi ham shundan foydalanadi, filtr mantig'i ikki joyda takrorlanmasin.
   function filterOwnerOrderHistory(ctx, payload) {
     const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
     let orders = (ctx.owner.orders || []).slice();
@@ -6396,7 +5370,6 @@ const server = http.createServer((req, res) => {
     }
     orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    // Xodim F.I.Sh — buyurtmani kim yaratgani (1-bosqich bilan bir xil qoida)
     const nameCache = new Map();
     const staffNameById = (id) => {
       if (!id) return null;
@@ -6415,10 +5388,6 @@ const server = http.createServer((req, res) => {
     return { orders, staffNameById };
   }
 
-  // ---- API: buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
-  // Faqat oshxona egasiga ko'rinadi (boshqa moliyaviy hisobotlar — kuryer/Z-hisobot —
-  // bilan bir xil qoida). Sana oralig'i, xodim (kim yaratgan) va to'lov turi bo'yicha
-  // filtrlab, sahifalab (pagination) qaytaradi.
   if (req.method === 'POST' && req.url === '/api/order-history') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6458,7 +5427,6 @@ const server = http.createServer((req, res) => {
         createdByName: staffNameById(o.createdBy)
       }));
 
-      // Filtr uchun xodimlar ro'yxati (egasi + hozircha buyurtma yaratgan xodimlar)
       const employees = [{ id: ctx.owner.id, name: 'Egasi' }];
       (ctx.owner.staff || []).forEach(s => {
         employees.push({ id: s.id, name: staffDisplayName(s) });
@@ -6475,18 +5443,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // =========================================================================
-  // 44-bosqich: buyurtmalar tarixini Excel (CSV) va PDF sifatida eksport
-  // qilish. Loyihada hech qanday tashqi kutubxona (npm paket) ishlatilmagani
-  // sababli (package.json bo'sh) — ikkalasi ham TASHQI KUTUBXONASIZ:
-  //   • Excel — CSV matn (UTF-8 BOM bilan) qaytariladi, Excel'da to'g'ridan
-  //     to'g'ri ochiladi.
-  //   • PDF — minimal, qo'lda tuzilgan PDF fayl (standart Helvetica shrifti,
-  //     WinAnsiEncoding) generatsiya qilinadi. Faqat lotin-1 diapazonidagi
-  //     belgilar (asosiy lotin, aksanlar) qo'llab-quvvatlanadi — kirill yoki
-  //     boshqa belgilar '?' bilan almashtiriladi (buyurtma taomlari/xodim
-  //     nomlari odatda o'zbek lotin alifbosida bo'ladi).
-  // =========================================================================
   function pdfSanitizeText(s) {
     return String(s == null ? '' : s).replace(/[\r\n\t]/g, ' ').split('').map(ch => {
       const code = ch.charCodeAt(0);
@@ -6504,10 +5460,8 @@ const server = http.createServer((req, res) => {
     return pdfEscapeText(t);
   }
 
-  // headers — ustun nomlari, colWidths — har bir ustun kengligi (pt),
-  // rows — string massivlar massivi (har bir qator = har bir ustun uchun matn).
   function buildSimplePdfReport(title, generatedAtLabel, headers, colWidths, rows) {
-    const pageWidth = 595, pageHeight = 842; // A4, pt
+    const pageWidth = 595, pageHeight = 842;
     const marginX = 40, topY = 802, bottomMargin = 40;
     const titleFontSize = 13, headerFontSize = 8, cellFontSize = 7.5, lineHeight = 13;
     const headerY = topY - 26;
@@ -6544,10 +5498,9 @@ const server = http.createServer((req, res) => {
       return s;
     });
 
-    // ---- PDF obyektlarini yig'ish (kutubxonasiz, qo'lda) ----
     const objects = [];
     const pageCount = pageStreams.length;
-    const firstPageObjNum = 4; // 1=Catalog, 2=Pages, 3=Font
+    const firstPageObjNum = 4;
     const pageObjNums = [], contentObjNums = [];
     for (let i = 0; i < pageCount; i++) {
       pageObjNums.push(firstPageObjNum + i * 2);
@@ -6601,7 +5554,7 @@ const server = http.createServer((req, res) => {
 
       const format = payload.format === 'pdf' ? 'pdf' : 'csv';
       const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
-      const exportOrders = orders.slice(0, 2000); // haddan tashqari katta fayl bo'lib ketmasligi uchun cheklov
+      const exportOrders = orders.slice(0, 2000);
       const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
       const nowLabel = new Date().toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const restaurantName = (ctx.owner.name || 'Oshxona');
@@ -6628,12 +5581,11 @@ const server = http.createServer((req, res) => {
         csv += rows.map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
         csv += `\r\n\r\n${csvEscapeCell('Jami: ' + rows.length + ' ta buyurtma, ' + totalSum + ' so\'m')}\r\n`;
         const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.csv`;
-        // UTF-8 BOM — Excel'da o'zbek harflari (', g' va h.k.) to'g'ri ko'rinishi uchun
+
         const content = '\uFEFF' + csv;
         return sendJSON(res, 200, { ok: true, format: 'csv', filename, mime: 'text/csv;charset=utf-8', content });
       }
 
-      // PDF — jadval ustunlari toraytirilgan (taomlar ustuni qisqartiriladi)
       const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Summa', 'Xodim'];
       const colWidths = [95, 65, 65, 70, 75, 145];
       const pdfRows = rows.map(r => [r[0], r[1], r[3], r[4], r[6] + " so'm", r[7]]);
@@ -6647,10 +5599,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: xodim uchun shaxsiy kunlik/haftalik/oylik statistika (45-bosqich) ----
-  // Har bir rol o'ziga tegishli ko'rsatkichni ko'radi: kassir — yaratgan
-  // buyurtmalari, oshpaz — tayyorlagan buyurtmalari, kuryer — yetkazgan
-  // buyurtmalari (va komissiyasi), sklad — kiritgan sklad harakatlari.
   if (req.method === 'POST' && req.url === '/api/my-stats') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6678,7 +5626,7 @@ const server = http.createServer((req, res) => {
         };
       }
       if (ctxHasRole(ctx, 'oshpaz')) {
-        // "Tayyor" deb belgilagan (oxirgi holat o'zgartiruvchi shu xodim bo'lgan) buyurtmalar
+
         const mine = orders.filter(o => o.status === 'tayyor' && String(o.updatedBy) === userId && o.readyAt && new Date(o.readyAt) >= fromDate);
         stats.oshpaz = {
           orderCount: mine.length
@@ -6708,16 +5656,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 49-bosqich — kassir/oshpaz "smena" holatini olish ----
-  // Xodim ekranini ochganda joriy smena holatini (faol/faol emas, boshlangan
-  // vaqti) so'raydi — holat staff yozuvida saqlanadi, shuning uchun qaysi
-  // qurilmadan ochilsa ham bir xil ko'rinadi.
-  // 61-bosqich: xodim yo'q paytda egasi ham kassir/oshpaz o'rnida ishlashi
-  // mumkin bo'lishi kerak — shu sababli 'egasi' ham ruxsat etilgan rollarga
-  // qo'shildi. Egasi owner.staff ro'yxatida yo'q, shuning uchun uning smena
-  // holati to'g'ridan-to'g'ri owner yozuvining o'zida (owner.shiftActive /
-  // owner.shiftStartedAt) saqlanadi — xodimlarning alohida-alohida
-  // shiftActive maydonlari bilan aralashmaydi.
   if (req.method === 'POST' && req.url === '/api/shift-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6740,16 +5678,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 49-bosqich — smena boshlash/tugatish ----
-  // Kassir yoki oshpaz ish boshlaganda/tugatganda bosadigan tugma. Holat
-  // xodim yozuvida saqlanadi (staff.shiftActive / staff.shiftStartedAt).
-  // Tugatilganda davomiylik owner.shiftHistory'ga yoziladi (kelajakda
-  // smena bo'yicha hisobot uchun) va umumiy amallar jurnaliga
-  // (logStaffAction) tushadi — egasi buni "Xodimlar nazorati" bo'limida
-  // ko'radi.
-  // 61-bosqich: egasi ham (xodim bo'lmagan paytda o'zi kassir/oshpaz
-  // o'rnida ishlaganda) smenani boshlashi/tugatishi mumkin — shift-status
-  // bilan bir xil mantiq (target: egasi bo'lsa owner yozuvining o'zi).
   if (req.method === 'POST' && req.url === '/api/shift-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6794,7 +5722,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: buyurtma holatini o'zgartirish (Yangi -> Tayyorlanmoqda -> Tayyor) ----
   if (req.method === 'POST' && req.url === '/api/update-order-status') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6818,7 +5745,7 @@ const server = http.createServer((req, res) => {
       const order = (ctx.owner.orders || []).find(o => o.id === orderId);
       if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
       if (order.status === status) {
-        return sendJSON(res, 200, { ok: true, order }); // allaqachon shu holatda
+        return sendJSON(res, 200, { ok: true, order });
       }
       if (!canSetOrderStatus(ctx, order, status)) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).' });
@@ -6833,13 +5760,8 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
       saveOwners(owners);
 
-      // 15-bosqich: holat Mini App orqali (guruh tugmalarisiz) o'zgarganda ham
-      // dostavka/oshpazlar guruhidagi xabar tugmalari joriy holatga mos
-      // yangilanadi — aks holda guruh a'zolari eski "Qabul qilish"/"Tayyor"
-      // tugmasini bosib, chalkash javob olishlari mumkin edi.
       syncGroupMessagesForOrder(ctx.owner, order);
 
-      // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga avtomatik bildirishnoma
       if (status === 'tayyor') {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
@@ -6849,7 +5771,7 @@ const server = http.createServer((req, res) => {
         const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
         const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
         for (const targetId of new Set(targetIds)) {
-          if (String(targetId) === userId) continue; // o'zi belgilagan bo'lsa, o'ziga yubormaydi
+          if (String(targetId) === userId) continue;
           sendMessage(targetId, readyText);
         }
       }
@@ -6859,7 +5781,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryer buyurtmani "Yetkazildi" deb belgilaydi (F/26-bosqich: kuryer hisoboti uchun asos) ----
   if (req.method === 'POST' && req.url === '/api/deliver-order') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6890,9 +5811,6 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
       saveOwners(owners);
 
-      // Buyurtma "Yetkazildi" deb belgilangach, mijozdan xizmatni baholashini
-      // so'raymiz (1-5 yulduz, callback_data: rate:<ownerId>:<orderId>:<ball>).
-      // Javob callback_query bo'limida ('rate:' prefiksi) qayta ishlanadi.
       if (order.customerId) {
         const ratingKeyboard = {
           inline_keyboard: [[
@@ -6913,12 +5831,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryer — mijoz buyurtmani qabul qilmadi (bekor qildi) ----
-  // Kuryer manzilga borgach mijoz eshikda buyurtmadan voz kechishi mumkin
-  // (fikr o'zgargan, telefon javob bermagan va h.k.). Bunday holatda buyurtma
-  // "Yetkazildi" deb belgilanmaydi — "Bekor qilindi" holatiga o'tadi, daromad
-  // hisobiga qo'shilmaydi (qarang: orderIncomeAmount()) va oshxona egasiga
-  // xabar boradi.
   if (req.method === 'POST' && req.url === '/api/reject-delivery-order') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -6944,7 +5856,7 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
       }
       if (order.status === 'bekor_qilindi') {
-        return sendJSON(res, 200, { ok: true, order }); // allaqachon bekor qilingan
+        return sendJSON(res, 200, { ok: true, order });
       }
 
       const trimmedReason = String(reason || '').trim();
@@ -6957,12 +5869,6 @@ const server = http.createServer((req, res) => {
       order.cancelledBy = userId;
       order.cancelledAt = new Date().toISOString();
 
-      // Ochilmagan, to'g'ridan skladdan sotilgan mahsulotlarni (masalan,
-      // Kola, Pepsi kabi shishalar) skladga qaytarish. Faqat directStockId
-      // bor itemlar uchun ruxsat beriladi (retsept asosida tayyorlangan
-      // taomlar qaytarilmaydi, chunki ular allaqachon tayyorlangan bo'lishi
-      // mumkin). Kuryer/egasi har bir item uchun nechta dona ochilmagan
-      // holda qaytganini ko'rsatadi (returnedItems: [{ index, qty }]).
       const returnedNotes = [];
       if (Array.isArray(returnedItems)) {
         for (const r of returnedItems) {
@@ -6991,8 +5897,6 @@ const server = http.createServer((req, res) => {
 
       syncGroupMessagesForOrder(ctx.owner, order);
 
-      // Egasi va kassirlarga darhol xabar — kim, qaysi buyurtmani va nima
-      // sababdan bekor qilganini bilishlari uchun.
       const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
       const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
@@ -7016,11 +5920,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi xato bosilgan "Yetkazildi" belgisini bekor qiladi ----
-  // (masalan, kuryer boshqa buyurtmani bosib yuborgan yoki hali yetkazmasdan
-  // tugmani bosib yuborgan holatlarni tuzatish uchun). Faqat "egasi" roliga ruxsat
-  // berilgan — kuryerning o'ziga bu huquq berilmagan, aks holda u o'z hisobotini
-  // (yetkazgan buyurtmalar sonini) o'zi o'zgartira olardi.
   if (req.method === 'POST' && req.url === '/api/undo-deliver-order') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7058,7 +5957,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: sklad ro'yxatini olish (egasi, sklad mas'uli) ----
   if (req.method === 'POST' && req.url === '/api/stock-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7083,7 +5981,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: skladga mahsulot kiritish (yangi mahsulot yoki mavjudiga kirim qo'shish) ----
   if (req.method === 'POST' && req.url === '/api/stock-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7113,8 +6010,7 @@ const server = http.createServer((req, res) => {
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
         return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
       }
-      // 6-bosqich: narx endi MAJBURIY — bo'sh/0 bo'lsa xatolik qaytariladi,
-      // chunki har bir kirim uchun avtomatik xarajat yozuvi shu narxdan hisoblanadi.
+
       if (price === undefined || price === null || price === '') {
         return sendJSON(res, 200, { ok: false, reason: 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.' });
       }
@@ -7156,10 +6052,6 @@ const server = http.createServer((req, res) => {
       checkLowStockAlert(ctx.owner, item, userId, branchId);
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
 
-      // 7-8-bosqich: sklad kirimi uchun avtomatik xarajat yozuvi — narx endi
-      // majburiy bo'lgani uchun har bir kirim to'g'ridan-to'g'ri moliyaga
-      // (owner.expenses) "sklad_xarid" kategoriyasi bilan tushadi. note
-      // maydonida qaysi mahsulot/miqdor ekani ko'rsatiladi (masalan "Un — 10 kg").
       if (!ctx.owner.expenses) ctx.owner.expenses = [];
       ctx.owner.expenses.unshift({
         id: crypto.randomBytes(4).toString('hex'),
@@ -7180,14 +6072,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: sklad mahsulotini butunlay o'chirish (faqat egasi) ----
-  // 9-bosqich (hujjat): mahsulotni sklad ro'yxatidan o'chirish avvalgi
-  // /api/stock-add chaqiruvlarida yozilgan "sklad_xarid" xarajatlarini
-  // ORQAGA QAYTARMAYDI/o'chirmaydi — bu ataylab shunday, chunki xarid haqiqatan
-  // ham amalga oshgan (pul sarflangan), mahsulot esa keyinchalik ro'yxatdan
-  // olib tashlanishi (masalan boshqa nom bilan qayta kiritish uchun) buni
-  // o'zgartirmaydi. Xato kiritilgan xarajatni tuzatish kerak bo'lsa, buni
-  // Moliya ekranidan qo'lda (/api/expense-remove) qilish kerak.
   if (req.method === 'POST' && req.url === '/api/stock-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7206,7 +6090,7 @@ const server = http.createServer((req, res) => {
       if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
 
       pool.stock = (pool.stock || []).filter(s => s.id !== id);
-      // Markaziy skladdagi mahsulot bo'lsa — bog'langan retseptlardan ham olib tashlanadi
+
       if (!branchId) {
         (owner.menu || []).forEach(m => {
           if (Array.isArray(m.recipe)) m.recipe = m.recipe.filter(r => r.stockId !== id);
@@ -7219,7 +6103,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: sklad harakatlari tarixi (kim, qachon, nima kiritdi/chiqardi) ----
   if (req.method === 'POST' && req.url === '/api/stock-movements') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7244,12 +6127,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: markaziy skladdan filialga mahsulot o'tkazish (transfer) — faqat egasi ----
-  // 9-bosqich (hujjat): transfer yangi xarid emas — mahsulot allaqachon
-  // markaziy skladga /api/stock-add orqali kirganda "sklad_xarid" xarajati
-  // yozilgan bo'ladi. Shu sababli bu yerda YANGI xarajat yozuvi QO'SHILMAYDI —
-  // aks holda bir xil xarid ikki marta hisoblangan bo'lardi (markaziy sklad +
-  // filial). Transfer faqat miqdorni bir joydan ikkinchisiga ko'chiradi.
   if (req.method === 'POST' && req.url === '/api/stock-transfer') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7277,7 +6154,6 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: `Markaziy skladda yetarli emas (bor: ${centralItem.qty} ${centralItem.unit}).` });
       }
 
-      // Markaziy skladdan kamaytiriladi
       centralItem.qty = Math.round((centralItem.qty - qtyNum) * 1000) / 1000;
       addStockMovement(owner, {
         stockId: centralItem.id, stockName: centralItem.name, type: 'chiqim',
@@ -7286,7 +6162,6 @@ const server = http.createServer((req, res) => {
       });
       checkLowStockAlert(owner, centralItem, userId, null);
 
-      // Filial skladiga qo'shiladi (nomi+birligi mos kelsa — ustiga, bo'lmasa — yangi yozuv)
       if (!branch.stock) branch.stock = [];
       let branchItem = branch.stock.find(s => s.name.toLowerCase() === centralItem.name.toLowerCase() && s.unit === centralItem.unit);
       if (branchItem) {
@@ -7317,7 +6192,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: taom uchun retsept (ingredientlar) belgilash (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/menu-set-recipe') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7334,10 +6208,7 @@ const server = http.createServer((req, res) => {
       const menuItem = (owner.menu || []).find(m => m.id === menuId);
       if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
       if (!Array.isArray(recipe)) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri retsept formati.' });
-      // 12-bosqich: "to'g'ridan skladdan" turdagi taomga (directStockId
-      // belgilangan) alohida retsept qo'shib bo'lmaydi — ikkalasi bir vaqtda
-      // bo'lishi mumkin emas. Retseptni tozalash (bo'sh massiv yuborish) esa
-      // ruxsat etiladi.
+
       if (menuItem.directStockId && recipe.length) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu taom "to\'g\'ridan skladdan" turida — unga alohida retsept qo\'shib bo\'lmaydi.' });
       }
@@ -7359,7 +6230,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kunlik audit topshirish (rejadagi vs haqiqiy qoldiq, farqlar avtomatik hisoblanadi) ----
   if (req.method === 'POST' && req.url === '/api/audit-submit') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7437,7 +6307,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: audit tarixini olish ----
   if (req.method === 'POST' && req.url === '/api/audit-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7462,54 +6331,30 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ====== F. Moliya (Cashflow) — kirim (buyurtmalar savdosi) / chiqim (xarajatlar), kunlik/haftalik/oylik ======
-  //
-  // TUZATISH: ilgari "bugungi kun" ikki xil, bir-biriga mos kelmaydigan
-  // usul bilan hisoblanardi — ba'zi joylarda serverning MAHALLIY vaqti
-  // (`setHours(0,0,0,0)`), ba'zi joylarda esa (Z-hisobot, dailySeries
-  // grafik kalitlari) UTC sanasi (`iso.slice(0,10)`). Server UTC vaqt
-  // zonasida ishlab turganda bular sonlar jihatidan tasodifan mos tushib
-  // qolardi-yu, ikkalasi ham haqiqiy Toshkent (UTC+5) mahalliy kuniga mos
-  // KELMASDI (kun almashinuvi soat 00:00 emas, ~05:00da bo'lardi) — server
-  // boshqa vaqt zonasida ishga tushirilsa esa ikkalasi bir-biriga zid
-  // natija berishi mumkin edi.
-  //
-  // Endi BUTUN hisob-kitob shu bitta yordamchi to'plam orqali, doim
-  // Toshkent (UTC+5, yil davomida DST'siz) mahalliy kuniga nisbatan
-  // hisoblanadi — natija serverning qaysi vaqt zonasida ishga
-  // tushirilishidan mustaqil bo'ladi, chunki hammasi mutlaq (UTC) lahza
-  // sifatida qaytariladi va shu holda solishtiriladi.
   const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
 
-  // Berilgan payt (Date | ISO-satr) Toshkent taqvimida qaysi kunga to'g'ri
-  // kelishini "YYYY-MM-DD" qilib qaytaradi.
   function tzDateKey(input) {
     const d = (input instanceof Date) ? input : new Date(input);
     return new Date(d.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
   }
 
-  // Berilgan "YYYY-MM-DD" Toshkent sanasining soat 00:00 (mahalliy) lahzasini
-  // mutlaq (UTC) Date sifatida qaytaradi.
   function tzDayStartFromKey(dateKey) {
     return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - TASHKENT_OFFSET_MS);
   }
 
-  // Berilgan paytning Toshkent kuni boshlanish lahzasi.
   function tzDayStart(input) {
     return tzDayStartFromKey(tzDateKey(input));
   }
 
-  // Toshkent haftasining boshlanishi (Dushanba, soat 00:00 mahalliy).
   function tzWeekStart(input) {
     const d = (input instanceof Date) ? input : new Date(input);
     const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
-    const day = shifted.getUTCDay(); // 0=yakshanba,1=dushanba,...
+    const day = shifted.getUTCDay();
     const diffToMonday = (day === 0 ? -6 : 1) - day;
     const mondayKey = new Date(shifted.getTime() + diffToMonday * 86400000).toISOString().slice(0, 10);
     return tzDayStartFromKey(mondayKey);
   }
 
-  // Toshkent oyining boshlanishi (1-kun, soat 00:00 mahalliy).
   function tzMonthStart(input) {
     const d = (input instanceof Date) ? input : new Date(input);
     const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
@@ -7517,8 +6362,6 @@ const server = http.createServer((req, res) => {
     return tzDayStartFromKey(monthKey);
   }
 
-  // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda, buyurtmalar soni va xarajat kategoriyalari bo'yicha taqsimotni hisoblaydi
-  // Kirim ikkiga ajratiladi: kassaIncome (stolga/olib ketish — kassada turgan pul) va dostavkaIncome (dostavka orqali — kuryer qo'lida, kassadan alohida)
   function cashflowBucket(owner, fromDate) {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
@@ -7543,7 +6386,6 @@ const server = http.createServer((req, res) => {
     };
   }
 
-  // Egaga tegishli to'liq cashflow hisobotini shakllantiradi: bugun/hafta/oy + oxirgi 14 kunlik seriya
   function computeCashflow(owner) {
     const now = new Date();
     const todayStart = tzDayStart(now);
@@ -7553,10 +6395,7 @@ const server = http.createServer((req, res) => {
     const orders = owner.orders || [];
     const expenses = owner.expenses || [];
     const dailySeries = [];
-    // 14 kunlik seriya endi serverning mahalliy sana arifmetikasiga umuman
-    // tayanmaydi — har bir kunning Toshkent yarim tuni lahzasi to'g'ridan-to'g'ri
-    // `todayStart`dan aniq 86400000 ms qadamlar bilan hisoblanadi, shu bilan
-    // grafik kalitlari yuqoridagi bugun/hafta/oy chegaralari bilan doim mos keladi.
+
     for (let i = 13; i >= 0; i--) {
       const dayStart = new Date(todayStart.getTime() - i * 86400000);
       const dayEnd = new Date(dayStart.getTime() + 86400000);
@@ -7574,7 +6413,6 @@ const server = http.createServer((req, res) => {
     };
   }
 
-  // ---- API: xarajat (chiqim) qo'shish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/expense-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7613,7 +6451,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: xarajat yozuvini o'chirish (faqat egasi, xato kiritilganda tuzatish uchun) ----
   if (req.method === 'POST' && req.url === '/api/expense-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7636,7 +6473,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: umumiy cashflow — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik hisobot (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/cashflow') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7657,13 +6493,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: KitchenOS bosh sahifa uchun kunlik xulosa (4-bosqich) —
-  // bugungi savdo / sof foyda / buyurtmalar / kuryer yetkazishlari va
-  // shularni kechagi kunga solishtirish uchun kechagi qiymatlar (faqat
-  // egasi). Foizni hisoblash frontend tomonda (7-8-bosqich) qilinadi — bu
-  // yerda faqat xom raqamlar qaytariladi. (6-bosqich: "o'rtacha chek" maydoni
-  // olib tashlandi — Dashboard kartochkasi 3-bosqichda "Kuryer hisoboti"ga
-  // almashtirilgani uchun endi hech qayerda ishlatilmas edi.) ----
   if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7680,12 +6509,8 @@ const server = http.createServer((req, res) => {
       const todayStart = tzDayStart(now);
       const yesterdayStart = new Date(todayStart.getTime() - 86400000);
 
-      // Bugun: mavjud cashflowBucket'dan foydalanamiz (yuqori chegarasiz —
-      // kelajakdagi sanali buyurtma bo'lmagani uchun bu xavfsiz).
       const today = cashflowBucket(owner, todayStart);
 
-      // Kecha: FAQAT kecha kuni (bugungi kunni kiritmaslik uchun ikki
-      // tomonlama chegara kerak) — shu sababli alohida hisoblanadi.
       const yesterdayOrders = (owner.orders || []).filter(o => {
         const d = new Date(o.createdAt);
         return d >= yesterdayStart && d < todayStart;
@@ -7696,11 +6521,6 @@ const server = http.createServer((req, res) => {
         return d >= yesterdayStart && d < todayStart;
       }).reduce((s, e) => s + (e.amount || 0), 0);
 
-      // 3-bosqich: Dashboarddagi "Kuryer hisoboti" KPI kartochkasi uchun —
-      // bugun va kecha KURYER TOMONIDAN YETKAZIB BERILGAN dostavka
-      // buyurtmalari soni. To'liq (har bir kuryer bo'yicha) hisobot allaqachon
-      // /api/courier-report'da bor — bu yerda faqat kartochkaga bitta
-      // umumlashtirilgan son kerak.
       const todayCourierDeliveries = (owner.orders || []).filter(o =>
         o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart).length;
       const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
@@ -7725,13 +6545,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: KitchenOS bosh sahifa uchun buyurtma holat-sonlari (5-bosqich) —
-  // "Bugungi holat" bannerida ko'rsatiladigan Yangi / Tayyorlanmoqda / Tayyor /
-  // Kechikayotgan sonlari (faqat egasi). "Kechikayotgan" alohida saqlangan
-  // status emas — ORDER_DELAY_THRESHOLD_MINUTES'dan hisoblab chiqariladi va
-  // shu daqiqadan o'tib ketgan "yangi"/"tayyorlanmoqda" buyurtmalar
-  // Yangi/Tayyorlanmoqda sonidan chiqarilib, shu yerga qo'shiladi (ikki marta
-  // hisoblanmasligi uchun). ----
   if (req.method === 'POST' && req.url === '/api/order-status-counts') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7757,7 +6570,7 @@ const server = http.createServer((req, res) => {
         const ageMs = now - new Date(o.createdAt);
         if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
         if (o.status === 'tayyorlanmoqda') tayyorlanmoqda += 1;
-        else yangi += 1; // status hali belgilanmagan yoki 'yangi'
+        else yangi += 1;
       }
 
       return sendJSON(res, 200, {
@@ -7769,20 +6582,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: KitchenOS bosh sahifa uchun "Muhim ogohlantirishlar" (6-bosqich,
-  // faqat egasi). Uchta narsa BITTALAB tekshiriladi va faqat DOLZARB
-  // bo'lganlari (count > 0 yoki holat true) ro'yxatga qo'shiladi, shu
-  // sababli natija har doim mockupdagi kabi 0 dan 3 tagacha element:
-  //   1) tugayotgan ombor mahsulotlari — item.qty <= item.minQty (markaziy
-  //      sklad + BARCHA filiallar birga, chunki egasi uchun bittagina umumiy
-  //      ogohlantirish kifoya - qaysi joyda ekanini "Ombor" ekranining o'zi
-  //      ko'rsatadi)
-  //   2) kechikayotgan buyurtmalar — /api/order-status-counts'dagi bilan
-  //      AYNAN BIR XIL hisoblash mantig'i (ORDER_DELAY_THRESHOLD_MINUTES)
-  //   3) bugungi Z-hisobot hali yopilmagan — owner.zReports'da bugungi
-  //      sana (YYYY-MM-DD) uchun yozuv yo'qligi
-  // `screen` maydoni - 13-bosqichda bosilganda qaysi ekranga o'tish
-  // kerakligini bildiradi uchun oldindan qo'shib qo'yildi.
   if (req.method === 'POST' && req.url === '/api/dashboard-alerts') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7797,7 +6596,6 @@ const server = http.createServer((req, res) => {
 
       const alerts = [];
 
-      // 1) Tugayotgan ombor mahsulotlari (markaziy sklad + barcha filiallar)
       const stockPools = [owner, ...(owner.branches || [])];
       let lowStockCount = 0;
       for (const pool of stockPools) {
@@ -7813,7 +6611,6 @@ const server = http.createServer((req, res) => {
         });
       }
 
-      // 2) Kechikayotgan buyurtmalar (bugungi, /api/order-status-counts bilan bir xil mantiq)
       const now = new Date();
       const todayStart = tzDayStart(now);
       const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
@@ -7830,11 +6627,6 @@ const server = http.createServer((req, res) => {
         });
       }
 
-      // 3) Bugungi Z-hisobot (kunlik yakuniy hisobot) hali yopilmaganmi.
-      // TUZATISH: ilgari bu yerda `now.toISOString().slice(0,10)` (UTC sana)
-      // ishlatilardi — yuqoridagi "bugun" (todayStart, endi tzDayStart orqali)
-      // bilan bir xil funksiya ichida ikki xil kun tushunchasi aralashib
-      // ketardi. Endi ikkalasi ham bir xil tzDateKey manbaidan keladi.
       const todayDateKey = tzDateKey(now);
       const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey);
       if (!dailyReportClosed) {
@@ -7849,7 +6641,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Davr nomidan (bugun/hafta/oy/hammasi) boshlanish sanasini qaytaradi — cashflow va kuryerlar hisoboti uchun umumiy
   function resolvePeriodStart(period) {
     const now = new Date();
     if (period === 'week') return tzWeekStart(now);
@@ -7858,7 +6649,6 @@ const server = http.createServer((req, res) => {
     return tzDayStart(now);
   }
 
-  // ---- API: filiallar kesimida solishtiruv hisobot — qaysi filial ko'proq sotmoqda (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/branch-report') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7898,7 +6688,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/courier-report') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7924,8 +6713,7 @@ const server = http.createServer((req, res) => {
       const report = couriers.map(c => {
         const mine = deliveredOrders.filter(o => String(o.deliveredBy) === String(c.id));
         const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
-        // Kuryerning qo'lida hali topshirilmagan naqd/dostavka orqali pul —
-        // egasi "Pulni oldim" tugmasini bosmaguncha shu summa daromadga qo'shilmaydi.
+
         const pendingAmount = mine
           .filter(o => o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false)
           .reduce((sum, o) => sum + (o.total || 0), 0);
@@ -7949,7 +6737,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryerlar komissiya foizini o'zgartirish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/set-courier-commission') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -7975,13 +6762,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: kuryerdan naqd pulni "oldim" deb belgilash (faqat egasi) ----
-  // Kuryer "dostavka orqali" to'lovda mijozdan naqd pulni o'zi qo'lida
-  // ushlab turadi. Egasi shu pulni jismonan kuryerdan olganda shu API
-  // chaqiriladi — shundan keyingina bu buyurtmalar summasi daromad
-  // hisobotlariga (Z-hisobot, cashflow, filiallar hisoboti) qo'shiladi.
-  // Karta orqali to'langan buyurtmalarga bu umuman tegishli emas — ular
-  // har doim darhol daromadga qo'shilgan bo'ladi.
   if (req.method === 'POST' && req.url === '/api/courier-collect-cash') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8011,8 +6791,6 @@ const server = http.createServer((req, res) => {
         }
       }
 
-      // Har bir "kassaga qaytarish" amalini alohida jurnalga yozib boramiz —
-      // kim, qachon, qaysi kuryerdan, qancha pul qaytarganini keyin ko'rish uchun.
       if (count > 0) {
         if (!Array.isArray(owner.cashMovements)) owner.cashMovements = [];
         const courierStaff = (owner.staff || []).find(s => String(s.id) === String(courierId));
@@ -8026,7 +6804,7 @@ const server = http.createServer((req, res) => {
           confirmedBy: userId,
           createdAt: new Date().toISOString()
         });
-        // Jurnal cheksiz o'smasligi uchun oxirgi 200 tasini saqlaymiz
+
         if (owner.cashMovements.length > 200) owner.cashMovements.length = 200;
       }
 
@@ -8037,15 +6815,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: "Karta orqali to'lov"ga cheklangan mijozlar ro'yxati (faqat egasi) ----
-  // Ketma-ket bir necha marta dostavkani bekor qildirgan mijozlarga tizim
-  // avtomatik ravishda "naqd/dostavka orqali" to'lovni yopib qo'yadi (qarang:
-  // customerIsCardOnlyRestricted()). Bu ekran egasiga: (1) kimlar shu holatda
-  // ekanini, (2) har birining oxirgi bekor qilingan buyurtmalari va sababini
-  // ko'rsatadi — chunki bekor qilish har doim ham mijozning aybi bo'lmasligi
-  // mumkin (masalan, kuryer o'zi yetkaza olmagan holatlar ham shu ro'yxatga
-  // tushadi), shu sababli egasi holatni ko'rib chiqib, kerak bo'lsa cheklovni
-  // qo'lda olib tashlashi mumkin (/api/toggle-customer-restriction).
   if (req.method === 'POST' && req.url === '/api/restricted-customers') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8083,10 +6852,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijozlar qoldirgan reyting va sharhlar ro'yxati (65-bosqich) ----
-  // Egasi o'zining ekranidan (targetOwnerId'siz) yoki admin istalgan do'kon
-  // uchun (targetOwnerId bilan) chaqiradi — ikkalasi ham bir xil ma'lumotni
-  // ko'radi, chunki "izoh admin va ownerlarga ko'rinsin" talabiga ko'ra.
   if (req.method === 'POST' && req.url === '/api/owner-reviews') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8122,7 +6887,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi mijozning "Faqat karta" cheklovini qo'lda olib tashlaydi/qaytaradi ----
   if (req.method === 'POST' && req.url === '/api/toggle-customer-restriction') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8154,7 +6918,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ====== Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda, to'lov turlari bo'yicha ======
   function buildZReport(owner, dateKey) {
     const dayStart = tzDayStartFromKey(dateKey);
     const dayEnd = new Date(dayStart.getTime() + 86400000);
@@ -8196,7 +6959,6 @@ const server = http.createServer((req, res) => {
     };
   }
 
-  // ---- API: bugungi kunlik Z-hisobotni yaratish/yopish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/z-report-create') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8221,7 +6983,7 @@ const server = http.createServer((req, res) => {
       }, built);
 
       if (existing) {
-        Object.assign(existing, report); // shu kun uchun qayta yopilsa — yangilanadi
+        Object.assign(existing, report);
       } else {
         owner.zReports.unshift(report);
       }
@@ -8233,7 +6995,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: saqlangan Z-hisobotlar tarixini olish (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/z-report-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8251,10 +7012,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ====== H. AI analitika (32-34-bosqich): top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ======
   const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
 
-  // Eng ko'p sotilgan taomlar — miqdor va tushum bo'yicha (berilgan sanadan buyon)
   function computeTopItems(owner, fromDate, limit) {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const byId = new Map();
@@ -8269,7 +7028,6 @@ const server = http.createServer((req, res) => {
     return Array.from(byId.values()).sort((a, b) => b.qty - a.qty).slice(0, limit || 5);
   }
 
-  // Soatlik pik vaqtlar (0-23) va haftalik pik kunlar (0=Yakshanba..6=Shanba) — buyurtmalar soni bo'yicha
   function computePeakTimes(owner, fromDate) {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const byHour = new Array(24).fill(0);
@@ -8284,7 +7042,6 @@ const server = http.createServer((req, res) => {
     return { byHour, byDay, topHours: hours.filter(h => h.count > 0).slice(0, 3), topDays: days.filter(d => d.count > 0).slice(0, 3) };
   }
 
-  // Ertangi kun uchun taxminiy sklad ehtiyoji — oxirgi 7 kunlik "chiqim" (buyurtma orqali sarflangan) harakatlar o'rtachasi asosida
   function computeStockForecast(owner, branchId) {
     const pool = resolveStockPool(owner, branchId || null);
     if (!pool) return [];
@@ -8299,11 +7056,10 @@ const server = http.createServer((req, res) => {
     const forecast = [];
     for (const item of (pool.stock || [])) {
       const used7d = usageById.get(item.id) || 0;
-      if (used7d <= 0) continue; // ishlatilmagan mahsulot uchun prognoz chiqarmaymiz
+      if (used7d <= 0) continue;
       const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
       const predictedNeed = Math.round(avgDaily * 1000) / 1000;
-      // 26-bosqich: "necha kunda tugaydi" — joriy qoldiq / kunlik o'rtacha sarf.
-      // 27-bosqich: daysLeft <= 3 bo'lgan mahsulotlar "tez tugaydigan" deb belgilanadi.
+
       const daysLeft = avgDaily > 0 ? Math.round((item.qty / avgDaily) * 10) / 10 : null;
       forecast.push({
         stockId: item.id, name: item.name, unit: item.unit,
@@ -8320,7 +7076,6 @@ const server = http.createServer((req, res) => {
     return forecast;
   }
 
-  // Anthropic (Claude) API orqali erkin savolga javob — faqat ANTHROPIC_API_KEY sozlangan bo'lsa ishlaydi
   function callAnthropicApi(systemPrompt, userText) {
     return new Promise((resolve, reject) => {
       if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY sozlanmagan'));
@@ -8359,7 +7114,6 @@ const server = http.createServer((req, res) => {
     });
   }
 
-  // AI kaliti sozlanmagan (yoki xato bergan) holatda ishlaydigan, tayyor qoidalar asosidagi javob generatori
   function ruleBasedAiAnswer(question, ctx) {
     const q = String(question || '').toLowerCase();
 
@@ -8389,12 +7143,10 @@ const server = http.createServer((req, res) => {
       return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
     }
 
-    // Umumiy so'rovlarga qisqa umumiy hisobot bilan javob beramiz
     const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
     return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${fmtNum(ctx.cashflow.today.net)} so'm, shu hafta ${fmtNum(ctx.cashflow.week.net)} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
   }
 
-  // ---- API: AI analitika — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/ai-analytics') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8427,8 +7179,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI Direktor - hozirgi holatga qarab hisobotni OLDINDAN KO'RISH
-  // (Mini App'da matn sifatida ko'rsatish uchun, Telegram'ga yubormasdan) ----
   if (req.method === 'POST' && req.url === '/api/ai-director-preview') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8452,7 +7202,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI Direktor hisobotini HOZIR (Telegram'ga) yuborish ----
   if (req.method === 'POST' && req.url === '/api/ai-director-send-now') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8473,8 +7222,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI Direktorning har tongi (soat 08:00, Toshkent) avtomatik
-  // xabarini yoqish/o'chirish ----
   if (req.method === 'POST' && req.url === '/api/ai-director-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8495,7 +7242,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI Direktor HAFTALIK hisobotini OLDINDAN KO'RISH (30-bosqich) ----
   if (req.method === 'POST' && req.url === '/api/ai-director-weekly-preview') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8520,7 +7266,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI Direktor HAFTALIK hisobotini HOZIR (Telegram'ga) yuborish ----
   if (req.method === 'POST' && req.url === '/api/ai-director-weekly-send-now') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8541,9 +7286,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI Direktorning haftalik (Dushanba, soat 08:00 Toshkent)
-  // avtomatik xabarini yoqish/o'chirish — kunlik bayrog'idan (aiDirectorEnabled)
-  // MUSTAQIL, owner ikkalasini alohida yoqib/o'chira oladi ----
   if (req.method === 'POST' && req.url === '/api/ai-director-weekly-toggle') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8564,7 +7306,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: AI orqali erkin savolga qisqa javob (faqat egasi). ANTHROPIC_API_KEY bo'lmasa — qoidaviy javob beradi ----
   if (req.method === 'POST' && req.url === '/api/ai-ask') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8608,7 +7349,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: xodimning amallar jurnali — kim, qachon, nima qildi (faqat egasi, so'nggi yozuvlar) ----
   if (req.method === 'POST' && req.url === '/api/staff-activity-log') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8640,10 +7380,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 17-bosqich — Telegramga yuborilmagan bildirishnomalar jurnali
-  // (masalan: xodim botga /start bosmagan yoki uni block qilgan) — faqat
-  // egasi ko'radi. owner.notificationErrors notifyStaffList() tomonidan
-  // to'ldiriladi (qarang: sendMessage/notifyStaffList yuqorida). ----
   if (req.method === 'POST' && req.url === '/api/notification-error-log') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8662,7 +7398,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bildirishnoma xatolari jurnalini tozalash (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/notification-error-log-clear') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8683,13 +7418,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== 59-BOSQICH: Egasi uchun push-bildirishnoma sozlamalari ====================
-  // Egasi qaysi toifadagi xabarlarni shaxsiy chatida olishni xohlashini
-  // o'zi belgilaydi (masalan do'kon juda gavjum bo'lsa, har bir yangi
-  // buyurtma haqida alohida xabar kelaverishi charchatishi mumkin — kassir
-  // panelida buyurtmalar ro'yxati baribir real-vaqtda yangilanib turadi).
-  // MUHIM: bu — oddiy shaxsiy sozlama, hech qanday tarifga bog'liq emas
-  // (barcha egalar uchun ochiq, xuddi profil ma'lumotlari kabi).
   if (req.method === 'POST' && req.url === '/api/notification-prefs-get') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8741,10 +7469,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Do'kon egasi mijozlardan "karta" to'lovini qabul qilish uchun o'z karta
-  // raqamini ko'radi/tahrirlaydi (qarang: customerPaymentCard,
-  // ensureSubscriptionFields). Bu — platforma egasining OBUNA kartasidan
-  // (admin-payment-requisites-*) butunlay boshqa, alohida narsa.
   if (req.method === 'POST' && req.url === '/api/owner-payment-card-get') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8782,7 +7506,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: 30 kunlik (yoki tanlangan davr) xodimlar faoliyati hisoboti + reyting (faqat egasi) ----
   if (req.method === 'POST' && req.url === '/api/staff-performance-report') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8824,7 +7547,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: do'kon egasining o'z profilini olish ----
   if (req.method === 'POST' && req.url === '/api/my-profile') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8838,9 +7560,6 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
 
-      // 58-bosqich: do'kon egasi o'z profilida joriy tarifini ko'rishi uchun
-      // tariff nomi ham shu javobga qo'shiladi (tariffId bo'lmasa yoki
-      // o'chirilgan bo'lsa — null).
       let tariffInfo = null;
       if (owner.tariffId) {
         const tariff = loadTariffs().find(t => t.id === owner.tariffId);
@@ -8852,7 +7571,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: do'kon egasi o'z profilini to'ldiradi/yangilaydi ----
   if (req.method === 'POST' && req.url === '/api/save-profile') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8886,13 +7604,6 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #E4232A).' });
       }
 
-      // 19-bosqich: 'restaurant-brand' faqat logo/brend rangini o'zgartirishni
-      // cheklaydi — nom/manzil/telefon/ish vaqti asosiy profil ma'lumoti bo'lgani
-      // uchun tarifdan qat'i nazar har doim saqlanadi. Owner logo/rangni
-      // o'zgartirmoqchi bo'lganda (mavjud qiymatdan farqli yangi qiymat
-      // yuborsa) va tarifda bu funksiya yopiq bo'lsa — bloklanadi; oldingi
-      // qiymatni o'zgartirmasdan qayta yuborish (masalan forma qayta
-      // saqlanganda) esa xatoga olib kelmaydi.
       if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
         const existingLogo = (owner.profile && owner.profile.logoUrl) || '';
         const existingBrandColor = (owner.profile && owner.profile.brandColor) || '';
@@ -8921,19 +7632,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: do'kon egalari ro'yxatini olish (faqat admin) ----
-  // MUHIM: passwordHash/sessionToken kabi maxfiy maydonlar frontendga hech qachon
-  // yuborilmaydi — faqat login mavjudligini bildiruvchi hasLogin bayrog'i qaytariladi.
-  // ==================== F. Obuna (tarif) tizimi (51-70-bosqich) ====================
-  // 51-bosqich: admin tariflar sonini va nomini o'zi belgilaydi — tariflar
-  // umumiy katalog sifatida (tariffs.json) saqlanadi, keyingi bosqichlarda
-  // (52-narx va 53-54-funksiyalar bosqichlari bajarildi; 57-do'kon
-  // egasiga biriktirish) shu
-  // yozuvlar kengaytiriladi.
-
-  // ---- API: tizimdagi barcha funksiyalar ro'yxati (faqat admin, 53-bosqich) ----
-  // 54-bosqichda shu ro'yxat asosida "Funksiya × Tarif" jadvali chiziladi;
-  // hozircha faqat guruhlangan katalogni qaytaradi.
   if (req.method === 'POST' && req.url === '/api/feature-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8947,8 +7645,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: to'lov rekvizitlarini olish (faqat admin) — "💳 Obuna"
-  // bo'limida egaga ko'rsatiladigan karta/Click/Payme ma'lumotlari. ----
   if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-get') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8962,7 +7658,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: to'lov rekvizitlarini tahrirlash (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-set') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8984,7 +7679,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tariflar ro'yxati (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/tariff-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -8993,9 +7687,6 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
       if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
 
-      // 68-bosqich: tarif bo'yicha statistika — har bir tarifda nechta
-      // do'kon egasi borligini ham shu yerda hisoblab qo'shamiz, frontend
-      // qayta so'rov yubormasligi uchun.
       const owners = loadOwners();
       const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0))
         .map(t => ({ ...t, ownerCount: owners.filter(o => o.tariffId === t.id).length }));
@@ -9004,7 +7695,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yangi tarif qo'shish (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/tariff-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9032,9 +7722,7 @@ const server = http.createServer((req, res) => {
         name: nameTrim,
         order: tariffs.length,
         price: priceVal,
-        // 65-bosqich: muddat tugashiga necha kun qolganda eslatma yuborilishi —
-        // har bir tarif o'zining qiymatini belgilashi mumkin (standart: 1 kun,
-        // eski, tarif tizimidan oldingi umumiy xulq bilan bir xil).
+
         reminderDays: 1,
         features: {},
         createdAt: new Date().toISOString()
@@ -9047,9 +7735,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tarif nomi va narxini o'zgartirish (faqat admin) ----
-  // 52-bosqich: narx ham shu endpoint orqali yangilanadi — name har doim
-  // yuboriladi, price ixtiyoriy (yuborilmasa eski narx saqlanib qoladi).
   if (req.method === 'POST' && req.url === '/api/tariff-rename') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9073,8 +7758,7 @@ const server = http.createServer((req, res) => {
         if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
         tariff.price = priceVal;
       }
-      // 65-bosqich: shu tarifdagi egalar uchun muddat tugashi eslatmasi
-      // necha kun oldin yuborilishi (checkOwnerExpirations() shundan foydalanadi).
+
       if (reminderDays !== undefined && reminderDays !== null && String(reminderDays).trim() !== '') {
         const reminderVal = parseInt(reminderDays, 10);
         if (!Number.isInteger(reminderVal) || reminderVal <= 0) {
@@ -9090,11 +7774,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tarifni o'chirish (faqat admin, 55-bosqich) ----
-  // Agar tarif biror do'kon egasiga biriktirilgan bo'lsa (owner.tariffId),
-  // oddiy so'rovda o'chirishga yo'l qo'yilmaydi — admin avval buni bilishi
-  // kerak. force:true yuborilsa, biriktirilgan egalar tarifsiz (tariffId:null)
-  // qoldiriladi va tarif shunday ham o'chiriladi.
   if (req.method === 'POST' && req.url === '/api/tariff-remove') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9123,7 +7802,7 @@ const server = http.createServer((req, res) => {
       }
 
       tariffs.splice(idx, 1);
-      // Qolgan tariflarning order'ini qayta tekislaydi (ro'yxatda bo'shliq qolmasin)
+
       tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
       saveTariffs(tariffs);
 
@@ -9132,11 +7811,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tarifga funksiyalarni ✅/❌ belgilash (faqat admin, 54-bosqich) ----
-  // features — { featureId: true|false } ko'rinishidagi to'liq xarita;
-  // faqat FEATURE_CATALOG'da mavjud id'lar qabul qilinadi, qolgani e'tiborsiz
-  // qoldiriladi. Yuborilgan xarita tarifning eski features'ini TO'LIQ
-  // almashtiradi (checkbox'lar UI'da hammasi birga saqlanadi).
   if (req.method === 'POST' && req.url === '/api/tariff-set-features') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9165,17 +7839,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // =========================================================================
-  // ---- API: "Obuna rejalari" (G-bo'lim, subscription_plans.json) — admin
-  // panelidan owner "💳 Obuna" bo'limida ko'radigan muddat/narx rejalarini
-  // to'liq boshqarish (qo'shish/tahrirlash/o'chirish). Ilgari bu rejalar
-  // FAQAT kod ichidagi DEFAULT_SUBSCRIPTION_PLANS orqali qat'iy belgilangan
-  // edi (admin hech narsani o'zgartira olmasdi) — endi tariffs.json'dagi
-  // kabi to'liq CRUD orqali boshqariladi. Har bir rejaga ixtiyoriy ravishda
-  // F-bo'lim tarifi (tariffId) ham biriktirilishi mumkin — owner shu rejani
-  // tanlab to'lasa, admin tasdiqlaganda muddat bilan birga tarifi ham shu
-  // tarifga o'zgaradi (qarang: decideSubscriptionPayment).
-  // =========================================================================
   if (req.method === 'POST' && req.url === '/api/subscription-plan-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9304,9 +7967,7 @@ const server = http.createServer((req, res) => {
 
       const plans = loadSubscriptionPlans();
       if (!plans[id]) return sendJSON(res, 200, { ok: false, reason: 'Reja topilmadi.' });
-      // Eslatma: bu rejani ilgari tanlagan so'rovlar (subscriptionPaymentRequest)
-      // o'zining planLabel/amount/days "suratini" saqlaydi, shuning uchun
-      // reja shu yerdan o'chirilsa ham eski so'rovlar buzilmaydi.
+
       delete plans[id];
       Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((p, i) => { p.order = i; });
       saveSubscriptionPlans(plans);
@@ -9316,9 +7977,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Serverning umumiy holatini (ishlash vaqti, xotira, xodimlar/buyurtmalar
-  // soni, ma'lumot fayllari hajmi, webhook statistikasi) bitta so'rovda
-  // qaytaradi — faqat admin ko'ra oladi.
   if (req.method === 'POST' && req.url === '/api/system-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9393,28 +8051,20 @@ const server = http.createServer((req, res) => {
         delete clean.sessionToken;
         delete clean.sessionExpiresAt;
         clean.hasLogin = !!(o.login && o.passwordHash);
-        // 65-bosqich: mijozlar qo'ygan reytingi — do'konlar shu bo'yicha
-        // ro'yxatda tepaga ko'tariladi (pastda saralash qarang).
+
         const rating = ownerAverageRating(o);
         clean.avgRating = rating.avg;
         clean.ratingCount = rating.count;
         return clean;
       });
-      // Reytingi yuqori do'konlar ro'yxat boshida ko'rinadi. Hali baholanmagan
-      // (avgRating === null) do'konlar — reytingga qarab pastga tushmasin
-      // uchun emas, balki hali ma'lumot yo'qligi uchun — ro'yxat oxirida,
-      // lekin o'zaro nisbiy tartibini (masalan, ro'yxatga qo'shilgan vaqti)
-      // saqlagan holda qoladi.
+
       owners.sort((a, b) => {
         if (a.avgRating === null && b.avgRating === null) return 0;
         if (a.avgRating === null) return 1;
         if (b.avgRating === null) return -1;
         return b.avgRating - a.avgRating;
       });
-      // 67-bosqich: umumiy daromad — payments.json (to'liq tarix) asosida,
-      // joriy owners.json holatining oddiy yig'indisi emas. Shu bilan owner
-      // o'chirilgan/tarifi o'zgargan taqdirda ham o'tmishdagi to'lovlar
-      // hisobdan tushib qolmaydi (69-bosqich talabiga mos).
+
       const payments = loadPayments();
       const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
       const revenue = {
@@ -9427,10 +8077,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: do'kon egasiga tarif biriktirish (faqat admin, 57-bosqich) ----
-  // tariffId — tariffs.json'dagi bitta yozuvning id'si, yoki null/bo'sh —
-  // egani tarifsiz qoldirish uchun (masalan tarif o'chirilganda ham shu
-  // holatga tushadi, qarang: /api/tariff-remove).
   if (req.method === 'POST' && req.url === '/api/owner-set-tariff') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9460,30 +8106,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  // ====== 63/64-bosqich + 76-bosqich tuzatishi: obuna muddatini uzaytirish/qisqartirish/bekor qilish ======
-  // action:
-  //  - 'extend'    : joriy muddatga (yoki u tugagan/yo'q bo'lsa hozirgi vaqtga)
-  //                  `days` kun qo'shadi.
-  //  - 'setDate'   : `date` (YYYY-MM-DD) ga aniq belgilaydi — kelajakdagi sana
-  //                  uzaytirish, o'tmishdagi/bugungi sana esa DARHOL BLOKLASH
-  //                  bilan bir xil (pastga qarang).
-  //  - 'unlimited' : muddatni tozalaydi (doimiy ruxsat).
-  //  - 'cancelNow' : obunani darhol bloklaydi.
-  //
-  // 76-BOSQICH TUZATISHI: ilgari 'setDate' (o'tmish sana) va 'cancelNow'
-  // ownerni owners.json'dan BUTUNLAY O'CHIRIB YUBORARDI (checkOwnerExpirations()
-  // bilan bir xil xato). Endi ikkalasi ham FAQAT bloklaydi (subscriptionStatus:
-  // 'blocked') — menyu, xodimlar, buyurtmalar tarixi saqlanib qoladi, admin
-  // istalgan vaqt qayta uzaytirishi mumkin. Ownerni HAQIQATAN butunlay
-  // o'chirish kerak bo'lsa, buning uchun alohida /api/remove-owner mavjud
-  // (u ataylab, admin ongli ravishda "ro'yxatdan chiqarish"ni tanlaganda
-  // ishlatiladi — bu yerdagi kabi obuna muddati sabab emas).
-  //
-  // Barcha amallarda ham subscriptionUntil (yangi sxema) VA expiresAt (eski,
-  // frontend hali shuni o'qiydigan bo'lishi mumkin — moslik uchun) birga
-  // yangilanadi. owner.reminderSentAt/blockedNotifiedAt ham tozalanadi —
-  // muddat o'zgargach, eslatma/bloklanish xabari yangi holatga nisbatan
-  // to'g'ri vaqtda qayta hisoblansin uchun.
+
   if (req.method === 'POST' && req.url === '/api/owner-set-expiry') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9521,8 +8144,7 @@ const server = http.createServer((req, res) => {
         if (!date || isNaN(d.getTime())) {
           return sendJSON(res, 200, { ok: false, reason: 'Sana noto\'g\'ri.' });
         }
-        // Kun boshidan emas, kun oxiridan (23:59:59) hisoblanadi — admin
-        // "shu kungacha" deb tanlagan kun to'liq amal qilishi uchun.
+
         d.setHours(23, 59, 59, 999);
         if (d.getTime() <= Date.now()) {
           owner.subscriptionUntil = d.toISOString();
@@ -9577,8 +8199,7 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  // Shu login/parol bilan owner Mini App'ni Telegram tashqarisida (brauzerdan)
-  // ham ochib, o'z panelига kira oladi (qarang: pastdagi /api/owner-login).
+
   if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9608,7 +8229,7 @@ const server = http.createServer((req, res) => {
 
       owner.login = loginNorm;
       owner.passwordHash = hashPassword(passwordStr);
-      // Parol yangilansa, oldingi barcha sessiyalar bekor qilinadi (xavfsizlik uchun)
+
       owner.sessionToken = null;
       owner.sessionExpiresAt = null;
       saveOwners(owners);
@@ -9618,7 +8239,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: admin do'kon egasidan login/parolni olib tashlaydi (Telegram orqali kirish ishlayveradi) ----
   if (req.method === 'POST' && req.url === '/api/remove-owner-credentials') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9644,10 +8264,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: Telegram orqali kirgan egasi uchun bir martalik parol tasdig'i ----
-  // (Telegram initData o'zi kimligini tasdiqlaydi, lekin admin login/parol
-  // o'rnatib qo'ygan bo'lsa, qurilmada eslab qolinmaguncha parol so'raladi —
-  // qarang: frontend'dagi renderOwnerTelegramPasswordGate.)
   if (req.method === 'POST' && req.url === '/api/owner-confirm-password') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9661,7 +8277,7 @@ const server = http.createServer((req, res) => {
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
 
       if (!owner.login || !owner.passwordHash) {
-        // Admin bu egasiga login/parol o'rnatmagan — tekshirishning hojati yo'q
+
         return sendJSON(res, 200, { ok: true, skipped: true });
       }
       if (!verifyPassword(password, owner.passwordHash)) {
@@ -9672,12 +8288,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi (admin emas, o'zi) o'z parolini o'zgartiradi ----
-  // Login o'zgarmaydi — faqat parol. Joriy parol tasdiqlanadi, so'ng
-  // /api/set-owner-credentials'dagi bilan bir xil uzunlik validatsiyasi
-  // qo'llaniladi. Xavfsizlik uchun barcha eski sessiyalar (sess_ tokenlar)
-  // bekor qilinadi — shu qatordagi so'rov o'zi ham sess_ token orqali kirgan
-  // bo'lsa, keyingi so'rovlar uchun qayta login qilishi kerak bo'ladi.
   if (req.method === 'POST' && req.url === '/api/owner-change-password') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9697,7 +8307,6 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
       }
 
-      // set-owner-credentials'dagi bilan bir xil parol validatsiyasi
       const newPasswordStr = String(newPassword || '');
       if (newPasswordStr.length < 6) {
         return sendJSON(res, 200, { ok: false, reason: 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.' });
@@ -9708,7 +8317,7 @@ const server = http.createServer((req, res) => {
       if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
 
       target.passwordHash = hashPassword(newPasswordStr);
-      // Parol o'zgarganda, oldingi barcha sessiyalar bekor qilinadi (xavfsizlik uchun)
+
       target.sessionToken = null;
       target.sessionExpiresAt = null;
       saveOwners(owners2);
@@ -9718,10 +8327,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: egasi (admin emas, o'zi) login+parolini butunlay o'chiradi ----
-  // Shundan keyin faqat Telegram orqali kirish qoladi (xuddi admin
-  // /api/remove-owner-credentials orqali o'chirganidagi kabi natija),
-  // lekin bu yerda amalni egasining o'zi, joriy parolini tasdiqlab bajaradi.
   if (req.method === 'POST' && req.url === '/api/owner-remove-password') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9735,7 +8340,7 @@ const server = http.createServer((req, res) => {
       if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
 
       if (!owner.login || !owner.passwordHash) {
-        // Login/parol allaqachon yo'q — o'chiradigan narsa yo'q
+
         return sendJSON(res, 200, { ok: true, alreadyRemoved: true });
       }
       if (!verifyPassword(currentPassword, owner.passwordHash)) {
@@ -9757,8 +8362,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: oshxona egasi login+parol bilan kiradi (Telegram tashqarisidan, masalan oddiy brauzerdan) ----
-  // Muvaffaqiyatli bo'lsa "sess_<token>" beriladi — frontend buni initData o'rniga ishlatadi.
   if (req.method === 'POST' && req.url === '/api/owner-login') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9793,7 +8396,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: oshxona egasi chiqadi (joriy sessiyani bekor qiladi) ----
   if (req.method === 'POST' && req.url === '/api/owner-logout') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9813,7 +8415,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yangi do'kon egasini qo'shish (faqat admin, tasdiqdan keyin frontend chaqiradi) ----
   if (req.method === 'POST' && req.url === '/api/add-owner') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9836,7 +8437,6 @@ const server = http.createServer((req, res) => {
         expiresAt = new Date(Date.now() + n * 86400000).toISOString();
       }
 
-      // Obuna narxi — ixtiyoriy, kiritilmasa 0 deb saqlanadi
       let priceVal = 0;
       if (price !== undefined && price !== null && price !== '') {
         const p = Number(price);
@@ -9862,10 +8462,7 @@ const server = http.createServer((req, res) => {
         price: priceVal,
         paid: !!paid,
         paidAt: paid ? new Date().toISOString() : null,
-        // 71-bosqich: admin qo'lda qo'shgan owner ham darhol yangi obuna
-        // sxemasiga mos keladi — expiresAt bilan sinxron holda 'active'
-        // sifatida boshlanadi (o'zi ro'yxatdan o'tgan pending_trial holati
-        // 10-bosqichda qo'shiladi, bu yerga tegishli emas).
+
         subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
         subscriptionUntil: expiresAt,
         graceUntil: null,
@@ -9880,7 +8477,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: do'kon egasining obuna narxi / to'lov holatini yangilash (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/update-owner-billing') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9913,10 +8509,7 @@ const server = http.createServer((req, res) => {
       }
 
       saveOwners(owners);
-      // Faqat "to'lanmagan" -> "to'langan" haqiqiy o'tishida ledger'ga
-      // yozamiz (narx shu paytdagi owner.price bo'yicha — yuqorida
-      // yangilangan bo'lishi mumkin) — paid:true qayta yuborilsa qayta
-      // yozilmaydi.
+
       if (justPaid) {
         recordPayment(owner, owner.price);
       }
@@ -9925,7 +8518,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: do'kon egasini ro'yxatdan o'chirish (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/remove-owner') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9940,8 +8532,7 @@ const server = http.createServer((req, res) => {
       let owners = loadOwners();
       const before = owners.length;
       const target = findOwner(owners, id);
-      // 16-bosqich: endi butunlay o'chirilmaydi — TO'LIQ holicha "Savatcha"ga
-      // ko'chiriladi (3 kun ichida tiklash mumkin, qarang: moveOwnerToTrash).
+
       if (target) moveOwnerToTrash(target, userId);
       owners = owners.filter(o => String(o.id) !== String(id));
       saveOwners(owners);
@@ -9951,8 +8542,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== C-bo'lim (16-22-bosqich): Savatcha API'lari ====================
-  // ---- API: Savatchadagi barcha yozuvlar ro'yxati (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/trash-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9978,9 +8567,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: Savatchadan to'g'ridan-to'g'ri tiklash (faqat admin, owner
-  // so'rovini kutmasdan ham qila oladi — 21-bosqich: baribir FAQAT admin
-  // orqali amalga oshadi). ----
   if (req.method === 'POST' && req.url === '/api/trash-restore') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10009,8 +8595,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: Savatchadan muddatidan oldin, qo'lda butunlay o'chirish
-  // (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/trash-purge-now') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10034,7 +8618,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: Savatcha bilan bog'liq loglar (faqat admin, 22-bosqich) ----
   if (req.method === 'POST' && req.url === '/api/trash-log') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10049,8 +8632,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== 52-54-BOSQICH: DB zaxira (backup) ====================
-  // ---- API: butun bazani bitta JSON faylga jamlab yuklab olish (52-bosqich, faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/backup-export') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10070,9 +8651,6 @@ const server = http.createServer((req, res) => {
       const json = JSON.stringify(snapshot, null, 2);
       const filename = `zaxira_${new Date().toISOString().slice(0, 10)}.json`;
 
-      // Xavfsizlik: kim, qachon zaxira yuklab olganini BARCHA adminlarga
-      // (shu jumladan boshqa qurilmadagi adminlarga ham) xabar qilamiz —
-      // shu orqali ruxsatsiz/kutilmagan yuklab olishlar darhol ko'rinadi.
       const adminName = (check.user && (check.user.first_name || check.user.username)) || userId;
       const totalRecords = Object.values(snapshot.counts).reduce((a, b) => a + b, 0);
       allAdminIds().forEach(aid => {
@@ -10091,8 +8669,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yuklangan zaxira faylini TEKSHIRISH va xulosa qaytarish
-  // (hali hech narsa o'zgartirilmaydi — 54-bosqich, 1-qadam: ko'rib chiqish) ----
   if (req.method === 'POST' && req.url === '/api/backup-import-preview') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10122,8 +8698,6 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Faylda tanish bo\'limlar topilmadi.' });
       }
 
-      // Tasdiqlash tokeni — 10 daqiqa amal qiladi, faqat shu admin va shu
-      // aniq fayl mazmuni uchun (contentHash mos kelmasa confirm rad etiladi).
       const contentHash = crypto.createHash('sha256').update(rawContent).digest('hex');
       const token = crypto.randomBytes(16).toString('hex');
       pendingBackupRestores.set(token, { adminId: userId, contentHash, createdAt: Date.now(), snapshot });
@@ -10140,11 +8714,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: tiklashni YAKUNIY tasdiqlash va bazoni almashtirish
-  // (54-bosqich, 2-qadam). Ikkita himoya qatlami talab qilinadi:
-  // (1) oldingi preview'dan olingan confirmToken (10 daqiqa muddatli,
-  //     faylning aniq mazmuniga bog'langan), (2) admin qo'lda kiritgan
-  // "TASDIQLAYMAN" so'zi — tasodifan bosilib ketmasligi uchun. ----
   if (req.method === 'POST' && req.url === '/api/backup-import-confirm') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10178,7 +8747,7 @@ const server = http.createServer((req, res) => {
       let safetyFile = null;
       let applied = [];
       try {
-        safetyFile = savePreRestoreSafetySnapshot(userId); // tiklashdan oldingi holatni saqlab qo'yamiz
+        safetyFile = savePreRestoreSafetySnapshot(userId);
         applied = applyBackupSnapshot(pending.snapshot);
       } catch (e) {
         console.error('backup-import-confirm xatolik:', e.message);
@@ -10196,7 +8765,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: bir martalik taklif havolasi yaratish (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/create-invite') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10216,12 +8784,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== 82-BOSQICH: Egasi obuna sotib olish (Mini App) ====================
-  // ---- API: "💳 Obuna" ekrani ochilganda kerak bo'ladigan barcha ma'lumot
-  // (joriy holat, to'lov rekvizitlari, tariflar ro'yxati, kutilayotgan so'rov).
-  // MUHIM: bu endpoint ATAYLAB resolveOwnerContext/isOwnerAccessValid orqali
-  // EMAS, to'g'ridan-to'g'ri findOwner() orqali ishlaydi - aks holda aynan
-  // OBUNASI BLOKLANGAN (shu ekranga eng ko'p muhtoj) egasi kira olmay qolardi.
   if (req.method === 'POST' && req.url === '/api/subscription-status') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10259,11 +8821,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- 15-bosqich (B-bo'lim): "Obuna tarixi" — egasi o'ziga tegishli
-  // barcha o'tgan obuna to'lovlarini (tasdiqlangan, muddatni uzaytirgan)
-  // ko'radi. payments.json'dagi FAQAT source==='subscription' yozuvlar
-  // ishlatiladi (admin qo'lda "to'landi" belgilashi yoki boshqa manbalardan
-  // kelgan to'lovlar bu ro'yxatga chiqmaydi — ular obuna emas). ----
   if (req.method === 'POST' && req.url === '/api/subscription-history') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10285,10 +8842,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: owner "💳 Obuna" ekranida bitta tarifni tanlaydi. Skrinshotning
-  // O'ZI hamon Mini App'dan EMAS, botning shaxsiy chatiga RASM qilib
-  // yuboriladi (Telegram Mini App'da fayl yuklash uchun maxsus infratuzilma
-  // kerak bo'lmasligi uchun - qarang: yuqoridagi photo-listener, 82-bosqich).
   if (req.method === 'POST' && req.url === '/api/subscription-select-plan') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10306,7 +8859,6 @@ const server = http.createServer((req, res) => {
       const reqData = createSubscriptionPaymentRequest(owner, payload.planId);
       saveOwners(owners);
 
-      // Botga o'tib skrinshot yuborishni eslatib, shaxsiy chatni ochish uchun link ham qaytaramiz.
       sendMessage(owner.id,
         `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
         `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
@@ -10317,8 +8869,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: admin uchun "Kutilayotgan to'lovlar" ro'yxati (skrinshot
-  // yuborilgan, hali tasdiq/rad kutilayotgan barcha so'rovlar). ----
   if (req.method === 'POST' && req.url === '/api/admin-pending-subscription-payments') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10342,8 +8892,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: admin panelidan tasdiqlash/rad etish (bot ichidagi ✅/❌
-  // tugmalari bilan bir xil decideSubscriptionPayment() mantig'idan foydalanadi). ----
   if (req.method === 'POST' && req.url === '/api/admin-subscription-decide') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10368,23 +8916,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ==================== G-bo'lim: Umumiy broadcast/e'lon tizimi (48-51-bosqich) ====================
-  // Admin (ADMIN_ID yoki qo'shimcha adminlardan biri) BARCHA oshxonalar
-  // bo'yicha bitta xabarni tanlangan toifaga (49-bosqich: mijoz / oshxona
-  // egasi / xizmatchi) yuboradi — reklama banner (owner-darajasida, faqat
-  // o'z mijozlariga) dan farqli o'laroq, bu tizim BUTUN platformaga tegishli
-  // e'lonlar uchun (masalan yangi funksiya haqida xabar, texnik ishlar
-  // haqida ogohlantirish). 50-bosqich: matn + rasm (https:// havola,
-  // Telegram rasmni o'zi yuklab olishi kerak — base64 ishlamaydi) + tugma
-  // (matn+havola) bilan yuboriladi. 51-bosqich: har bir yuborish
-  // broadcasts.json'ga netija (necha kishiga yetdi/yetmadi) bilan yoziladi.
-
-  // 49-bosqich: tanlangan toifadagi barcha (takrorlanmas) Telegram ID'lar,
-  // BARCHA oshxona egalari bo'yicha yig'ib chiqiladi.
-  // targetType === 'all' — 3 toifaning HAMMASI (mijoz + oshxona egasi +
-  // xizmatchi) birlashtirilib, takrorlanmas ID'lar ro'yxati qaytariladi
-  // (bitta odam bir nechta rolga ega bo'lsa ham, xabar UNGA FAQAT BIR MARTA
-  // yetadi — Set orqali dedupe qilingani uchun).
   function collectBroadcastRecipients(targetType) {
     const owners = loadOwners();
     const ids = new Set();
@@ -10400,10 +8931,6 @@ const server = http.createServer((req, res) => {
     return Array.from(ids);
   }
 
-  // Rasm ikki xil bo'lishi mumkin: https:// havola (Telegram o'zi yuklab
-  // oladi) YOKI galereyadan tanlangan rasm (base64 data URL — kichraytirib,
-  // frontendda tayyorlanadi, qarang: readImageFileAsCompressedDataUrl).
-  // Ikkinchisi menyu rasmi bilan bir xil qoidada tekshiriladi (isValidImageValue).
   function isValidBroadcastImageUrl(value) {
     return isValidImageValue(value);
   }
@@ -10411,11 +8938,6 @@ const server = http.createServer((req, res) => {
     return !!value && /^data:image\/(png|jpe?g|webp);base64,/i.test(value);
   }
 
-  // Bitta qabul qiluvchiga xabar yuboradi (rasm bo'lsa sendPhoto+caption,
-  // bo'lmasa oddiy sendMessage), tugma bo'lsa inline havola tugmasi bilan.
-  // `photo` — https:// havola YOKI Telegram file_id (base64 rasm birinchi
-  // marta yuklangandan keyin olingan) bo'lishi mumkin, ikkalasi ham oddiy
-  // GET so'rovda `photo` parametri sifatida ishlaydi.
   function sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl) {
     const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
     const params = { chat_id: chatId, parse_mode: 'HTML' };
@@ -10436,11 +8958,6 @@ const server = http.createServer((req, res) => {
     });
   }
 
-  // Galereyadan yuklangan (base64) rasmni HAQIQIY fayl sifatida multipart
-  // orqali yuboradi va Telegram javobidagi file_id'ni qaytaradi (muvaffaqiyatli
-  // bo'lsa) — shu file_id keyingi barcha qabul qiluvchilarga qayta ishlatiladi,
-  // shunda rasm minglab marta emas, FAQAT BIR MARTA serverdan Telegram'ga
-  // yuklanadi (tezroq va tejamli).
   async function sendBroadcastPhotoUploadAndGetFileId(chatId, dataUrl, text, buttonText, buttonUrl) {
     const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(dataUrl);
     if (!match) return { ok: false, fileId: null };
@@ -10465,12 +8982,6 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // 51-bosqich: barcha qabul qiluvchilarga KETMA-KET (Promise.all emas)
-  // kichik tanaffus bilan yuboradi — Telegram'ning soniyasiga xabar
-  // limitidan (~30/s) chiqib ketmaslik uchun. `image` https:// havola YOKI
-  // galereya base64 rasmi bo'lishi mumkin — ikkinchi holatda faqat BIRINCHI
-  // qabul qiluvchiga haqiqiy fayl yuklanadi, undan olingan file_id qolgan
-  // hammaga qayta ishlatiladi.
   async function sendBroadcastSequential(recipientIds, text, image, buttonText, buttonUrl) {
     let delivered = 0, failed = 0;
     let pendingUpload = isBase64ImageValue(image);
@@ -10483,7 +8994,7 @@ const server = http.createServer((req, res) => {
         ok = uploadResult.ok;
         if (ok) {
           pendingUpload = false;
-          photo = uploadResult.fileId; // shundan keyingilarga shu file_id ishlatiladi
+          photo = uploadResult.fileId;
         }
       } else {
         ok = await sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl);
@@ -10494,7 +9005,6 @@ const server = http.createServer((req, res) => {
     return { delivered, failed };
   }
 
-  // ---- API: e'lon/broadcast yuborish (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/broadcast-send') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10531,11 +9041,6 @@ const server = http.createServer((req, res) => {
         recipientIds, textTrim, imageTrim || null, buttonTextTrim || null, buttonUrlTrim || null
       );
 
-      // Galereyadan yuklangan (base64) rasmni tarix jurnaliga (broadcasts.json)
-      // to'liq holda YOZMAYMIZ — aks holda jurnal juda tez og'irlashib ketadi
-      // (200 ta yozuv × bir necha MB). https:// havola bo'lsa esa qisqa, shuni
-      // saqlaymiz. `hadImage` bayrog'i orqali "rasm bilan yuborilgan edi"
-      // ma'lumoti baribir saqlanadi (tarixda ko'rsatish uchun).
       const isBase64Img = isBase64ImageValue(imageTrim);
       const broadcasts = loadBroadcasts();
       const record = {
@@ -10553,7 +9058,7 @@ const server = http.createServer((req, res) => {
         sentAt: new Date().toISOString()
       };
       broadcasts.unshift(record);
-      if (broadcasts.length > 200) broadcasts.length = 200; // jurnal cheksiz o'smasin
+      if (broadcasts.length > 200) broadcasts.length = 200;
       saveBroadcasts(broadcasts);
 
       return sendJSON(res, 200, { ok: true, result: record });
@@ -10561,7 +9066,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: yuborilgan e'lonlar tarixi/statistikasi (faqat admin) ----
   if (req.method === 'POST' && req.url === '/api/broadcast-history') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -10575,7 +9079,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- Telegram webhook: bot xabarlari va tugma bosishlari shu yerga keladi ----
   if (req.method === 'POST' && req.url === '/webhook') {
     if (WEBHOOK_SECRET) {
       const got = req.headers['x-telegram-bot-api-secret-token'];
@@ -10594,7 +9097,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- Statik fayllarni berish (faqat public papkasidan) ----
   const urlPathOnly = req.url.split('?')[0];
   let filePath = (urlPathOnly === '/' || urlPathOnly === '') ? '/index.html' : urlPathOnly;
   filePath = path.join(__dirname, 'public', path.normalize(filePath).replace(/^(\.\.[\/\\])+/, ''));
@@ -10620,20 +9122,14 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
 
-  // 78-BOSQICH: admins.json'dagi qo'shimcha adminlarni xotiraga yuklash
-  // (isAdminId() shu xotiradagi ro'yxatdan foydalanadi).
   reloadAdminsCache();
   console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
 
-  // Obuna muddatlarini tekshirish — darhol bir marta, keyin har soatda
   checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
   setInterval(() => {
     checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
   }, EXPIRY_CHECK_INTERVAL_MS);
 
-  // 19-bosqich: "Savatcha"dagi 3 kundan oshgan yozuvlarni avtomatik
-  // (qaytarib bo'lmaydigan tarzda) tozalash — xuddi obuna tekshiruvi kabi,
-  // darhol bir marta va keyin har soatda.
   checkTrashAutoPurge().catch(e => console.error('Savatchani tozalashda xatolik:', e.message));
   setInterval(() => {
     checkTrashAutoPurge().catch(e => console.error('Savatchani tozalashda xatolik:', e.message));
