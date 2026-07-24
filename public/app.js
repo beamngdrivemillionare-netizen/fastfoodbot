@@ -7942,10 +7942,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
       { key: 'tayyor', label: isDelivery ? "Tayyor bo'ldi" : 'Tayyor' }
     ];
     if (isDelivery) steps.push({ key: 'yetkazildi', label: 'Yetkazildi' });
+    else steps.push({ key: 'oldim', label: 'Oldim' });
 
     let activeIdx = 0;
     if (o.status === 'tayyorlanmoqda') activeIdx = 1;
-    else if (o.status === 'tayyor') activeIdx = isDelivery ? (o.deliveredAt ? 3 : 2) : 2;
+    else if (o.status === 'tayyor') {
+      if (isDelivery) activeIdx = o.deliveredAt ? 3 : 2;
+      else activeIdx = o.customerReceivedAt ? 3 : 2;
+    }
 
     return `
       <div class="order-track" data-order-track="${escapeHtml(o.id)}">
@@ -7968,7 +7972,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
             <div class="order-time">${timeAgo(o.createdAt)}</div>
           </div>
-          <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (ORDER_STATUS_LABELS[o.status] || o.status)}</span>
+          <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (o.status === 'tayyor' && o.customerReceivedAt ? 'Oldingiz' : (ORDER_STATUS_LABELS[o.status] || o.status))}</span>
         </div>
         ${customerOrderTrackHtml(o)}
         <div class="order-items">${itemsText}</div>
@@ -7976,6 +7980,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="order-total">${fmtNum(o.total)} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${fmtNum(o.discountAmount)})</span>` : ''}</div>
           ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
         </div>
+        ${o.orderType !== 'dostavka' && o.status === 'tayyor' && !o.customerReceivedAt ? `<button type="button" class="order-received-btn" data-received-id="${escapeHtml(o.id)}">${icon('check-circle', 'icon-xs')} Oldim</button>` : ''}
         <button type="button" class="order-reorder-btn" data-reorder-id="${escapeHtml(o.id)}">${icon('repeat', 'icon-xs')} Yana buyurtma berish</button>
       </div>
     `;
@@ -7992,6 +7997,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function attachCustomerHistoryHandlers(listEl, orders) {
+    listEl.querySelectorAll('[data-received-id]').forEach(btn => btn.addEventListener('click', async () => {
+      const orderId = btn.getAttribute('data-received-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-confirm-received', { initData, ownerId: customerState.ownerId, orderId });
+      if (!res.ok) {
+        btn.disabled = false;
+        const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+        alertFn(res.reason || 'Amalni bajarib bo\'lmadi.');
+        return;
+      }
+      if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
+        try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
+      }
+      refreshCustomerHistoryList();
+    }));
+
     listEl.querySelectorAll('[data-reorder-id]').forEach(btn => btn.addEventListener('click', () => {
       const orderId = btn.getAttribute('data-reorder-id');
       const order = orders.find(o => o.id === orderId);
