@@ -1807,6 +1807,24 @@
     border: 2px solid transparent; cursor: pointer; color: var(--promo-text);
   }
   .promo-banner.selected { border-color: var(--promo-border); }
+  /* 45-bosqich: mijoz ekranidagi reklama banner karuseli — gorizontal
+     suriladigan rasmli kartochkalar qatori (bittadan ko'p bo'lsa). */
+  .ad-banner-row {
+    display: flex; gap: var(--sp-2); overflow-x: auto; margin-top: 10px;
+    scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+  }
+  .ad-banner-row::-webkit-scrollbar { display: none; }
+  .ad-banner-card {
+    flex: 0 0 auto; width: 82%; max-width: 320px; border-radius: var(--radius-md);
+    overflow: hidden; scroll-snap-align: start; position: relative;
+    background: var(--surface-2);
+  }
+  .ad-banner-card img { display: block; width: 100%; height: 120px; object-fit: cover; }
+  .ad-banner-title {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 12px;
+    font-size: var(--fs-sm); font-weight: 700; color: #fff;
+    background: linear-gradient(0deg, rgba(0,0,0,0.65), rgba(0,0,0,0));
+  }
   .customer-link-hint { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: var(--sp-2); line-height: var(--lh-body); }
 
   /* =========================================================================
