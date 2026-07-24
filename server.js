@@ -886,6 +886,7 @@ const FEATURE_CATALOG = [
   // Mijozlar (mini-ilova)
   { id: 'customer-menu', name: "Mijoz uchun menyu va buyurtma", group: 'mijoz' },
   { id: 'customer-account', name: "Mijoz profili va tarixi", group: 'mijoz' },
+  { id: 'support-chat', name: "Tezkor qo'llab-quvvatlash chat", group: 'mijoz' },
   // Tizim va xavfsizlik
   { id: 'restaurant-brand', name: "Restoran brendi (logo, nom)", group: 'tizim' },
   { id: 'system-status', name: "Tizim holati paneli", group: 'tizim' },
@@ -1417,7 +1418,49 @@ function findOrCreateCustomer(owner, userId, tgUser) {
   return c;
 }
 
-// ---- 56-bosqich: mijozning manzillar kitobi (saqlangan dostavka manzillari) ----
+// ---- H64-bosqich: "AI ofitsiant" — mijozni tanib, doim yoqtiradigan
+// taomlarini va ularga o'xshash (bir xil toifadagi, hali sinab ko'rmagan)
+// taomlarni tavsiya qiladi. Haqiqiy tashqi AI chaqirilmaydi — mijozning
+// o'z xarid tarixi (customer.itemFrequency) tahlil qilinadi, shuning uchun
+// tezkor va bepul ishlaydi, lekin mijozga "meni tanidi" degan tuyg'u beradi.
+function buildAiWaiterRecommendations(owner, userId, availableMenu) {
+  const customer = findCustomer(owner, userId);
+  const empty = { favorites: [], similar: [] };
+  if (!customer || !customer.itemFrequency || customer.ordersCount < 1) return empty;
+
+  const freqEntries = Object.entries(customer.itemFrequency).sort((a, b) => b[1] - a[1]);
+  if (!freqEntries.length) return empty;
+
+  // 1) "Doim yoqtiradigan" — eng ko'p buyurtma qilingan, hozir ham menyuda
+  //    mavjud bo'lgan taomlar (eng ko'pi 4 tasi, ko'zni band qilmasin).
+  const favorites = [];
+  for (const [itemId, count] of freqEntries) {
+    const item = availableMenu.find(m => m.id === itemId);
+    if (item) favorites.push(Object.assign({}, item, { orderedCount: count }));
+    if (favorites.length >= 4) break;
+  }
+  if (!favorites.length) return empty;
+
+  // 2) "Sizga yoqishi mumkin" — eng sevimli 2 ta taomning TOIFASIDAN, mijoz
+  //    HALI SINAB KO'RMAGAN boshqa taomlar (retsept/tarkib emas, toifa
+  //    bo'yicha o'xshashlik — menyu strukturasida mavjud yagona umumiy
+  //    belgi shu).
+  const triedIds = new Set(freqEntries.map(([id]) => id));
+  const topCategories = [...new Set(favorites.slice(0, 2).map(f => f.category).filter(Boolean))];
+  const similar = [];
+  if (topCategories.length) {
+    for (const item of availableMenu) {
+      if (triedIds.has(item.id)) continue;
+      if (!item.category || !topCategories.includes(item.category)) continue;
+      similar.push(item);
+      if (similar.length >= 4) break;
+    }
+  }
+
+  return { favorites, similar };
+}
+
+
 const MAX_CUSTOMER_ADDRESSES = 15;
 
 function findCustomerAddress(customer, addressId) {
@@ -4939,7 +4982,8 @@ const server = http.createServer((req, res) => {
       // 45-bosqich: rasmli reklama bannerlari — faqat HOZIR faol bo'lganlari
       // (active=true va startAt/endAt oynasi ichida), qarang: activeOwnerBanners().
       const banners = activeOwnerBanners(owner);
-      return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(owner) });
+      const recommendations = buildAiWaiterRecommendations(owner, String(check.user && check.user.id), menu);
+      return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(owner), recommendations });
     });
     return;
   }
@@ -5205,7 +5249,205 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ---- API: mijoz o'zi to'g'ridan-to'g'ri buyurtma beradi (katalog-menyu orqali) ----
+  // ==================== H63-bosqich: Tezkor qo'llab-quvvatlash chat ====================
+  // Mijoz botning mini-ilovasi ichidan to'g'ridan-to'g'ri oshxonaga savol/muammo
+  // yozib yubora oladi, egasi/kassir esa admin panelidan javob beradi — ikkala
+  // tomon ham xabarlarni Telegram orqali darhol oladi, ilova ichida esa
+  // (pollingda) yangilanib turadi. Har bir owner.supportMessages — yagona tekis
+  // ro'yxat: { id, customerId, from: 'customer'|'staff', text, at,
+  // readByCustomer, readByStaff }. "Thread" (suhbat) shu ro'yxatni customerId
+  // bo'yicha guruhlab hosil qilinadi — alohida saqlash strukturasi shart emas.
+  function supportThreadMessages(owner, customerId) {
+    return (owner.supportMessages || [])
+      .filter(m => String(m.customerId) === String(customerId))
+      .sort((a, b) => new Date(a.at) - new Date(b.at));
+  }
+
+  // ---- API: mijoz — yordam xabarini yuborish ----
+  if (req.method === 'POST' && req.url === '/api/support-send') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, text } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
+
+      const textTrim = String(text || '').trim().slice(0, 1000);
+      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
+
+      if (!Array.isArray(owner.supportMessages)) owner.supportMessages = [];
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      const msg = {
+        id: crypto.randomBytes(4).toString('hex'),
+        customerId: userId,
+        from: 'customer',
+        text: textTrim,
+        at: new Date().toISOString(),
+        readByCustomer: true,
+        readByStaff: false
+      };
+      owner.supportMessages.push(msg);
+      saveOwners(owners);
+
+      const staffTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'egasi') || staffHasRole(s, 'kassir')).map(s => s.id))];
+      const profile = findProfile(userId);
+      const alertText = `🆘 <b>Yordam so'rovi</b>\n${orderCustomerContactLabel({ customerName: customerDisplayName(userId, check.user), customerPhone: (profile && profile.phone) || null })}\n\n${escapeHtmlServer(textTrim)}`;
+      for (const targetId of new Set(staffTargets.map(String))) {
+        sendMessage(targetId, alertText);
+      }
+
+      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(owner, userId) });
+    });
+    return;
+  }
+
+  // ---- API: mijoz — o'z suhbatini o'qish (pollingda chaqiriladi) ----
+  if (req.method === 'POST' && req.url === '/api/support-thread') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
+
+      let changed = false;
+      (owner.supportMessages || []).forEach(m => {
+        if (String(m.customerId) === userId && m.from === 'staff' && !m.readByCustomer) {
+          m.readByCustomer = true;
+          changed = true;
+        }
+      });
+      if (changed) saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(owner, userId) });
+    });
+    return;
+  }
+
+  // ---- API: xodim/egasi — ochiq suhbatlar ro'yxati (oxirgi xabar + o'qilmagan soni) ----
+  if (req.method === 'POST' && req.url === '/api/support-inbox') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limga faqat egasi/kassir kira oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
+
+      const byCustomer = new Map();
+      for (const m of (ctx.owner.supportMessages || [])) {
+        const list = byCustomer.get(m.customerId) || [];
+        list.push(m);
+        byCustomer.set(m.customerId, list);
+      }
+      const threads = [];
+      for (const [customerId, msgs] of byCustomer.entries()) {
+        msgs.sort((a, b) => new Date(a.at) - new Date(b.at));
+        const last = msgs[msgs.length - 1];
+        const customer = findCustomer(ctx.owner, customerId);
+        threads.push({
+          customerId,
+          customerName: (customer && customer.firstName) || `ID: ${customerId}`,
+          lastText: last.text,
+          lastAt: last.at,
+          lastFrom: last.from,
+          unreadCount: msgs.filter(m => m.from === 'customer' && !m.readByStaff).length
+        });
+      }
+      threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+
+      return sendJSON(res, 200, { ok: true, threads });
+    });
+    return;
+  }
+
+  // ---- API: xodim/egasi — bitta mijoz bilan suhbatni o'qish + javob yozish ----
+  if (req.method === 'POST' && req.url === '/api/support-thread-staff') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, customerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limga faqat egasi/kassir kira oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
+      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
+
+      let changed = false;
+      (ctx.owner.supportMessages || []).forEach(m => {
+        if (String(m.customerId) === String(customerId) && m.from === 'customer' && !m.readByStaff) {
+          m.readByStaff = true;
+          changed = true;
+        }
+      });
+      if (changed) saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(ctx.owner, customerId) });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/support-reply') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, customerId, text } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limga faqat egasi/kassir kira oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
+      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
+
+      const textTrim = String(text || '').trim().slice(0, 1000);
+      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
+
+      if (!Array.isArray(ctx.owner.supportMessages)) ctx.owner.supportMessages = [];
+      const msg = {
+        id: crypto.randomBytes(4).toString('hex'),
+        customerId: String(customerId),
+        from: 'staff',
+        text: textTrim,
+        at: new Date().toISOString(),
+        readByCustomer: false,
+        readByStaff: true
+      };
+      ctx.owner.supportMessages.push(msg);
+      saveOwners(owners);
+
+      await sendMessage(customerId, `💬 <b>Oshxonadan javob</b>\n${escapeHtmlServer(textTrim)}`);
+
+      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(ctx.owner, customerId) });
+    });
+    return;
+  }
+
+
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -5394,6 +5636,16 @@ const server = http.createServer((req, res) => {
       customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
       customer.ordersCount = (customer.ordersCount || 0) + 1;
       customer.totalSpent = (customer.totalSpent || 0) + total;
+      // H64-bosqich: "AI ofitsiant" — mijoz qaysi taomlarni necha marta
+      // olganini kuzatib boramiz (combo va oddiy menyu taomlari birga),
+      // shu asosida keyinchalik "Sizga tavsiya" ro'yxati chiqariladi
+      // (qarang: buildAiWaiterRecommendations()).
+      if (!customer.itemFrequency || typeof customer.itemFrequency !== 'object') customer.itemFrequency = {};
+      for (const it of orderItems) {
+        if (!it.id) continue;
+        customer.itemFrequency[it.id] = (customer.itemFrequency[it.id] || 0) + (it.qty || 1);
+      }
+      customer.lastOrderedAt = new Date().toISOString();
 
       if (!owner.orders) owner.orders = [];
       const order = {
