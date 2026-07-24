@@ -1,37 +1,14 @@
-/* =========================================================================
-     DIZAYN TOKENLARI (Design Tokens)
-     Butun platforma shu yerdagi o'zgaruvchilar orqali boshqariladi.
-     4-bosqichda --brand-primary va unga bog'liq tokenlar har bir oshxona
-     egasining profilidan (JS orqali :root ustiga inline style bilan) qayta
-     yoziladi — shu sababli quyidagi qiymatlar "standart (default) qizil-oq
-     tema" hisoblanadi va boshqa hech qayerda xom hex-rang yozilmaydi.
-     ========================================================================= */
-  :root {
-    /* ---- Brend ranglari (standart: qizil-oq) ---- */
+:root {
+
     --brand-primary: #E4232A;
     --brand-primary-dark: #B81E24;
     --brand-primary-light: #FDEAEA;
     --brand-on-primary: #FFFFFF;
 
-    /* ---- Neytral / sirt (surface) ranglari ----
-       Bu yerda ataylab Telegramning --tg-theme-* o'zgaruvchilari fallback
-       sifatida saqlanadi — shunda qorong'i rejimda ham foydalanuvchi
-       qulay o'qiy oladi, lekin BREND ranglari (tugmalar, urg'ular)
-       Telegram temasidan endi mustaqil — chunki ular --brand-primary'ga
-       bog'langan, --tg-theme-button-color'ga emas. */
     --surface-0: var(--tg-theme-bg-color, #FFFFFF);
     --surface-1: var(--tg-theme-secondary-bg-color, #F5F5F7);
     --surface-2: var(--tg-theme-bg-color, #FFFFFF);
 
-    /* TUZATISH (qorong'i tema): oldin bu ranglar rgba(17,17,17,...) ga
-       QATTIQ yozilgan edi — ya'ni doim "qora, xira shaffoflik" bo'lardi.
-       Yorug' temada bu qora fonga to'g'ri chiqadi, lekin Telegram
-       qorong'i rejimida --text-primary (demak fon ham) oq/och rangga
-       aylanadi-yu, --text-secondary/--text-muted/--border-color hamon
-       QORA bo'lib qolardi — natijada matn fon bilan deyarli bir xil
-       (ko'rinmas) bo'lib qolardi. Endi bu ranglar --text-primary'dan
-       (demak joriy temadan) hosil qilinadi, shu bilan har doim to'g'ri
-       kontrast saqlanadi. */
     --border-color: color-mix(in srgb, var(--text-primary) 8%, transparent);
     --border-color-strong: color-mix(in srgb, var(--text-primary) 16%, transparent);
 
@@ -40,7 +17,6 @@
     --text-muted: var(--tg-theme-hint-color, color-mix(in srgb, var(--text-primary) 45%, transparent));
     --text-on-dark-surface: rgba(255, 255, 255, 0.9);
 
-    /* ---- Semantik ranglar (holatlar uchun, brendga bog'liq emas) ---- */
     --success: #1FA34A;
     --success-bg: #E3F7E9;
     --warning: #B8860B;
@@ -50,13 +26,11 @@
     --info: #2E6BE6;
     --info-bg: #EAF1FD;
 
-    /* ---- Aksiya/promo urg'usi (semantikdan alohida, iliq ton) ---- */
     --promo-bg-1: #FFF3D6;
     --promo-bg-2: #FFE9B8;
     --promo-text: #7A5200;
     --promo-border: #F0A500;
 
-    /* ---- Tipografiya shkalasi ---- */
     --fs-h1: 22px;
     --fs-h2: 17px;
     --fs-body: 15px;
@@ -64,7 +38,6 @@
     --fs-xs: 11px;
     --lh-body: 1.45;
 
-    /* ---- Bo'shliq shkalasi (4px asosida) ---- */
     --sp-1: 4px;
     --sp-2: 8px;
     --sp-3: 12px;
@@ -73,25 +46,17 @@
     --sp-6: 24px;
     --sp-8: 32px;
 
-    /* ---- Burchak radiusi ---- */
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 16px;
     --radius-pill: 999px;
 
-    /* ---- Soya (elevation) ---- */
     --shadow-card: 0 1px 3px rgba(17, 17, 17, 0.06), 0 1px 2px rgba(17, 17, 17, 0.04);
     --shadow-floating: 0 8px 24px rgba(17, 17, 17, 0.14), 0 2px 6px rgba(17, 17, 17, 0.08);
 
-    /* ---- Harakat (motion) ---- */
     --transition-fast: 0.15s ease;
     --transition-base: 0.2s ease;
 
-    /* ---- 1-bosqich: KitchenOS bosh sahifa tokenlari ----
-       Yangi "Bosh sahifa" (header, KPI-kartochkalar, holat-banner,
-       menyu-grid, pastki navigatsiya) shu tokenlar orqali quriladi.
-       Hammasi yuqoridagi brend/semantik tokenlardan hosil qilingan —
-       bu yerda ham xom hex-rang yozilmagan. */
     --header-bg: var(--brand-primary);
     --header-on: var(--brand-on-primary);
     --header-on-muted: color-mix(in srgb, var(--brand-on-primary) 78%, transparent);
@@ -121,10 +86,7 @@
     --bottom-nav-inactive: var(--text-muted);
   }
 
-  /* =========================================================================
-     38-bosqich: Dark/Light rejim — foydalanuvchi qo'lda tanlaganda
-     (app.js'dagi toggleTheme()) <html> ustiga data-theme="dark"/"light"
-     qo'yiladi va shu ikki blok --surface-*/--text-* tokenlarni Telegram
+  --text-* tokenlarni Telegram
      temasidan MUSTAQIL qiymatlarga almashtiradi. Hech narsa tanlanmagan
      bo'lsa (data-theme yo'q) — avvalgidek Telegram/--tg-theme-* asosidagi
      avtomatik rejim davom etadi. Qolgan barcha ranglar (border, hint va h.k.)
@@ -153,16 +115,7 @@
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
-  /* =========================================================================
-     31-35-bosqich: Responsive mini-app (mobil/planshet/kompyuter).
-     Avval #app cheksiz kenglikda edi (faqat .app-header va .ko-bottom-nav
-     480px'da markazlashgan edi) — planshet/kompyuterda bu tarqoq va
-     nomutanosib ko'rinishga sabab bo'lardi. Endi UCHALASI HAM bitta
-     --app-max-width o'zgaruvchisidan foydalanadi, shu bilan header/
-     kontent/pastki-navigatsiya doim bir xil kenglikda, markazda turadi.
-     --app-vh — mobil brauzerlarda 100vh manzil-panel tufayli "sakrab"
-     turishining o'rniga, JS orqali (app.js, resize/orientationchange'da)
-     yangilanadigan haqiqiy balandlik (34-bosqich: avtomatik moslashish). */
+
   :root {
     --app-max-width: 480px;
     --app-vh: 1vh;
@@ -187,10 +140,7 @@
     padding-bottom: calc(var(--sp-6) + env(safe-area-inset-bottom, 0px));
     box-sizing: border-box;
   }
-  /* Planshet/kompyuterda sahifa foni (#app'dan tashqarida) va markazdagi
-     "ilova" o'rtasida vizual farq bo'lishi uchun. Oddiy brauzerda ochilganda
-     (kompyuterda demo/test uchun) chekka fon biroz to'qroq bo'ladi, shu bilan
-     markazdagi ilova aniq "karta" ko'rinishida ajralib turadi. */
+
   @media (min-width: 768px) {
     body { background: var(--surface-1); }
     #app {
@@ -203,12 +153,7 @@
     }
     #app:has(> .xato) { min-height: calc(var(--app-vh, 1vh) * 100 - var(--sp-5) * 2); }
   }
-  /* TUZATISH: oldin #app har doim vertikal MARKAZGA tekislangan edi.
-     Bu qisqa ro'yxatlarda (masalan bir nechta taom) butun panelni
-     ekran markaziga surib qo'yardi — natijada pastki savat paneli
-     menyu ustiga "suzib chiqib qolgan" xunuk ko'rinishga sabab bo'lardi.
-     Endi markazlashtirish FAQAT haqiqatan ham markazda turishi kerak
-     bo'lgan holatlarga (yuklanmoqda/xato xabari, .xato) tegishli. */
+
   #app:has(> .xato) {
     align-items: center;
     justify-content: center;
@@ -226,18 +171,12 @@
     line-height: var(--lh-body);
   }
 
-  /* ---- Fokus holati (klaviatura/screen-reader uchun ochiq, sichqonchada bilinmaydi) ---- */
   a:focus-visible, button:focus-visible, input:focus-visible,
   textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
     outline: 2px solid var(--brand-primary);
     outline-offset: 2px;
   }
 
-  /* =========================================================================
-     3-bosqich: KitchenOS bosh sahifa header'i. #app'ning standart
-     padding'idan (--sp-6) chetga chiqib, chekkadan-chekkagacha (full-bleed)
-     qizil panel hosil qilish uchun manfiy margin ishlatiladi.
-     ========================================================================= */
   .ko-home-header {
     display: flex;
     align-items: center;
@@ -342,22 +281,12 @@
     border: 1.5px solid var(--header-bg);
   }
 
-  /* =========================================================================
-     7-bosqich: KitchenOS bosh sahifa KPI-kartochkalari.
-     4 ta kartochka (Bugungi savdo / Sof foyda / Buyurtmalar / O'rtacha chek)
-     uchun umumiy shakl — icon, katta raqam, va foiz-delta (rang emas,
-     brendga bog'liq --kpi-delta-up/--kpi-delta-down orqali). 2x2 grid
-     joylashuvi shu .ko-kpi-grid bilan, /api/dashboard-summary'ga ulash esa
-     app.js'dagi loadKoKpiGrid() orqali qilingan (8-bosqich).
-     ========================================================================= */
   .ko-kpi-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-3);
   }
-  /* 31-33-bosqich: planshet/kompyuterda #app kengroq (700/960px) bo'lgani
-     uchun 2x2 grid katta bo'sh joy qoldiradi — shu kenglikda 4 ta
-     kartochka bitta qatorga sig'adi. */
+
   @media (min-width: 768px) {
     .ko-kpi-grid { grid-template-columns: repeat(4, 1fr); }
   }
@@ -372,7 +301,7 @@
     gap: var(--sp-2);
     min-width: 0;
   }
-  /* 3-bosqich: "Kuryer hisoboti" kabi bosiladigan KPI kartochkalari */
+
   .ko-kpi-card.ko-kpi-clickable {
     cursor: pointer;
     transition: transform 0.1s ease, box-shadow 0.1s ease;
@@ -422,7 +351,6 @@
   .ko-kpi-delta.down { color: var(--kpi-delta-down); }
   .ko-kpi-delta .icon { width: 13px; height: 13px; }
 
-  /* ---- Skeleton (yuklanish) holati — mavjud .skeleton (shimmer) naqshidan. */
   .ko-kpi-card.skeleton-tile .ko-kpi-icon { background: var(--surface-1); }
   .ko-kpi-card.skeleton-tile .ko-kpi-icon .icon { visibility: hidden; }
   .ko-kpi-card.skeleton-tile .ko-kpi-value.skeleton {
@@ -434,13 +362,6 @@
     width: 45%;
   }
 
-  /* =========================================================================
-     9-bosqich: KitchenOS bosh sahifa "Bugungi holat" banneri — qizil
-     sarlavha + pastida 4 ustunli (Yangi/Tayyorlanmoqda/Tayyor/Kechikayotgan)
-     son-panel. .kartochka'ning odatiy padding'i shu yerda 0'ga tushiriladi,
-     chunki sarlavha va tana o'z paddingiga ega (sarlavha to'liq kenglikda
-     qizil bo'lishi kerak).
-     ========================================================================= */
   .ko-status-banner {
     padding: 0;
     overflow: hidden;
@@ -518,11 +439,6 @@
     animation: skeleton-shine 1.4s ease infinite;
   }
 
-  /* =========================================================================
-     11-bosqich: KitchenOS bosh sahifa asosiy menyu-grid — 2 qator x 5 ustun,
-     10 ta icon+label tugma. Tugmalarni mavjud ekranlarga ulash (click
-     handler'lar) 12-bosqichda qo'shiladi — bu yerda faqat ko'rinish.
-     ========================================================================= */
   .ko-menu-grid {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -568,19 +484,11 @@
   @media (max-width: 380px) {
     .ko-menu-grid { grid-template-columns: repeat(4, 1fr); }
   }
-  /* Admin bo'limi menyusida atigi 4 ta band bor, shu sababli har doim
-     2 qatorli, teng bo'lingan grid ko'proq mos keladi (5 ustunli
-     grid'da bitta bo'sh joy qolib ketardi). */
+
   .admin-menu-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  /* =========================================================================
-     13-bosqich: KitchenOS bosh sahifa "Muhim ogohlantirishlar" ro'yxati —
-     har bir qator: rangli icon (level bo'yicha) + matn + son-badge (ixtiyoriy)
-     + chevron. Bosilganda tegishli ekranga o'tadi (app.js'dagi
-     koAlertScreenRoute() orqali).
-     ========================================================================= */
   .ko-alerts-card { padding: var(--sp-3) var(--sp-4); }
   .ko-alerts-card .section-label { margin-bottom: var(--sp-2); }
   .ko-alert-item {
@@ -643,13 +551,6 @@
   }
   .ko-alerts-card[data-loading="1"] .ko-alert-item.skeleton-row { cursor: default; }
 
-  /* =========================================================================
-     14-bosqich: KitchenOS bosh sahifa PASTKI navigatsiya — rasmdagi kabi
-     5 ta band: Bosh sahifa / Savdo / Yangi buyurtma (markazda qizil FAB) /
-     Bildirishnomalar / Profil. Eski 4-tabli tab-bar (`.owner-tab-panel`
-     bilan ishlagan) 20-bosqichda butunlay o'chirildi — uning "Menyu" (taom
-     boshqaruvi) paneli Sozlamalar ekraniga ko'chirildi.
-     ========================================================================= */
   .ko-bottom-nav {
     position: fixed;
     left: 0;
@@ -698,9 +599,7 @@
     line-height: 15px;
     text-align: center;
   }
-  /* Markaziy "Yangi buyurtma" — bar chizig'idan yuqoriga chiqib turadigan,
-     soyali qizil doira FAB; label pastda, doiraning o'zi tugma emas — butun
-     ustun bosiladigan qiladi (katta bosish maydoni uchun). */
+
   .ko-bottom-nav-fab-item { color: var(--bottom-nav-inactive); }
   .ko-bottom-nav-fab {
     width: 52px;
@@ -717,13 +616,6 @@
   .ko-bottom-nav-fab .icon { width: 24px; height: 24px; color: #fff; }
   .has-ko-bottom-nav { padding-bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
 
-  /* =========================================================================
-     14-bosqich: hamburger yon-menyu (sidebar). #app'dan TASHQARIDA
-     (document.body farzandi) qo'shiladigan overlay + chapdan suzib
-     chiquvchi panel — shu sababli z-index bu yerdagi eng yuqorisi
-     (.app-header'ning 50'sidan ham baland), .overlay/.modal (10) bilan
-     aralashmasin deb ataylab ajratilgan.
-     ========================================================================= */
   .ko-sidebar-overlay {
     position: fixed;
     inset: 0;
@@ -815,7 +707,6 @@
     to { transform: translateX(0); }
   }
 
-  /* ---- Admin panel ---- */
   .panel {
     width: 100%;
     max-width: 420px;
@@ -836,7 +727,6 @@
     gap: 6px;
   }
 
-  /* ---- Tugmalar ---- */
   .btn {
     width: 100%;
     min-height: 44px;
@@ -867,7 +757,6 @@
   .btn.xavfli { background: var(--danger); }
   .btn.xavfli:hover { background: #B8272D; }
 
-  /* ---- Smena boshlash/tugatish (49-bosqich) ---- */
   .shift-widget { margin-top: 0; padding: var(--sp-3) var(--sp-4); }
   .shift-widget-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
   .shift-widget-info { display: flex; align-items: center; gap: 10px; }
@@ -879,7 +768,6 @@
   .btn-row { display: flex; gap: var(--sp-2); margin-top: 10px; }
   .btn-row .btn { flex: 1; }
 
-  /* ---- Kirish maydonlari ---- */
   input[type="text"], input[type="tel"], input[type="number"], textarea, select {
     width: 100%;
     min-height: 44px;
@@ -897,9 +785,7 @@
   input[type="text"]:focus, input[type="tel"]:focus, input[type="number"]:focus, textarea:focus, select:focus {
     border-color: var(--brand-primary);
   }
-  /* Dostavka uchun qo'shimcha telefon raqam maydoni — odatdagi input'lardan
-     ham kattaroq va aniqroq ko'rinishi uchun (mijozlar buni ko'zdan
-     qochirib, bo'sh qoldirib yubormasligi kerak). */
+
   input.phone-input-lg {
     width: 100%;
     box-sizing: border-box;
@@ -913,8 +799,6 @@
   textarea { resize: vertical; min-height: 60px; }
   label.field-label { display: block; font-size: var(--fs-sm); color: var(--text-secondary); margin: 4px 0 6px; }
 
-  /* 14-bosqich: checkbox'ning o'zi kichik, lekin uni o'rab turgan <label>
-     matn bilan birga to'liq 44px balandlikda bosiladigan bo'lishi kerak. */
   .check-label {
     display: inline-flex;
     align-items: center;
@@ -938,11 +822,7 @@
     transition: opacity var(--transition-fast);
   }
   .owner-item.hidden { display: none; }
-  /* ---- Admin "Do'kon egalari" ro'yxatidagi kengaytirilgan kartochka —
-     bir nechta ekranda qayta ishlatiladigan .owner-item'ning umumiy
-     qator-layoutini o'zgartirmaydi (tariflar/xodimlar/filiallar/mijozlar
-     ro'yxatlari ham shu klassdan foydalanadi), faqat shu modifikator
-     bilan birga kelganda vertikal kartochkaga aylanadi. ---- */
+
   .owner-item.owner-item-detailed {
     flex-direction: column;
     align-items: stretch;
@@ -953,9 +833,7 @@
     padding: var(--sp-4);
   }
   .owner-item-head { display: flex; align-items: flex-start; gap: var(--sp-3); }
-  /* Admin ro'yxatidagi har bir do'kon egasi qatori uchun ism/username/ID'ning
-     birinchi harfidan yasalgan doiraviy belgi — bo'sh joyni "shaxs" hissi
-     bilan to'ldiradi va ro'yxatni ko'z bilan tez skanerlash osonlashadi. */
+
   .owner-avatar {
     flex-shrink: 0;
     width: 40px;
@@ -997,12 +875,7 @@
   }
   .owner-remove-btn:hover { background: var(--danger-bg); }
   .owner-remove-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-  /* ---- Har bir do'kon egasi kartochkasidagi tahrirlanadigan qatorlar
-     (muddat, narx, login, tarif) — ilgari underline qilingan matn sifatida
-     bir-birining ustiga zich yig'ilgan edi (noqulay/xunuk ko'rinar edi).
-     Endi bir xil balandlikdagi, ikonli, ажратилган (divider'li) qatorlar
-     ro'yxati sifatida — har biri butun kengligi bo'yicha bosiladi va
-     bosilganda faqat o'sha qator ichki tahrirlash maydoniga aylanadi. ---- */
+
   .owner-field-list {
     background: var(--surface-1);
     border-radius: var(--radius-md);
@@ -1045,16 +918,13 @@
   .owner-field-edit { flex-shrink: 0; color: var(--text-muted); display: flex; }
   .owner-field-edit .icon { width: 14px; height: 14px; }
   .owner-field-list .subscription-progress { margin: 2px var(--sp-3) var(--sp-3); max-width: none; }
-  /* Qator ichki tahrirlash holatiga o'tsa (input/select/saqlash tugmasi
-     ko'rsatilsa), moslashuvchan qatorga aylanadi va bosiladigan kursor
-     ko'rinishi olib tashlanadi. */
+
   .owner-field:has(input), .owner-field:has(select) {
     flex-wrap: wrap;
     cursor: default;
   }
   .owner-field:has(input):hover, .owner-field:has(select):hover { background: none; }
-  /* ---- Admin panelidagi statistika kartochkalari (mavjud .ko-kpi-grid'dan
-     qayta foydalaniladi) va ro'yxat sarlavhasi/qidiruv paneli ---- */
+
   .admin-subtitle { margin-bottom: var(--sp-5); max-width: 340px; }
   .admin-stats-grid { margin-bottom: var(--sp-2); }
   .admin-list-header {
@@ -1087,11 +957,6 @@
   .admin-no-results { text-align: center; padding: var(--sp-3) 0 0; }
   .admin-no-results.hidden { display: none; }
 
-  /* =========================================================================
-     36-37-bosqich: mijoz menyusi — qidiruv + saralash qatori.
-     Qidiruv maydoni yuqoridagi .admin-search-wrap'ni qayta ishlatadi (bir xil
-     ko'rinish, alohida CSS yozilmaydi — "bir xil funksiyali qismlar bittada").
-     ========================================================================= */
   .cust-search-row {
     display: flex;
     gap: var(--sp-2);
@@ -1115,11 +980,7 @@
     padding: var(--sp-6) 0;
     text-align: center;
   }
-  /* 14-bosqich: ro'yxatlardagi kichik matn-tugmalar (Tahrirlash/Retsept/
-     O'chirish/Filialga o'tkazish va h.k.) — vizual ko'rinishi ixcham
-     qoladi, lekin haqiqiy bosiladigan maydon (padding orqali) 44px'ga
-     yetkaziladi. Rang faqat modifikator klass (.brand/.danger) bilan
-     belgilanadi — ranglar tokendan olinadi, xom hex emas. */
+
   .row-action-btn {
     border: none;
     background: none;
@@ -1152,15 +1013,12 @@
   .bosh { font-size: var(--fs-sm); color: var(--text-secondary); margin-top: 4px; }
   .owner-item .owner-expiry { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 2px; }
 
-  /* ---- Reyting/komissiya belgisi (owner-item o'ng tomonidagi urg'uli raqam) ---- */
   .rating-badge { text-align: right; font-weight: 700; color: var(--brand-primary); white-space: nowrap; }
   .rating-badge .rating-unit { font-size: var(--fs-xs); opacity: 0.65; font-weight: 400; }
 
-  /* ---- Xodim qo'shish/tahrirlash: lavozimlar ikki ustunli tur ---- */
   .staff-role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin: 6px 0; }
   .staff-hint { font-size: var(--fs-xs); color: var(--text-muted); margin-bottom: 4px; }
 
-  /* ---- Retsept tahrirlash oynasidagi ingredient qatorlari ---- */
   .recipe-row {
     display: flex; align-items: center; gap: var(--sp-2);
     background: var(--surface-1); border-radius: var(--radius-sm);
@@ -1170,8 +1028,6 @@
   .recipe-row .recipe-unit { color: var(--text-muted); font-size: var(--fs-xs); }
   .recipe-row input { width: 76px; margin: 0; text-align: center; }
 
-  /* ---- Obuna progress-bar (17-bosqich): admin panelidagi har bir do'kon
-     egasi qatorida, muddatning necha foizi qolganini vizual ko'rsatadi ---- */
   .subscription-progress { margin-top: var(--sp-2); max-width: 160px; }
   .subscription-progress-track {
     height: 5px; border-radius: var(--radius-pill);
@@ -1184,8 +1040,6 @@
   .subscription-progress.warn .subscription-progress-fill { background: var(--warning); }
   .subscription-progress.danger .subscription-progress-fill { background: var(--danger); }
 
-  /* ---- Onboarding qadamlar ko'rsatkichi (18-bosqich): yangi oshxona egasi
-     profilini bosqichma-bosqich to'ldirishda, joriy qadamni ko'rsatadi ---- */
   .onboarding-steps { display: flex; gap: var(--sp-2); margin: var(--sp-1) 0 var(--sp-4); }
   .onboarding-steps .step-seg {
     flex: 1; height: 4px; border-radius: var(--radius-pill);
@@ -1205,7 +1059,6 @@
   }
   .owner-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 
-  /* ---- Belgi (badge) ---- */
   .badge {
     display: inline-flex;
     align-items: center;
@@ -1221,7 +1074,6 @@
   .badge.danger { background: var(--danger-bg); color: var(--danger); }
   .badge.neutral { background: var(--surface-1); color: var(--text-secondary); border: 1px solid var(--border-color); }
 
-  /* ---- Mini-grafik (21-bosqich): Moliya/Z-hisobot trend va Sklad qoldig'i uchun umumiy ---- */
   .chart-card h2 { display: flex; align-items: center; gap: 6px; }
   .chart-legend { display: flex; gap: var(--sp-4); margin-top: 2px; }
   .chart-legend-item { display: flex; align-items: center; gap: 5px; font-size: var(--fs-xs); color: var(--text-secondary); }
@@ -1249,7 +1101,6 @@
   .stock-level-fill { height: 100%; border-radius: var(--radius-pill); background: var(--success); transition: width var(--transition-base); }
   .stock-level-fill.low { background: var(--danger); }
 
-  /* ---- Moliya (Cashflow) ---- */
   .cf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); margin-top: var(--sp-3); }
   .cf-stat {
     background: var(--surface-2);
@@ -1277,7 +1128,6 @@
     font-weight: 600; cursor: pointer; padding: 4px 8px;
   }
 
-  /* ---- AI-yordamchi (22-bosqich): chat uslubidagi savol-javob ---- */
   .ai-chat-card { display: flex; flex-direction: column; }
   .ai-chat-messages {
     display: flex; flex-direction: column; gap: var(--sp-3);
@@ -1380,9 +1230,6 @@
     background: var(--surface-1); flex-shrink: 0;
   }
 
-  /* ---- Miqdor tanlash (+/-) ----
-     14-bosqich: tugmalar 44x44px'gacha kengaytirildi (mobil bosish
-     maydoni talabi) — vizual radius/font o'lchami mutanosib oshirildi. */
   .qty-controls { display: flex; align-items: center; gap: var(--sp-2); }
   .qty-controls button {
     width: 44px; height: 44px; border-radius: var(--radius-md); border: none;
@@ -1394,14 +1241,6 @@
   .qty-controls button:hover { background: var(--brand-primary-dark); }
   .qty-controls .qty-val { min-width: 22px; text-align: center; font-weight: 600; }
 
-  /* ---- Savat cho'ntak paneli (pastda mahkam turadi) ----
-     15-bosqich: eski `.cart-bar` butun checkout formasini menyu
-     ro'yxati ICHIDA "sticky" qilib ko'rsatardi — qisqa ro'yxatlarda
-     bu #app markazga tekislangani uchun menyu ustiga xunuk chiqib
-     qolardi. Endi bu FAQAT kichkina "N ta mahsulot — summa" ko'rsatib
-     turadigan cho'ntak panel, chinakam checkout esa alohida tugma
-     bilan ochiladigan overlay/modal ichida (pastdagi .cart-total va
-     .type-row klasslari o'sha modal ICHIDA qayta ishlatiladi). */
   .cart-fab-bar {
     position: fixed;
     left: 0; right: 0; bottom: 0;
@@ -1422,17 +1261,11 @@
   .cart-fab-count { display: block; font-size: var(--fs-sm); color: var(--text-secondary); }
   .cart-fab-total { display: block; font-size: 17px; font-weight: 700; }
   .cart-fab-bar .btn { flex: 0 0 auto; width: auto; padding-left: var(--sp-5); padding-right: var(--sp-5); }
-  /* Cho'ntak panel pastda mahkamlangani uchun, ro'yxatning oxirgi
-     elementi u bilan qoplanib qolmasligi uchun bo'sh joy qoldiramiz. */
+
   .has-cart-fab { padding-bottom: 78px; }
 
   .cart-total { display: flex; justify-content: space-between; font-size: var(--fs-body); font-weight: 700; margin-bottom: 10px; }
 
-  /* ---- Kassir (xodim) panelidagi savat paneli ----
-     Bu mijozlar ekranidan ALOHIDA — kassir/xodim ish oynasi hali ham
-     to'liq sahifa ichida "yopishgan" panel sifatida ishlaydi (bu yerda
-     yuqoridagi cart-fab-bar muammosi yo'q, chunki kassir ro'yxati odatda
-     uzun va sahifa yuqoriga tekislangan). */
   .cart-bar {
     position: sticky; bottom: 0;
     background: var(--surface-1);
@@ -1442,7 +1275,6 @@
     margin-top: var(--sp-4);
   }
 
-  /* ---- Turlarni tanlash qatori (buyurtma turi, to'lov turi) ---- */
   .type-row { display: flex; gap: var(--sp-2); margin-bottom: 10px; flex-wrap: wrap; }
   .type-opt {
     flex: 1; min-width: 90px; min-height: 44px; text-align: center;
@@ -1457,7 +1289,6 @@
     border-color: transparent;
   }
 
-  /* ---- Oshxona / buyurtmalar taxtasi ---- */
   .tab-row { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
   .tab-opt {
     flex: 1; text-align: center; padding: 10px 6px; min-height: 44px;
@@ -1494,7 +1325,6 @@
   .order-card .order-bottom { display: flex; align-items: center; justify-content: space-between; }
   .order-card .order-total { font-size: var(--fs-body); font-weight: 700; }
 
-  /* ---- Holat belgilari (status-badge) — semantik ranglar, brenddan mustaqil ---- */
   .status-badge {
     display: inline-block; font-size: var(--fs-xs); font-weight: 700;
     padding: 4px 10px; border-radius: var(--radius-pill); white-space: nowrap;
@@ -1517,9 +1347,6 @@
   .order-action-btn.ikkinchi { background: transparent; border: 1px solid var(--border-color-strong); color: var(--text-primary); }
   .order-action-btn.ikkinchi:hover { background: var(--surface-1); }
 
-  /* 40-bosqich: mijoz "Buyurtmalarim" tarixida — "Yana buyurtma berish"
-     (tezkor takroriy buyurtma) tugmasi. .order-action-btn bilan bir xil
-     rang-uslub, faqat butun eni bo'yicha va bir oz ixchamroq. */
   .order-card .order-reorder-btn {
     width: 100%;
     margin-top: var(--sp-2);
@@ -1539,13 +1366,6 @@
   }
   .order-card .order-reorder-btn:hover { background: var(--brand-primary-light); }
 
-  /* =========================================================================
-     55-bosqich: mijoz "Buyurtmalarim"da buyurtma holatini REAL VAQTDA
-     kuzatish uchun bosqichli yo'l (stepper). Har bir bosqich — nuqta +
-     yorliq, orasidagi chiziq o'tgan bosqichlarda to'ldirilgan rangda.
-     Holat o'zgarganda (poll orqali) butun kartochka yangilanadi va
-     .order-track-flash animatsiyasi bilan diqqat tortiladi.
-     ========================================================================= */
   .order-track {
     display: flex;
     align-items: flex-start;
@@ -1596,13 +1416,6 @@
   }
   .order-track-flash { animation: orderTrackFlash 1s ease-out; }
 
-  /* =========================================================================
-     39-bosqich: mijoz uchun bildirishnomalar markazi — header'dagi
-     qo'ng'iroqcha (badge bilan) va bildirishnomalar ekranidagi ro'yxat
-     bandlari. Owner tarafidagi .ko-alert-* bilan bir xil g'oya, lekin
-     mijoz header'i (.profile-view, ochiq/karta fon) uchun moslashtirilgan.
-     ========================================================================= */
-  /* ---- 57-bosqich: stollar uchun QR-kod kartochkasi ---- */
   .tqr-card {
     display: flex;
     flex-direction: column;
@@ -1626,7 +1439,6 @@
   }
   .tqr-copy-btn { flex-shrink: 0; width: auto; padding: 6px 12px; }
 
-  /* ---- 56-bosqich: checkout'dagi saqlangan manzillar chip qatori ---- */
   .cust-addr-chip-row {
     display: flex;
     gap: var(--sp-2);
@@ -1709,12 +1521,6 @@
   .cust-notif-time { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 4px; }
   .order-card .order-reorder-btn:disabled { opacity: 0.6; cursor: default; }
 
-  /* ---- Oshxona (oshpaz) va kuryer (kuryer) taxtalari uchun
-     kattalashtirilgan, "bitta qarashda" o'qiladigan ko'rinish (20-bosqich):
-     bu rollar band paytda tezda ko'z yugurtirishi kerak, shuning uchun
-     eng muhim ma'lumot (taom nomlari) va amal tugmasi sezilarli darajada
-     kattalashtiriladi. Faqat #ordersBoard.orders-board-large ichida —
-     kassirning ixcham buyurtma ro'yxatiga ta'sir qilmaydi. ---- */
   .orders-board-large .order-card { padding: var(--sp-4) var(--sp-5); margin-bottom: var(--sp-3); }
   .orders-board-large .order-type { font-size: 19px; }
   .orders-board-large .order-time { font-size: var(--fs-sm); }
@@ -1760,7 +1566,6 @@
   .xabar.ok { color: var(--success); }
   .xabar.err { color: var(--danger); }
 
-  /* ---- Tasdiqlash oynasi (modal) ---- */
   .overlay {
     position: fixed;
     inset: 0;
@@ -1779,9 +1584,7 @@
     padding: var(--sp-5);
     width: 100%;
     max-width: 340px;
-    /* Ba'zi modallar (masalan "Tizim holati") ekrandan balandroq bo'lishi
-       mumkin — max-height + overflow-y bo'lmasa, pastdagi "Yopish" tugmasi
-       ekrandan chiqib ketib, foydalanuvchi oynani yopa olmay qoladi. */
+
     max-height: calc(100vh - var(--sp-6) * 2);
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
@@ -1792,9 +1595,6 @@
   .modal p { font-size: var(--fs-body); color: var(--text-secondary); line-height: 1.4; margin-bottom: var(--sp-4); word-break: break-all; }
   .hidden { display: none !important; }
 
-  /* ---- 25/26-bosqich: To'lov isboti (skrinshot) haqidagi ogohlantirish —
-     ALOHIDA, aniq ko'rinadigan modal sifatida ochiladi (qizil ramka bilan),
-     shunda mijoz uni tasodifan ko'rmay qoldirmaydi. ---- */
   .payment-proof-modal {
     border: 2px solid var(--danger);
     background: var(--danger-bg);
@@ -1815,22 +1615,13 @@
   @keyframes overlay-fade { from { opacity: 0; } to { opacity: 1; } }
   @keyframes modal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
-  /* ---- Mijozlar uchun menyu (katalog, sevimlilar, aksiya, bonus) ----
-     16-bosqich: mijoz katalogi 2 ustunli katalog-panjara (grid) ko'rinishiga
-     o'tkazildi — rasm ustida suzuvchi yurak (sevimli) tugmasi, nom va narx
-     pastda, "+" tugmasi (mahsulot tanlanganda -/soni/+ ga almashadi). */
   .cat-row { display: flex; gap: var(--sp-2); overflow-x: auto; padding-bottom: 4px; margin-top: 10px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
   .cat-row::-webkit-scrollbar { display: none; }
-  /* 27/29-bosqich: umumiy bo'limlangan-menyu tab-bari (mijoz va kassir,
-     .sectioned-menu-tabs) tepada mahkamlanadi — cashierStatusChips kabi
-     boshqa .cat-row ishlatuvchi joylarga bu ta'sir qilmasligi uchun
-     alohida klass bilan cheklandi. */
+
   .sectioned-menu-tabs { position: sticky; top: 0; z-index: 5; background: var(--surface-0); padding-top: 8px; padding-bottom: 12px; scroll-snap-type: x proximity; }
   .sectioned-menu-tabs .cat-opt { scroll-snap-align: start; }
   @media (max-width: 380px) {
-    /* 34-bosqich: kichik ekranlarda chiplar torlik qilmasligi uchun
-       bo'shliq/padding biroz siqiladi — gorizontal scroll o'zi allaqachon
-       ishlaydi (.cat-row: overflow-x auto), bu faqat mos sig'dirishga yordam. */
+
     .sectioned-menu-tabs { gap: var(--sp-1); }
     .sectioned-menu-tabs .cat-opt { padding: 0 12px; font-size: var(--fs-sm); }
   }
@@ -1845,9 +1636,7 @@
     color: var(--brand-on-primary);
   }
   .cat-heading { font-size: var(--fs-h1); font-weight: 700; margin: 0 0 var(--sp-2); }
-  /* 33-bosqich: bo'limlar orasidagi bo'shliq bitta joyda (.menu-section)
-     boshqariladi — .cat-heading endi faqat sarlavha bilan grid orasidagi
-     kichik bo'shliqqa javob beradi, takrorlanuvchi qo'shni marginlar yo'q. */
+
   .menu-section { margin-top: var(--sp-5); }
   .menu-section:first-of-type { margin-top: var(--sp-1); }
   .catalog-grid {
@@ -1855,9 +1644,7 @@
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-3);
   }
-  /* 31-33-bosqich: planshet (700px konteyner)da 3 ustun, kompyuterda
-     (960px konteyner)da 4 ustun — taom kartochkalari torayib
-     cho'zilib qolmasligi uchun. */
+
   @media (min-width: 768px) {
     .catalog-grid { grid-template-columns: repeat(3, 1fr); }
   }
@@ -1913,8 +1700,7 @@
     border: 2px solid transparent; cursor: pointer; color: var(--promo-text);
   }
   .promo-banner.selected { border-color: var(--promo-border); }
-  /* 45-bosqich: mijoz ekranidagi reklama banner karuseli — gorizontal
-     suriladigan rasmli kartochkalar qatori (bittadan ko'p bo'lsa). */
+
   .ad-banner-row {
     display: flex; gap: var(--sp-2); overflow-x: auto; margin-top: 10px;
     scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
@@ -1933,9 +1719,6 @@
   }
   .customer-link-hint { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: var(--sp-2); line-height: var(--lh-body); }
 
-  /* H64-bosqich: "AI ofitsiant" — mijozning o'z xarid tarixi asosidagi
-     shaxsiy tavsiyalar qatori. Gorizontal suriladigan kartalar — asosiy
-     katalog to'ridan (grid) ajralib turishi uchun. */
   .ai-reco-wrap { margin-top: 12px; }
   .ai-reco-block + .ai-reco-block { margin-top: 14px; }
   .ai-reco-title {
@@ -1949,8 +1732,6 @@
   .ai-reco-row::-webkit-scrollbar { display: none; }
   .ai-reco-row .catalog-item { flex: 0 0 auto; width: 150px; scroll-snap-align: start; }
 
-  /* H63-bosqich: tezkor qo'llab-quvvatlash chat — mijoz va xodim tomonidagi
-     xabar pufakchalari (WhatsApp/Telegram uslubidagi oddiy chat ko'rinishi). */
   .support-msg { display: flex; flex-direction: column; margin-bottom: 10px; max-width: 80%; }
   .support-msg.mine { margin-left: auto; align-items: flex-end; }
   .support-msg.staff { margin-right: auto; align-items: flex-start; }
@@ -1962,12 +1743,6 @@
   .support-msg.staff .support-msg-bubble { background: var(--surface-2); color: var(--text-primary); border-bottom-left-radius: 4px; }
   .support-msg-time { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 3px; padding: 0 4px; }
 
-  /* =========================================================================
-     YANGI BAZAVIY KOMPONENTLAR (1-bosqichda qo'shildi, hozircha JS ularni
-     ishlatmaydi — 3-bosqichda ekranlarga joriy qilinadi)
-     ========================================================================= */
-
-  /* ---- Skeleton-loader: ma'lumot yuklanayotganda ko'rsatiladi ---- */
   .skeleton {
     background: linear-gradient(90deg, var(--surface-1) 25%, var(--border-color) 37%, var(--surface-1) 63%);
     background-size: 400% 100%;
@@ -1983,7 +1758,6 @@
     100% { background-position: 0 50%; }
   }
 
-  /* ---- Bo'sh holat (empty state): ro'yxat bo'sh bo'lganda ---- */
   .empty-state {
     display: flex; flex-direction: column; align-items: center; text-align: center;
     padding: var(--sp-8) var(--sp-4); color: var(--text-muted);
@@ -1992,10 +1766,6 @@
   .empty-state .empty-state-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
   .empty-state .empty-state-desc { font-size: var(--fs-sm); color: var(--text-muted); max-width: 260px; line-height: var(--lh-body); }
 
-  /* ---- Tarmoq xatosi holati (16-bosqich): internet/server bilan aloqa
-     uzilganda — bo'sh holatdan farqli, "Qayta urinish" tugmasi bilan.
-     Ham to'liq ekran (renderNetworkErrorScreen), ham bitta konteyner ichida
-     (renderNetworkErrorInline, masalan ro'yxat/board o'rnida) ishlatiladi. ---- */
   .network-error-state {
     display: flex; flex-direction: column; align-items: center; text-align: center;
     padding: var(--sp-8) var(--sp-4); color: var(--text-muted);
@@ -2010,11 +1780,6 @@
   .network-error-state .network-error-retry-btn .icon { width: 16px; height: 16px; }
   .network-error-state .network-error-retry-btn:disabled { opacity: 0.6; }
 
-  /* ---- Tarifda yo'q funksiyaga kirish bloklanganda (60-bosqich):
-     oddiy xatolikdan farqli, aniq va tushunarli — qulf ikonkasi va
-     ogohlantirish rangi bilan. Ham bitta konteyner ichida (butun bo'lim
-     bloklanganda, masalan AI tahlil), ham modal sifatida (bitta amal —
-     masalan "aksiya qo'shish" — rad etilganda) ishlatiladi. ---- */
   .feature-blocked-state {
     display: flex; flex-direction: column; align-items: center; text-align: center;
     padding: var(--sp-8) var(--sp-4); color: var(--text-muted);
@@ -2032,12 +1797,6 @@
   .feature-blocked-modal .feature-blocked-title { font-size: var(--fs-body); font-weight: 700; color: var(--warning); margin-bottom: 6px; }
   .feature-blocked-modal .feature-blocked-desc { font-size: var(--fs-sm); color: var(--text-secondary); line-height: var(--lh-body); margin-bottom: var(--sp-4); }
 
-  /* ---- Mijoz ilovasi ochilganda "Xush kelibsiz" yuklanish ekrani ----
-     Oshxonaning logotipi butun ekranga fon qilib qo'yiladi (xiralashtirilgan
-     qorong'i qatlam ustida), o'rtada mijozga tanish logotip + "Xush
-     kelibsiz!" + oshxona nomi ko'rsatiladi — quruq "Tekshirilmoqda..."
-     matni o'rniga. #app'ning ichki padding'idan qat'iy nazar butun
-     ekranni egallashi uchun position:fixed ishlatiladi. */
   .customer-welcome-loading {
     position: fixed;
     inset: 0;
@@ -2093,14 +1852,6 @@
     animation: dash-skeleton-pulse 1.2s ease-in-out infinite;
   }
 
-  /* =========================================================================
-     BREND RANG TANLASH (25-27-bosqich): palitra + moslashtiriladigan rang.
-     Tanlangan asosiy rangdan to'q/och variantlar va ustidagi matn rangi
-     (oq/qora) JS orqali kontrast hisobi bilan avtomatik chiqariladi —
-     shu sababli bu yerda faqat asosiy rangning o'zi tanlanadi.
-     Qo'llanish doirasi: faqat shu oshxonaga tegishli ekranlar (egasi,
-     xodimlar, mijozlar menyusi). Admin paneli har doim standart rangda
-     qoladi, chunki u birorta aniq oshxonaga tegishli emas. ---- */
   .brand-color-swatches { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: 6px 0 4px; }
   .brand-swatch {
     width: 44px; height: 44px; border-radius: 50%; border: 3px solid transparent;
@@ -2122,8 +1873,7 @@
     background: var(--surface-1); border-radius: var(--radius-md); padding: var(--sp-3) var(--sp-4); margin-top: var(--sp-2);
   }
   .brand-color-preview .brand-preview-label { font-size: var(--fs-xs); color: var(--text-muted); }
-  /* 29-bosqich: jonli ko'rish — bir nechta haqiqiy komponent (header,
-     tugmalar, belgilar) bitta blokda, tanlangan rangdan darhol ta'sirlanadi. */
+
   .brand-preview-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
   .brand-preview-row .btn { width: auto; margin: 0; padding: 0 16px; min-height: 38px; }
   .brand-preview-header {
@@ -2137,8 +1887,7 @@
     transition: background-color var(--transition-fast), color var(--transition-fast);
   }
   .brand-preview-header .brand-preview-shop-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); flex: 1; }
-  /* 26-bosqich: hisoblangan kontrast nisbati foydalanuvchiga ko'rinadigan
-     ogohlantirish/tasdiq sifatida chiqariladi (avval faqat ichki hisob edi). */
+
   .brand-preview-contrast {
     display: flex; align-items: center; gap: 6px;
     font-size: var(--fs-xs); font-weight: 600; padding: 6px 10px; border-radius: var(--radius-sm);
@@ -2147,13 +1896,6 @@
   .brand-preview-contrast.ok { background: var(--success-bg); color: var(--success); }
   .brand-preview-contrast.warn { background: var(--warning-bg); color: var(--warning); }
 
-  /* =========================================================================
-     IKONOGRAFIYA (9-bosqich): yagona chiziqli (outline) ikon tizimi.
-     Barcha ikonlar #icon-sprite ichidagi <symbol>lardan <use> orqali
-     chaqiriladi — shu sababli hammasi bir xil qalinlik/uslubda bo'ladi va
-     rangi currentColor orqali atrofdagi matn rangiga (yoki --brand-primary
-     ga) avtomatik moslashadi. Emoji faqat promo-banner'da (🎁) qoldirildi.
-     ========================================================================= */
   .icon {
     width: 18px;
     height: 18px;
@@ -2176,14 +1918,6 @@
   .icon-warning { color: var(--warning); }
   .icon-brand { color: var(--brand-primary); transition: color var(--transition-fast); }
 
-  /* =========================================================================
-     APP SHELL — DOIMIY HEADER (10-bosqich)
-     #appHeader #app'dan TASHQARIDA turadi, shuning uchun ekran(html) har safar
-     #app'ni qayta chizganda ham header o'zgarmay qoladi — oshxona logotipi +
-     nomi foydalanuvchi qayerda bo'lishidan qat'iy nazar tepada ko'rinadi.
-     Faqat "profil to'ldirilgan" holatda ko'rsatiladi (setup/kirish/admin
-     ekranlarida clearAppHeader() bilan yashiriladi).
-     ========================================================================= */
   .app-header {
     position: sticky;
     top: 0;
@@ -2230,9 +1964,7 @@
     flex: 1;
     min-width: 0;
   }
-  /* 11-bosqich: rol belgisi — header'da doimiy, kimning (egasi/kassir/oshpaz/
-     sklad/dostavka) ekaniga qat'iy nazar, foydalanuvchi qaysi ekranda bo'lishidan
-     qat'iy nazar tepada, ism yonida ko'rinadi. */
+
   .app-header .app-header-role-badge {
     flex-shrink: 0;
     margin-left: auto;
@@ -2245,9 +1977,7 @@
     white-space: nowrap;
     transition: background-color var(--transition-fast), color var(--transition-fast);
   }
-  /* Bir nechta vakolatli xodim uchun - rol belgisi yonidagi "rol almashtirish"
-     tugmasi (qarang: renderStaffScreen/staffRoleSwitchHandler). Faqat shunday
-     xodimlarda ko'rinadi, shuning uchun margin-left:auto endi shu tugmada. */
+
   .app-header .app-header-role-switch-btn {
     flex-shrink: 0;
     margin-left: auto;
@@ -2265,10 +1995,6 @@
   .app-header .app-header-role-badge + .app-header-role-switch-btn { margin-left: 6px; }
   .app-header .app-header-role-switch-btn:active { transform: scale(0.92); }
 
-  /* 38-bosqich: Dark/Light almashtirish tugmasi — .app-header-name'ning
-     flex:1'i tufayli har doim header'ning eng o'ng chetida turadi, alohida
-     margin-left:auto kerak emas (.app-header'dagi umumiy `gap` orqali
-     qo'shni elementdan ajratiladi). Har doim ko'rinadi (rolga bog'liq emas). */
   .app-header .app-header-theme-btn {
     flex-shrink: 0;
     width: 26px;
@@ -2284,14 +2010,9 @@
   }
   .app-header .app-header-theme-btn:active { transform: scale(0.92); }
 
-  /* =========================================================================
-     Egasi profili — professional dashboard (savdo/tushum) va logotip
-     galereyadan yuklash uchun qo'shimcha uslublar.
-     ========================================================================= */
   .icon-sm { width: 16px; height: 16px; vertical-align: -3px; }
   .icon-md { width: 22px; height: 22px; }
 
-  /* ---- Bo'lim sarlavhalari — har bir funksional blok aniq ajralib tursin ---- */
   .section-label {
     display: flex;
     align-items: center;
@@ -2306,16 +2027,6 @@
   .section-label:first-of-type { margin-top: var(--sp-4); }
   .section-label .icon { color: var(--brand-primary); }
 
-  /* =========================================================================
-     Profil sahifasi (renderProfileForm) qayta ishlandi: ilgari bir uzun,
-     to'xtovsiz "kartochka" ro'yxati sifatida ko'rinar edi (kategoriyalar,
-     aksiyalar, bonus, dostavka, oshxona guruhi, xavfsizlik — hammasi bir
-     vaqtda ochiq), bu esa navigatsiyani noqulay va bosim beruvchi qilardi.
-     Endi asosiy ma'lumotlar (nomi/manzil/telefon/logo/rang) doim ochiq
-     qoladi, qolgan kamdan-kam o'zgartiriladigan bo'limlar bosiladigan
-     (accordion) kartochkalarga yig'ildi — bir vaqtning o'zida faqat kerakli
-     bo'lim ochiladi.
-     ========================================================================= */
   .profile-hero {
     display: flex;
     align-items: center;
@@ -2396,7 +2107,6 @@
   .acc-body .kartochka { background: var(--surface-1); }
   .acc-body .kartochka:first-child { margin-top: 0; }
 
-  /* ---- Logotip galereyadan tanlash ---- */
   .logo-picker {
     display: flex;
     align-items: center;
