@@ -8410,14 +8410,25 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // ---- Kursor ortidan qoladigan "tutun" effekti (faqat mijoz ilovasida) ----
-  let __smokeEffectStarted = false;
-  function initCursorSmokeEffect() {
-    if (__smokeEffectStarted) return;
-    __smokeEffectStarted = true;
+  // ---- Kursor ortidan qoladigan "olov" effekti + hotdog-kursor (faqat mijoz ilovasida) ----
+  let __cursorFxStarted = false;
+  function initCursorFireEffect() {
+    if (__cursorFxStarted) return;
+    __cursorFxStarted = true;
+
+    // Kursorning o'zini hotdogga aylantiramiz — SVG'ni data-URI sifatida
+    // cursor xususiyatiga beramiz (bulochka + sosiska + gorchitsa zigzagi).
+    const hotdogSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'>
+      <g transform='rotate(-40 16 16)'>
+        <rect x='2' y='11' width='28' height='14' rx='7' fill='%23E8B974'/>
+        <rect x='5' y='9' width='22' height='10' rx='5' fill='%23B5451D'/>
+        <path d='M7 13 Q10 9 13 13 T19 13 T25 13' stroke='%23F2C200' stroke-width='2' fill='none' stroke-linecap='round'/>
+      </g>
+    </svg>`.replace(/\s+/g, ' ').trim();
+    document.body.style.cursor = `url("data:image/svg+xml,${hotdogSvg}") 6 6, auto`;
 
     const canvas = document.createElement('canvas');
-    canvas.id = 'cursorSmokeCanvas';
+    canvas.id = 'cursorFireCanvas';
     canvas.style.position = 'fixed';
     canvas.style.top = '0';
     canvas.style.left = '0';
@@ -8450,11 +8461,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
         particles.push({
           x: x + (Math.random() - 0.5) * 6,
           y: y + (Math.random() - 0.5) * 6,
-          r: 6 + Math.random() * 7,
-          alpha: 0.5 + Math.random() * 0.25,
-          vx: (Math.random() - 0.5) * 0.4,
-          vy: -0.4 - Math.random() * 0.5,
-          grow: 0.14 + Math.random() * 0.12
+          r: 5 + Math.random() * 6,
+          alpha: 0.6 + Math.random() * 0.3,
+          // Olov tutunga qaraganda tezroq yuqoriga intiladi va tezroq so'nadi
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: -0.7 - Math.random() * 0.8,
+          grow: 0.05 + Math.random() * 0.06
         });
       }
       if (particles.length > 220) particles.splice(0, particles.length - 220);
@@ -8472,11 +8484,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
         p.x += p.vx;
         p.y += p.vy;
         p.r += p.grow;
-        p.alpha -= 0.0028;
+        p.alpha -= 0.02; // olov zarrachasi tutunga qaraganda ancha qisqa umr ko'radi
         if (p.alpha > 0) {
           const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
-          grad.addColorStop(0, `rgba(190,190,190,${p.alpha})`);
-          grad.addColorStop(1, 'rgba(190,190,190,0)');
+          // Markazda eng issiq (och sariq/oq), o'rtada to'q sariq, chetda qizil
+          grad.addColorStop(0, `rgba(255, 244, 189, ${p.alpha})`);
+          grad.addColorStop(0.35, `rgba(255, 174, 66, ${p.alpha * 0.9})`);
+          grad.addColorStop(0.7, `rgba(230, 74, 25, ${p.alpha * 0.6})`);
+          grad.addColorStop(1, 'rgba(230, 74, 25, 0)');
           ctx.fillStyle = grad;
           ctx.beginPath();
           ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
@@ -8490,7 +8505,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function renderCustomerApp(ownerId) {
-    initCursorSmokeEffect();
+    initCursorFireEffect();
     clearAppHeader();
     ekran(customerWelcomeLoadingHtml(null));
 
