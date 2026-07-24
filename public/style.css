@@ -1540,6 +1540,63 @@
   .order-card .order-reorder-btn:hover { background: var(--brand-primary-light); }
 
   /* =========================================================================
+     55-bosqich: mijoz "Buyurtmalarim"da buyurtma holatini REAL VAQTDA
+     kuzatish uchun bosqichli yo'l (stepper). Har bir bosqich — nuqta +
+     yorliq, orasidagi chiziq o'tgan bosqichlarda to'ldirilgan rangda.
+     Holat o'zgarganda (poll orqali) butun kartochka yangilanadi va
+     .order-track-flash animatsiyasi bilan diqqat tortiladi.
+     ========================================================================= */
+  .order-track {
+    display: flex;
+    align-items: flex-start;
+    margin: var(--sp-2) 0 var(--sp-3);
+  }
+  .order-track-step {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    text-align: center;
+  }
+  .order-track-step::before {
+    content: '';
+    position: absolute;
+    top: 7px;
+    left: -50%;
+    width: 100%;
+    height: 2px;
+    background: var(--border-color);
+    z-index: 0;
+  }
+  .order-track-step:first-child::before { content: none; }
+  .order-track-step.done::before { background: var(--success); }
+  .order-track-dot {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--surface-3, #eee);
+    border: 2px solid var(--border-color);
+    z-index: 1;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .order-track-step.done .order-track-dot { background: var(--success); border-color: var(--success); }
+  .order-track-step.active .order-track-dot {
+    background: var(--warning); border-color: var(--warning);
+    box-shadow: 0 0 0 4px var(--warning-bg);
+  }
+  .order-track-step.cancelled .order-track-dot { background: var(--danger); border-color: var(--danger); }
+  .order-track-label {
+    font-size: 10px; color: var(--text-muted); margin-top: 4px; line-height: 1.2;
+  }
+  .order-track-step.done .order-track-label,
+  .order-track-step.active .order-track-label { color: var(--text-primary); font-weight: 600; }
+
+  @keyframes orderTrackFlash {
+    0% { box-shadow: 0 0 0 0 var(--success-bg); }
+    100% { box-shadow: 0 0 0 8px rgba(0,0,0,0); }
+  }
+  .order-track-flash { animation: orderTrackFlash 1s ease-out; }
+
+  /* =========================================================================
      39-bosqich: mijoz uchun bildirishnomalar markazi — header'dagi
      qo'ng'iroqcha (badge bilan) va bildirishnomalar ekranidagi ro'yxat
      bandlari. Owner tarafidagi .ko-alert-* bilan bir xil g'oya, lekin
