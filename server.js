@@ -1784,11 +1784,23 @@ async function handleStartCommand(chatId, from, text) {
       return;
     }
 
+    if (!PUBLIC_URL) {
+      await sendMessage(chatId,
+        `👋 <b>KitchenOS</b>ga xush kelibsiz!\n` +
+        `Bu — oshxonangiz uchun buyurtma qabul qilish va boshqarish tizimi (menyu, xodimlar, sklad, hisobotlar).\n\n` +
+        `O'z oshxonangizni ro'yxatdan o'tkazish uchun quyidagi tugmani bosing:`,
+        { inline_keyboard: [[{ text: "📝 Ro'yxatdan o'tish", callback_data: 'self_register_start' }]] });
+      return;
+    }
+
+    const entryMenuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/`;
     await sendMessage(chatId,
       `👋 <b>KitchenOS</b>ga xush kelibsiz!\n` +
-      `Bu — oshxonangiz uchun buyurtma qabul qilish va boshqarish tizimi (menyu, xodimlar, sklad, hisobotlar).\n\n` +
-      `O'z oshxonangizni ro'yxatdan o'tkazish uchun quyidagi tugmani bosing:`,
-      { inline_keyboard: [[{ text: "📝 Ro'yxatdan o'tish", callback_data: 'self_register_start' }]] });
+      `Buyurtma berish uchun quyidagi tugmani bosing:`,
+      { inline_keyboard: [
+        [{ text: '🍽 Menyuni ochish', web_app: { url: entryMenuUrl } }],
+        [{ text: "🏪 Oshxona egasimisiz? Ro'yxatdan o'tish", callback_data: 'self_register_start' }]
+      ] });
     return;
   }
 
