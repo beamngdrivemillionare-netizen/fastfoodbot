@@ -1366,6 +1366,26 @@
   }
   .order-card .order-reorder-btn:hover { background: var(--brand-primary-light); }
 
+  .order-card .order-received-btn {
+    width: 100%;
+    margin-top: var(--sp-2);
+    border: none;
+    border-radius: var(--radius-md);
+    background: var(--success);
+    color: var(--brand-on-primary);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: opacity var(--transition-fast);
+  }
+  .order-card .order-received-btn:hover { opacity: 0.88; }
+  .order-card .order-received-btn:disabled { opacity: 0.6; cursor: default; }
+
   .order-track {
     display: flex;
     align-items: flex-start;
