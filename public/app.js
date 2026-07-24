@@ -6302,6 +6302,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </select>
           <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
           <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button class="btn ikkinchi" id="ohExportCsvBtn" style="flex:1;">${icon('file-plus', 'icon-xs')} Excel</button>
+            <button class="btn ikkinchi" id="ohExportPdfBtn" style="flex:1;">${icon('file-plus', 'icon-xs')} PDF</button>
+          </div>
         </div>
         <div class="kartochka">
           <div id="ohSummary" class="bosh">Yuklanmoqda...</div>
@@ -6331,6 +6335,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       renderOrderHistoryScreen(profile, onBack);
     });
 
+    // 44-bosqich: joriy filtrga mos BARCHA (sahifalashsiz) buyurtmalarni
+    // Excel (CSV) yoki PDF sifatida yuklab olish.
+    document.getElementById('ohExportCsvBtn').addEventListener('click', (e) => exportOrderHistory('csv', e.target));
+    document.getElementById('ohExportPdfBtn').addEventListener('click', (e) => exportOrderHistory('pdf', e.target));
+
     fillOrderHistoryEmployeeSelect();
     loadOrderHistory();
   }
@@ -6342,6 +6351,50 @@ const tg = window.Telegram && window.Telegram.WebApp;
       selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
       selectEl.value = orderHistoryState.employeeId;
     }
+  }
+
+  // 44-bosqich: fayl (CSV yoki PDF) mazmunini brauzerda "yuklab olish"
+  // sifatida saqlaydi — hech qanday tashqi kutubxonasiz, oddiy Blob + vaqtinchalik
+  // <a download> havolasi orqali. base64 — true bo'lsa content base64 deb hisoblanadi.
+  function downloadFile(filename, mime, content, isBase64) {
+    let blob;
+    if (isBase64) {
+      const binary = atob(content);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      blob = new Blob([bytes], { type: mime });
+    } else {
+      blob = new Blob([content], { type: mime });
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  async function exportOrderHistory(format, btnEl) {
+    if (btnEl) btnEl.disabled = true;
+    const res = await apiPost('/api/order-history-export', {
+      initData,
+      format,
+      dateFrom: orderHistoryState.dateFrom || undefined,
+      dateTo: orderHistoryState.dateTo || undefined,
+      employeeId: orderHistoryState.employeeId || undefined,
+      paymentType: orderHistoryState.paymentType || undefined,
+      orderType: orderHistoryState.orderType || undefined
+    });
+    if (btnEl) btnEl.disabled = false;
+    if (res.networkError || !res.ok) {
+      const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+      alertFn(res.reason || "Fayl tayyorlanmadi. Qayta urinib ko'ring.");
+      return;
+    }
+    if (res.format === 'csv') downloadFile(res.filename, res.mime, res.content, false);
+    else downloadFile(res.filename, res.mime, res.contentBase64, true);
   }
 
   async function loadOrderHistory() {
