@@ -89,6 +89,11 @@ const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
 // (UI keyingi bosqichda qo'shiladi) — hozircha faqat standart qiymatlar bilan
 // avtomatik yaratiladi.
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
+// broadcasts.json — 48-51-bosqich: admin tomonidan yuborilgan har bir
+// umumiy e'lon/broadcast xabari shu yerga jurnallanadi (matn, rasm, tugma,
+// qabul qiluvchi turi, yuborilgan/yetib bormagan sonlar). Faqat tarix —
+// qayta yuborish uchun ishlatilmaydi.
+const BROADCASTS_FILE = path.join(DATA_DIR, 'broadcasts.json');
 // ========================================================
 
 // ==================== G-bo'lim: Obuna va oshxona egalari boshqaruvi ====================
@@ -660,6 +665,11 @@ function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
 // tugasa ham bu yozuvlar saqlanib qoladi (69-bosqich).
 function loadPayments() { return loadJSONArray(PAYMENTS_FILE); }
 function savePayments(list) { saveJSONArray(PAYMENTS_FILE, list); }
+
+// ====== E'lon/broadcast tarixi (48-51-bosqich) ======
+function loadBroadcasts() { return loadJSONArray(BROADCASTS_FILE); }
+function saveBroadcasts(list) { saveJSONArray(BROADCASTS_FILE, list); }
+
 function recordPayment(owner, amount, extra) {
   const amountVal = Number(amount) || 0;
   if (amountVal <= 0) return; // 0 so'mlik "to'lov"ni jurnalga yozmaymiz
@@ -9129,6 +9139,149 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, newUntil: result.newUntil || null });
+    });
+    return;
+  }
+
+  // ==================== G-bo'lim: Umumiy broadcast/e'lon tizimi (48-51-bosqich) ====================
+  // Admin (ADMIN_ID yoki qo'shimcha adminlardan biri) BARCHA oshxonalar
+  // bo'yicha bitta xabarni tanlangan toifaga (49-bosqich: mijoz / oshxona
+  // egasi / xizmatchi) yuboradi — reklama banner (owner-darajasida, faqat
+  // o'z mijozlariga) dan farqli o'laroq, bu tizim BUTUN platformaga tegishli
+  // e'lonlar uchun (masalan yangi funksiya haqida xabar, texnik ishlar
+  // haqida ogohlantirish). 50-bosqich: matn + rasm (https:// havola,
+  // Telegram rasmni o'zi yuklab olishi kerak — base64 ishlamaydi) + tugma
+  // (matn+havola) bilan yuboriladi. 51-bosqich: har bir yuborish
+  // broadcasts.json'ga netija (necha kishiga yetdi/yetmadi) bilan yoziladi.
+
+  // 49-bosqich: tanlangan toifadagi barcha (takrorlanmas) Telegram ID'lar,
+  // BARCHA oshxona egalari bo'yicha yig'ib chiqiladi.
+  function collectBroadcastRecipients(targetType) {
+    const owners = loadOwners();
+    const ids = new Set();
+    if (targetType === 'owner') {
+      owners.forEach(o => ids.add(String(o.id)));
+    } else if (targetType === 'customer') {
+      owners.forEach(o => (o.customers || []).forEach(c => ids.add(String(c.id))));
+    } else if (targetType === 'staff') {
+      owners.forEach(o => (o.staff || []).forEach(s => ids.add(String(s.id))));
+    }
+    return Array.from(ids);
+  }
+
+  // Rasm faqat https:// havola sifatida qabul qilinadi (menyu/banner
+  // rasmlaridan farqli — Telegram sendPhoto rasmni o'zi shu havoladan
+  // yuklab oladi, base64 data URL'ni GET so'rovda yuborib bo'lmaydi).
+  function isValidBroadcastImageUrl(value) {
+    if (!value) return true;
+    return /^https?:\/\//i.test(value);
+  }
+
+  // Bitta qabul qiluvchiga xabar yuboradi (rasm bo'lsa sendPhoto+caption,
+  // bo'lmasa oddiy sendMessage), tugma bo'lsa inline havola tugmasi bilan.
+  function sendBroadcastToChat(chatId, text, imageUrl, buttonText, buttonUrl) {
+    const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
+    const params = { chat_id: chatId, parse_mode: 'HTML' };
+    if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+    const method = imageUrl ? 'sendPhoto' : 'sendMessage';
+    if (imageUrl) { params.photo = imageUrl; params.caption = text; }
+    else { params.text = text; }
+    return telegramApi(method, params).then(result => {
+      if (!result || !result.ok) {
+        const reason = (result && result.description) || 'noma\'lum xatolik';
+        console.error(`[broadcast xato] chat_id=${chatId}: ${reason}`);
+        return false;
+      }
+      return true;
+    }).catch(err => {
+      console.error(`[broadcast tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+      return false;
+    });
+  }
+
+  // 51-bosqich: barcha qabul qiluvchilarga KETMA-KET (Promise.all emas)
+  // kichik tanaffus bilan yuboradi — Telegram'ning soniyasiga xabar
+  // limitidan (~30/s) chiqib ketmaslik uchun.
+  async function sendBroadcastSequential(recipientIds, text, imageUrl, buttonText, buttonUrl) {
+    let delivered = 0, failed = 0;
+    for (const chatId of recipientIds) {
+      const ok = await sendBroadcastToChat(chatId, text, imageUrl, buttonText, buttonUrl);
+      if (ok) delivered++; else failed++;
+      await new Promise(resolve => setTimeout(resolve, 40));
+    }
+    return { delivered, failed };
+  }
+
+  // ---- API: e'lon/broadcast yuborish (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/broadcast-send') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, targetType, text, imageUrl, buttonText, buttonUrl } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin yubora oladi' });
+
+      if (!['customer', 'owner', 'staff'].includes(targetType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Qabul qiluvchi turini tanlang.' });
+      }
+      const textTrim = String(text || '').trim();
+      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matnini kiriting.' });
+      const imageTrim = String(imageUrl || '').trim();
+      if (!isValidBroadcastImageUrl(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun to\'g\'ridan-to\'g\'ri https:// havola kiriting.' });
+      }
+      const buttonTextTrim = String(buttonText || '').trim();
+      const buttonUrlTrim = String(buttonUrl || '').trim();
+      if ((buttonTextTrim && !buttonUrlTrim) || (!buttonTextTrim && buttonUrlTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Tugma uchun ham matn, ham havola kerak (yoki ikkalasini ham bo\'sh qoldiring).' });
+      }
+      if (buttonUrlTrim && !/^https?:\/\//i.test(buttonUrlTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Tugma havolasi http:// yoki https:// bilan boshlanishi kerak.' });
+      }
+
+      const recipientIds = collectBroadcastRecipients(targetType);
+      if (!recipientIds.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu toifada hozircha hech kim yo\'q.' });
+      }
+
+      const { delivered, failed } = await sendBroadcastSequential(
+        recipientIds, textTrim, imageTrim || null, buttonTextTrim || null, buttonUrlTrim || null
+      );
+
+      const broadcasts = loadBroadcasts();
+      const record = {
+        id: crypto.randomBytes(4).toString('hex'),
+        targetType,
+        text: textTrim,
+        imageUrl: imageTrim || null,
+        buttonText: buttonTextTrim || null,
+        buttonUrl: buttonUrlTrim || null,
+        totalTargets: recipientIds.length,
+        deliveredCount: delivered,
+        failedCount: failed,
+        sentBy: userId,
+        sentAt: new Date().toISOString()
+      };
+      broadcasts.unshift(record);
+      if (broadcasts.length > 200) broadcasts.length = 200; // jurnal cheksiz o'smasin
+      saveBroadcasts(broadcasts);
+
+      return sendJSON(res, 200, { ok: true, result: record });
+    });
+    return;
+  }
+
+  // ---- API: yuborilgan e'lonlar tarixi/statistikasi (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/broadcast-history') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      return sendJSON(res, 200, { ok: true, broadcasts: loadBroadcasts() });
     });
     return;
   }
