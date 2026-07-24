@@ -324,7 +324,9 @@ function decideSubscriptionPayment(owner, action, decidedByUserId) {
     reqData.status = 'tasdiqlandi';
     reqData.decidedAt = new Date().toISOString();
     reqData.decidedBy = decidedByUserId;
-    recordPayment(owner, reqData.amount);
+    recordPayment(owner, reqData.amount, {
+      planId: reqData.planId, planLabel: reqData.planLabel, days, source: 'subscription'
+    });
     sendMessage(owner.id,
       `✅ <b>Obuna to'lovingiz tasdiqlandi!</b>\nTarif: ${escapeHtmlServer(reqData.planLabel)}\n` +
       `Yangi muddat: ${newUntil.toLocaleDateString('uz-UZ')}gacha.\nRahmat! 🙏`);
@@ -629,7 +631,7 @@ function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
 // tugasa ham bu yozuvlar saqlanib qoladi (69-bosqich).
 function loadPayments() { return loadJSONArray(PAYMENTS_FILE); }
 function savePayments(list) { saveJSONArray(PAYMENTS_FILE, list); }
-function recordPayment(owner, amount) {
+function recordPayment(owner, amount, extra) {
   const amountVal = Number(amount) || 0;
   if (amountVal <= 0) return; // 0 so'mlik "to'lov"ni jurnalga yozmaymiz
   const payments = loadPayments();
@@ -639,6 +641,16 @@ function recordPayment(owner, amount) {
     ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
     amount: amountVal,
     tariffId: owner.tariffId || null,
+    // 15-bosqich (B-bo'lim): agar bu to'lov "💳 Obuna" (tarif muddatini
+    // uzaytirish) orqali bo'lgan bo'lsa, qaysi reja/necha kunlik ekanligi
+    // ham saqlanadi — owner o'ziga tegishli "Obuna tarixi"ni ko'rishi uchun
+    // (qarang: /api/subscription-history). Boshqa manbalardan (masalan,
+    // admin qo'lda "to'landi" belgilashi) kelgan to'lovlarda bu maydonlar
+    // shunchaki null bo'lib qoladi — orqaga moslik buzilmaydi.
+    planId: (extra && extra.planId) || null,
+    planLabel: (extra && extra.planLabel) || null,
+    days: (extra && extra.days) || null,
+    source: (extra && extra.source) || null,
     at: new Date().toISOString()
   });
   savePayments(payments);
@@ -1631,7 +1643,8 @@ async function checkOwnerExpirations() {
         await sendMessage(ADMIN_ID,
           `⏰ <b>Obuna muddati tugadi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish bloklandi.\nMa'lumotlari (menyu, xodimlar, buyurtmalar) saqlanib qolyapti — obuna uzaytirilsa, kirish avtomatik tiklanadi.`);
         await sendMessage(owner.id,
-          `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.\nDavom ettirish uchun administrator bilan bog'laning.`);
+          `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.\nUzaytirish uchun Mini App'dagi "💳 Obuna" bo'limini oching yoki quyidagi tugmani bosing.`,
+          { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
       }
       continue;
     }
@@ -1657,7 +1670,8 @@ async function checkOwnerExpirations() {
         await sendMessage(ADMIN_ID,
           `🔔 <b>Obuna tugashiga oz qoldi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) — taxminan ${daysLeft} kundan keyin tugaydi.`);
         await sendMessage(owner.id,
-          `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun administrator bilan bog'laning.`);
+          `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun Mini App'dagi "💳 Obuna" bo'limini oching yoki quyidagi tugmani bosing.`,
+          { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
       }
     }
   }
@@ -7825,6 +7839,32 @@ const server = http.createServer((req, res) => {
         plans: plansList,
         pendingRequest: owner.subscriptionPaymentRequest || null
       });
+    });
+    return;
+  }
+
+  // ---- 15-bosqich (B-bo'lim): "Obuna tarixi" — egasi o'ziga tegishli
+  // barcha o'tgan obuna to'lovlarini (tasdiqlangan, muddatni uzaytirgan)
+  // ko'radi. payments.json'dagi FAQAT source==='subscription' yozuvlar
+  // ishlatiladi (admin qo'lda "to'landi" belgilashi yoki boshqa manbalardan
+  // kelgan to'lovlar bu ro'yxatga chiqmaydi — ular obuna emas). ----
+  if (req.method === 'POST' && req.url === '/api/subscription-history') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+
+      const history = loadPayments()
+        .filter(p => String(p.ownerId) === String(owner.id) && p.source === 'subscription')
+        .sort((a, b) => new Date(b.at) - new Date(a.at))
+        .map(p => ({ planLabel: p.planLabel, amount: p.amount, days: p.days, at: p.at }));
+
+      return sendJSON(res, 200, { ok: true, history });
     });
     return;
   }
