@@ -2789,6 +2789,16 @@ function aiDirDateKey(input) {
 function aiDirDayStartFromKey(dateKey) {
   return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - AI_DIRECTOR_TZ_OFFSET_MS);
 }
+
+// Har bir oshxona uchun kunlik tartib raqami (#1, #2, #3...) — har kuni 1 dan qayta boshlanadi.
+function getNextOrderNumber(owner) {
+  const todayKey = aiDirDateKey(new Date());
+  if (!owner.orderNumberState || owner.orderNumberState.date !== todayKey) {
+    owner.orderNumberState = { date: todayKey, seq: 0 };
+  }
+  owner.orderNumberState.seq += 1;
+  return owner.orderNumberState.seq;
+}
 function aiDirDayStart(input) {
   return aiDirDayStartFromKey(aiDirDateKey(input));
 }
@@ -4594,13 +4604,13 @@ const server = http.createServer((req, res) => {
         .filter(o => o.status === 'yangi' || o.status === 'tayyorlanmoqda')
         .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
         .slice(0, LIVE_BOARD_MAX)
-        .map(o => ({ id: o.id }));
+        .map(o => ({ id: o.id, number: o.orderNumber || null }));
 
       const ready = allOrders
         .filter(isRecentlyReady)
         .sort((a, b) => new Date(b.readyAt) - new Date(a.readyAt))
         .slice(0, LIVE_BOARD_MAX)
-        .map(o => ({ id: o.id }));
+        .map(o => ({ id: o.id, number: o.orderNumber || null }));
 
       const myOrderIds = allOrders
         .filter(o => String(o.customerId) === userId
@@ -5071,6 +5081,7 @@ const server = http.createServer((req, res) => {
       if (!owner.orders) owner.orders = [];
       const order = {
         id: crypto.randomBytes(4).toString('hex'),
+        orderNumber: getNextOrderNumber(owner),
         items: orderItems,
         subtotal,
         promoId: promo ? promo.id : null,
@@ -5377,6 +5388,7 @@ const server = http.createServer((req, res) => {
       const orderBranchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const order = {
         id: crypto.randomBytes(4).toString('hex'),
+        orderNumber: getNextOrderNumber(ctx.owner),
         items: orderItems,
         total,
         orderType,
