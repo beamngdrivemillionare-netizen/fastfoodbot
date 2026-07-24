@@ -121,6 +121,31 @@
     --bottom-nav-inactive: var(--text-muted);
   }
 
+  /* =========================================================================
+     38-bosqich: Dark/Light rejim — foydalanuvchi qo'lda tanlaganda
+     (app.js'dagi toggleTheme()) <html> ustiga data-theme="dark"/"light"
+     qo'yiladi va shu ikki blok --surface-*/--text-* tokenlarni Telegram
+     temasidan MUSTAQIL qiymatlarga almashtiradi. Hech narsa tanlanmagan
+     bo'lsa (data-theme yo'q) — avvalgidek Telegram/--tg-theme-* asosidagi
+     avtomatik rejim davom etadi. Qolgan barcha ranglar (border, hint va h.k.)
+     --text-primary'dan hosil qilingani uchun qo'shimcha qayta yozish shart emas. */
+  html[data-theme="dark"] {
+    --surface-0: #17181A;
+    --surface-1: #202225;
+    --surface-2: #1D1E21;
+    --text-primary: #F5F5F7;
+    --text-secondary: rgba(245, 245, 247, 0.62);
+    --text-muted: rgba(245, 245, 247, 0.45);
+  }
+  html[data-theme="light"] {
+    --surface-0: #FFFFFF;
+    --surface-1: #F5F5F7;
+    --surface-2: #FFFFFF;
+    --text-primary: #111111;
+    --text-secondary: rgba(17, 17, 17, 0.62);
+    --text-muted: rgba(17, 17, 17, 0.45);
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     height: 100%;
@@ -1061,6 +1086,27 @@
   }
   .admin-no-results { text-align: center; padding: var(--sp-3) 0 0; }
   .admin-no-results.hidden { display: none; }
+
+  /* =========================================================================
+     36-37-bosqich: mijoz menyusi — qidiruv + saralash qatori.
+     Qidiruv maydoni yuqoridagi .admin-search-wrap'ni qayta ishlatadi (bir xil
+     ko'rinish, alohida CSS yozilmaydi — "bir xil funksiyali qismlar bittada").
+     ========================================================================= */
+  .cust-search-row {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+    margin-bottom: var(--sp-3);
+  }
+  .cust-search-row .admin-search-wrap { flex: 1; margin-bottom: 0; }
+  .cust-sort-select {
+    flex-shrink: 0;
+    width: auto;
+    max-width: 130px;
+    margin-bottom: 0;
+    padding: 10px 8px;
+    font-size: var(--fs-xs);
+  }
   .admin-empty-state {
     display: flex;
     flex-direction: column;
@@ -1470,6 +1516,29 @@
   .order-action-btn.ready { background: var(--success); }
   .order-action-btn.ikkinchi { background: transparent; border: 1px solid var(--border-color-strong); color: var(--text-primary); }
   .order-action-btn.ikkinchi:hover { background: var(--surface-1); }
+
+  /* 40-bosqich: mijoz "Buyurtmalarim" tarixida — "Yana buyurtma berish"
+     (tezkor takroriy buyurtma) tugmasi. .order-action-btn bilan bir xil
+     rang-uslub, faqat butun eni bo'yicha va bir oz ixchamroq. */
+  .order-card .order-reorder-btn {
+    width: 100%;
+    margin-top: var(--sp-2);
+    border: 1px solid var(--border-color-strong);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--brand-primary);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .order-card .order-reorder-btn:hover { background: var(--brand-primary-light); }
+  .order-card .order-reorder-btn:disabled { opacity: 0.6; cursor: default; }
 
   /* ---- Oshxona (oshpaz) va kuryer (kuryer) taxtalari uchun
      kattalashtirilgan, "bitta qarashda" o'qiladigan ko'rinish (20-bosqich):
@@ -1979,6 +2048,25 @@
   }
   .app-header .app-header-role-badge + .app-header-role-switch-btn { margin-left: 6px; }
   .app-header .app-header-role-switch-btn:active { transform: scale(0.92); }
+
+  /* 38-bosqich: Dark/Light almashtirish tugmasi — .app-header-name'ning
+     flex:1'i tufayli har doim header'ning eng o'ng chetida turadi, alohida
+     margin-left:auto kerak emas (.app-header'dagi umumiy `gap` orqali
+     qo'shni elementdan ajratiladi). Har doim ko'rinadi (rolga bog'liq emas). */
+  .app-header .app-header-theme-btn {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-pill);
+    border: none;
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  .app-header .app-header-theme-btn:active { transform: scale(0.92); }
 
   /* =========================================================================
      Egasi profili — professional dashboard (savdo/tushum) va logotip
