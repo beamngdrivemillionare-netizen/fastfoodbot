@@ -1395,6 +1395,7 @@ function findOrCreateCustomer(owner, userId, tgUser) {
       username: (tgUser && tgUser.username) || null,
       firstName: (tgUser && tgUser.first_name) || null,
       favorites: [],
+      addresses: [],
       bonusPoints: 0,
       ordersCount: 0,
       totalSpent: 0,
@@ -1404,8 +1405,18 @@ function findOrCreateCustomer(owner, userId, tgUser) {
   } else {
     if (tgUser && tgUser.username) c.username = tgUser.username;
     if (tgUser && tgUser.first_name) c.firstName = tgUser.first_name;
+    // 56-bosqich: eski mijozlarda "addresses" maydoni bo'lmasligi mumkin
+    // (funksiya qo'shilishidan oldin yaratilgan) — shu yerda to'ldiramiz.
+    if (!Array.isArray(c.addresses)) c.addresses = [];
   }
   return c;
+}
+
+// ---- 56-bosqich: mijozning manzillar kitobi (saqlangan dostavka manzillari) ----
+const MAX_CUSTOMER_ADDRESSES = 15;
+
+function findCustomerAddress(customer, addressId) {
+  return (customer.addresses || []).find(a => a.id === addressId);
 }
 
 // Berilgan promoId bo'yicha faol aksiyani topadi va chegirmani hisoblaydi
@@ -4781,7 +4792,7 @@ const server = http.createServer((req, res) => {
           logoUrl: (owner.profile && owner.profile.logoUrl) || null,
           brandColor: (owner.profile && owner.profile.brandColor) || null
         },
-        customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
+        customer: { favorites: customer.favorites, addresses: customer.addresses || [], bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
         personRegistered: isRegisteredUser(userId),
         bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
       });
@@ -4842,6 +4853,110 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, favorites: customer.favorites });
+    });
+    return;
+  }
+
+  // ---- API: 56-bosqich — mijoz uchun manzillar kitobi ----
+  // Mijoz dostavka buyurtmasi berganda har safar qaytadan joylashuv/manzil
+  // yozmasligi uchun — bir necha manzilni (masalan "Uy", "Ish") nom bilan
+  // saqlab qo'yishi va checkout'da shulardan birini tanlashi mumkin.
+  if (req.method === 'POST' && req.url === '/api/customer-address-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      return sendJSON(res, 200, { ok: true, addresses: customer.addresses || [] });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/customer-address-save') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, addressId, label, addressNote, location, extraPhone } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const labelTrim = String(label || '').trim().slice(0, 40);
+      if (!labelTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzil nomini kiriting (masalan: Uy, Ish).' });
+
+      let loc = null;
+      if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
+          Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
+        loc = { lat: location.lat, lng: location.lng };
+      }
+      const addressNoteTrim = String(addressNote || '').trim().slice(0, 300);
+      if (!loc && !addressNoteTrim) {
+        return sendJSON(res, 200, { ok: false, reason: 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
+      }
+      const extraPhoneTrim = String(extraPhone || '').trim().slice(0, 30);
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      if (!Array.isArray(customer.addresses)) customer.addresses = [];
+
+      let addr = addressId ? findCustomerAddress(customer, addressId) : null;
+      if (addr) {
+        addr.label = labelTrim;
+        addr.addressNote = addressNoteTrim;
+        addr.location = loc;
+        addr.extraPhone = extraPhoneTrim;
+        addr.updatedAt = new Date().toISOString();
+      } else {
+        if (customer.addresses.length >= MAX_CUSTOMER_ADDRESSES) {
+          return sendJSON(res, 200, { ok: false, reason: `Ko'pi bilan ${MAX_CUSTOMER_ADDRESSES} ta manzil saqlash mumkin.` });
+        }
+        addr = {
+          id: crypto.randomBytes(4).toString('hex'),
+          label: labelTrim,
+          addressNote: addressNoteTrim,
+          location: loc,
+          extraPhone: extraPhoneTrim,
+          createdAt: new Date().toISOString()
+        };
+        customer.addresses.push(addr);
+      }
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, addresses: customer.addresses });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/customer-address-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, addressId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!addressId) return sendJSON(res, 200, { ok: false, reason: 'Manzil ko\'rsatilmagan.' });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      const idx = (customer.addresses || []).findIndex(a => a.id === addressId);
+      if (idx < 0) return sendJSON(res, 200, { ok: false, reason: 'Manzil topilmadi.' });
+      customer.addresses.splice(idx, 1);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, addresses: customer.addresses });
     });
     return;
   }
