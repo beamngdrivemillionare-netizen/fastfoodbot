@@ -1,16 +1,6 @@
 const tg = window.Telegram && window.Telegram.WebApp;
   const appEl = document.getElementById('app');
 
-  // ---- 34-bosqich: Responsive mini-app — avtomatik moslashish (resize) ----
-  // Mobil brauzerlarda (va ba'zi Telegram klientlarida) `100vh` manzil
-  // panel/klaviatura ochilib-yopilganda noto'g'ri hisoblanadi — sahifa
-  // "sakrab" turadi. Shuning uchun haqiqiy balandlikni JS orqali o'lchab,
-  // --app-vh CSS o'zgaruvchisiga yozamiz (style.css'da `calc(var(--app-vh)*100)`
-  // sifatida ishlatiladi). Ekran o'lchami/orientatsiyasi o'zgarganda (resize,
-  // orientationchange) va Telegram WebApp'ning o'z `viewportChanged` hodisasida
-  // qayta hisoblanadi — shu bilan mobil/planshet/kompyuter (31-33-bosqich)
-  // orasida foydalanuvchi qo'lda hech narsa qilmasdan ham ilova to'g'ri
-  // ko'rinishda qoladi.
   function applyResponsiveViewport() {
     const h = (tg && tg.viewportHeight) || window.innerHeight;
     document.documentElement.style.setProperty('--app-vh', (h * 0.01) + 'px');
@@ -22,11 +12,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     tg.onEvent('viewportChanged', applyResponsiveViewport);
   }
 
-  // ---- 38-bosqich: Dark/Light rejim ----
-  // Foydalanuvchi qo'lda tanlagan tema localStorage'da saqlanadi va shu
-  // qurilma/brauzerda keyingi safar ochilganda ham eslab qolinadi. Hech
-  // narsa tanlanmagan bo'lsa (birinchi marta ochilganda) — avvalgidek
-  // Telegram'ning o'z temasi (--tg-theme-*) avtomatik ishlatiladi.
   const THEME_STORAGE_KEY = 'kitchenOsTheme';
   function getStoredTheme() {
     try { return localStorage.getItem(THEME_STORAGE_KEY); } catch (e) { return null; }
@@ -50,9 +35,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const btn = document.getElementById('appHeaderThemeBtn');
     if (btn) btn.innerHTML = icon(next === 'dark' ? 'sun' : 'moon', 'icon-xs');
   }
-  // Login/parol orqali kirish (16-bosqich): Telegram initData bo'lmasa,
-  // localStorage'da saqlangan sessiya tokeni ("sess_<token>") bo'lishi mumkin —
-  // u xuddi Telegram initData o'rniga barcha /api/... so'rovlarida ishlatiladi.
+
   const OWNER_SESSION_STORAGE_KEY = 'kitchenOsOwnerSession';
   let initData = (tg && tg.initData) || localStorage.getItem(OWNER_SESSION_STORAGE_KEY) || null;
   let usingOwnerSession = !tg && !!initData;
@@ -62,13 +45,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     appEl.innerHTML = html;
   }
 
-  // ---- Qo'ng'iroq qilish: mijoz/qo'shimcha telefon raqami bosilganda,
-  // "Telefondan" (oddiy tel: qo'ng'iroq) yoki "Telegramdan" (mijozning
-  // Telegram profili ochiladi, u yerdan qo'ng'iroq qilinadi) so'raladi.
-  // Telegram varianti faqat shu raqam mijozning o'z Telegram akkauntiga
-  // (customerId) tegishli bo'lsa ko'rsatiladi — qo'shimcha (extraPhone)
-  // raqamlar odatda alohida odamga tegishli bo'lishi mumkin va ularning
-  // Telegram ID'si bizda yo'q.
   function promptCall(phone, tgUserId) {
     if (!phone) return;
     const callByPhone = () => { window.location.href = `tel:${phone}`; };
@@ -85,7 +61,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
-    // Telegram WebApp mavjud bo'lmasa (masalan, oddiy brauzerda ochilgan bo'lsa) — oddiy tanlov.
     if (tgUserId && confirm(`${phone}\n\nTelegramdan qo'ng'iroq qilinsinmi? (Bekor qilinsa — telefondan qo'ng'iroq qilinadi)`)) {
       callByTelegram();
     } else {
@@ -100,21 +75,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     promptCall(btn.getAttribute('data-call-phone'), btn.getAttribute('data-call-tgid') || null);
   });
 
-
-  // 16-bosqich: tarmoq xatosi holati. apiPost endi ikki turdagi muvaffaqiyatsizlikni
-  // ajratadi — (1) server javob berdi, lekin so'rov mantiqan rad etildi (masalan
-  // "ruxsat yo'q") — bu {ok:false, reason} bo'lib qoladi, chaqiruvchi joy o'zi
-  // matn ko'rsatadi; (2) so'rov umuman serverga yetib bormadi yoki javob
-  // o'qib bo'lmadi (internet yo'q / server ishlamayapti) — bu holda
-  // {ok:false, networkError:true, reason} qaytadi, shunda chaqiruvchi joy
-  // "Qayta urinish" tugmali maxsus holatni ko'rsatishi mumkin.
-  // 66-bosqich: admin "Do'kon egalari" ro'yxatidan bironta oshxonaning
-  // menyusi/skladini o'zi to'ldirib berish uchun Sklad ekranini ochganda, shu
-  // o'zgaruvchiga o'sha egasining ID'si yoziladi (qarang: renderStockScreen
-  // chaqiruvi admin-ovoz bilan). Shu holatda quyidagi apiPost — menyu/sklad/
-  // bo'lim endpointlariga avtomatik targetOwnerId qo'shadi, shunday qilib
-  // renderStockScreen/menuAddSectionHtml kabi umumiy kod hech o'zgarishsiz
-  // aynan o'sha egasi nomidan ishlay boshlaydi.
   let adminTargetOwnerId = null;
   const ADMIN_TARGET_OWNER_ENDPOINTS = [
     '/api/menu-list', '/api/menu-add', '/api/menu-update', '/api/menu-remove', '/api/menu-set-recipe',
@@ -153,8 +113,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // Tarmoq xatosi holatining umumiy HTML qolipi — to'liq ekran va bitta
-  // konteyner ichida ishlatilishi uchun bir xil ko'rinishda.
   function networkErrorMarkup(message) {
     return `
       <div class="network-error-state">
@@ -166,17 +124,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // To'liq ekranni tarmoq xatosi holati bilan almashtiradi (masalan ilova
-  // ochilishida asosiy tekshiruv muvaffaqiyatsiz bo'lsa). retryFn — tugma
-  // bosilganda qayta chaqiriladigan funksiya (odatda o'sha yuklovchi funksiyaning o'zi).
   function renderNetworkErrorScreen(message, retryFn) {
     ekran(networkErrorMarkup(message));
     const btn = appEl.querySelector('.network-error-retry-btn');
     if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
   }
 
-  // Faqat bitta konteyner (masalan ro'yxat yoki taxta) ichida tarmoq xatosi
-  // holatini ko'rsatadi — qolgan ekran (sarlavha, boshqa tab'lar) tegilmaydi.
   function renderNetworkErrorInline(container, message, retryFn) {
     if (!container) return;
     container.innerHTML = networkErrorMarkup(message);
@@ -184,13 +137,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
   }
 
-  // ---- 60-bosqich: tarifda yo'q funksiyaga kirish bloklanganda ko'rsatiladigan
-  // aniq va tushunarli xabar. Server bunday holatda {ok:false, blockedFeature:true,
-  // reason, featureId} qaytaradi (qarang: server.js — ownerCanUseFeature/
-  // featureBlockedResult, 59-60-bosqich). Bu — oddiy "Xatolik yuz berdi" bilan
-  // aralashib ketmasligi uchun alohida, qulf ikonkali va ogohlantirish rangidagi
-  // ko'rinish: (1) butun bo'lim bloklanganda konteyner ichida (masalan AI tahlil),
-  // (2) bitta amal (masalan "aksiya qo'shish") rad etilganda — alohida modal.
   function featureBlockedMarkup(message) {
     return `
       <div class="feature-blocked-state">
@@ -206,9 +152,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     container.innerHTML = featureBlockedMarkup(message);
   }
 
-  // Bitta amal (tugma bosish) tarif tomonidan rad etilganda chaqiriladi —
-  // xuddi shu ekrandagi "xabar" matni bilan bir qatorda, ko'zga aniq
-  // tashlanadigan alohida oyna sifatida ham ko'rsatiladi.
   function showFeatureBlockedModal(message) {
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
@@ -224,32 +167,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('featureBlockedOkBtn').onclick = () => overlay.remove();
   }
 
-  // Umumiy yordamchi: apiPost natijasi tarif bloklashi bo'lsa modal ko'rsatadi
-  // va true qaytaradi (chaqiruvchi joy o'zining odatiy "xabar" matnini ham
-  // pastda qoldirishi mumkin); aks holda false qaytaradi.
   function handleFeatureBlocked(res) {
     if (res && res.blockedFeature) { showFeatureBlockedModal(res.reason); return true; }
     return false;
   }
 
-  // Ikonografiya (9-bosqich): #icon-sprite ichidagi <symbol>ga ishora qiluvchi
-  // <svg><use> yasovchi yagona yordamchi. name — sprite'dagi "icon-" dan keyingi
-  // qism (masalan 'box' → #icon-box). extraClass ixtiyoriy (masalan 'icon-lg icon-danger').
   function icon(name, extraClass) {
     return `<svg class="icon${extraClass ? ' ' + extraClass : ''}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
   }
 
-  // App shell (10-bosqich): #appHeader #app'dan tashqarida bo'lgani uchun
-  // ekran() uni tozalamaydi — bir marta o'rnatilsa, ichki navigatsiyalar davomida
-  // (tab almashish, ekranlar orasida o'tish) o'zgarmay tepada turadi.
   const appHeaderEl = document.getElementById('appHeader');
-  // 11-bosqich: roleLabel — ixtiyoriy uchinchi parametr. Berilsa, header'ning
-  // o'ng chetida doimiy rol-belgisi (masalan "Kassir", "Egasi") ko'rsatiladi,
-  // shu bilan foydalanuvchi ilova ichida qayerda bo'lishidan qat'iy nazar
-  // o'zining rolini har doim ko'rib turadi.
-  // onRoleSwitch — ixtiyoriy to'rtinchi parametr: berilsa (bir nechta
-  // vakolatli xodim uchun), rol belgisi yonida "🔁" tugmasi chiqadi, bosilsa
-  // shu funksiya chaqiriladi (qarang: staffRoleSwitchHandler).
+
   function setAppHeader(logoUrl, name, roleLabel, onRoleSwitch) {
     if (!name) { clearAppHeader(); return; }
     appHeaderEl.innerHTML = `
@@ -279,18 +207,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }[c]));
   }
 
-  // 71-BOSQICH: raqamlarni o'qishga oson qilib chiqarish uchun (1000 -> "1 000",
-  // 100000 -> "100 000"). Narx/summa ko'rsatiladigan barcha joylarda shu ishlatiladi.
   function fmtNum(n) {
     return Number(n || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
   }
 
-  // =========================================================================
-  // BREND RANGI (25-27-bosqich): tanlangan bitta asosiy rangdan barcha
-  // bog'liq tokenlar (to'q soya, och foniy, ustidagi matn rangi) avtomatik
-  // hisoblanadi — shu bilan har bir oshxona egasi faqat bitta rang tanlasa
-  // kifoya, qolgani WCAG kontrast formulasi asosida o'zi to'g'irlanadi.
-  // =========================================================================
   const BRAND_COLOR_PRESETS = ['#E4232A', '#E67E22', '#1E8A55', '#12897E', '#1E6FD9', '#7B3FE4', '#D63384', '#2B2E33'];
   const DEFAULT_BRAND_COLOR = '#E4232A';
 
@@ -316,12 +236,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const [lighter, darker] = lA > lB ? [lA, lB] : [lB, lA];
     return (lighter + 0.05) / (darker + 0.05);
   }
-  // Berilgan fon rangi ustiga oq yoki qora matn qo'yilsa qaysi biri o'qilishi
-  // osonroq bo'lishini WCAG kontrast nisbati bo'yicha tanlaydi.
-  // 30-bosqich QA: taqqoslash #111111 (yumshoq qora) bilan emas, aynan
-  // #000000 bilan qilinadi — chunki ba'zi o'rta-to'qlikdagi asosiy ranglar
-  // (masalan yashil/farrux ko'k preset) #111111'ga nisbatan ham, oq rangga
-  // nisbatan ham WCAG AA (4.5:1) chegarasidan sal past qolar edi.
+
   function pickOnColor(hex) {
     return contrastRatio(hex, '#FFFFFF') >= contrastRatio(hex, '#000000') ? '#FFFFFF' : '#000000';
   }
@@ -329,10 +244,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const a = hexToRgb(hex), b = hexToRgb(towardHex);
     return rgbToHex({ r: a.r + (b.r - a.r) * amount, g: a.g + (b.g - a.g) * amount, b: a.b + (b.b - a.b) * amount });
   }
-  // 30-bosqich QA: 18%/90% qat'iy foizlar ba'zi ranglar uchun (masalan
-  // to'q sariq preset, och sariq/oq maxsus tanlov) yorug' fon + to'q matn
-  // juftligini 4.5:1 chegarasidan pastda qoldirardi. Shu sababli ajratish
-  // darajasi moslashuvchan: kontrast yetarli bo'lguncha asta oshiriladi.
+
   function deriveBrandShades(base) {
     let darkAmt = 0.18, lightAmt = 0.90;
     let dark = mixColor(base, '#000000', darkAmt);
@@ -347,8 +259,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     return { dark, light };
   }
-  // 26-bosqich: hisoblangan kontrastni foydalanuvchiga ko'rsatish (matn/tugma
-  // rangi ustidagi rang bilan WCAG AA me'yoriga [>=4.5:1] mosligini tekshiradi).
+
   function brandContrastInfoHtml(hex) {
     const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
     const onColor = pickOnColor(base);
@@ -362,9 +273,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Bitta asosiy rangdan --brand-primary-dark / --brand-primary-light /
-  // --brand-on-primary'ni hisoblab, :root ustiga qo'yadi (jonli ko'rish —
-  // 29-bosqich: saqlashdan oldin ham darhol ko'rinadi).
   function applyBrandColor(hex) {
     const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
     const { dark, light } = deriveBrandShades(base);
@@ -374,8 +282,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     root.setProperty('--brand-primary-light', light);
     root.setProperty('--brand-on-primary', pickOnColor(base));
   }
-  // 27-bosqich: qo'llanish doirasi qoidasi — admin paneli yoki hali hech
-  // qaysi oshxonaga bog'lanmagan ekranlar uchun standart rangga qaytaradi.
+
   function resetBrandColor() {
     const root = document.documentElement.style;
     root.removeProperty('--brand-primary');
@@ -419,8 +326,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `;
   }
-  // Palitra/moslashtirilgan rang tanlagichini formaga ulaydi. onChange(hex)
-  // har bir tanlashda chaqiriladi (jonli ko'rish uchun darhol qo'llash).
+
   function attachBrandSwatchHandlers(onChange) {
     const wrap = document.getElementById('brandSwatches');
     if (!wrap) return;
@@ -448,8 +354,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // Galereyadan tanlangan rasm faylini o'qib, hajmini kichraytirib (max 800px),
-  // JPEG base64 data URL shaklida qaytaradi — server hajmi cheklangan bo'lgani uchun kerak.
   function readImageFileAsCompressedDataUrl(file, maxSize = 800, quality = 0.72) {
     return new Promise((resolve, reject) => {
       if (!file) return resolve(null);
@@ -482,7 +386,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Admin panelini chizish ----
   function expiryText(o) {
     if (!o.expiresAt) return 'Doimiy ruxsat';
     const ms = new Date(o.expiresAt).getTime() - Date.now();
@@ -491,17 +394,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return `${days} kun qoldi`;
   }
 
-  // 17-bosqich: muddatli obunalar uchun vizual progress-bar — necha foiz
-  // muddat o'tganini (addedAt'dan expiresAt'gacha bo'lgan davr ichida)
-  // ko'rsatadi. Doimiy ruxsat (expiresAt=null) uchun hech narsa chizmaydi.
   function subscriptionProgressHtml(o) {
     if (!o.expiresAt) return '';
     const expiresMs = new Date(o.expiresAt).getTime();
     const startedMs = o.addedAt ? new Date(o.addedAt).getTime() : NaN;
     const nowMs = Date.now();
     const totalMs = Number.isFinite(startedMs) ? expiresMs - startedMs : NaN;
-    // addedAt bo'lmasa yoki noto'g'ri bo'lsa (masalan eski yozuv), faqat
-    // "qolgan vaqt"ni umumiy 30 kunlik oyga nisbatan taxminiy ko'rsatamiz.
+
     const remainingMs = expiresMs - nowMs;
     const remainingPercent = Number.isFinite(totalMs) && totalMs > 0
       ? Math.max(0, Math.min(100, Math.round((remainingMs / totalMs) * 100)))
@@ -525,9 +424,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       .toLowerCase();
   }
 
-  // 57-bosqich: do'kon egasiga biriktirilgan tarifni ko'rsatish/tanlash
-  // uchun oxirgi yuklangan tariflar ro'yxati shu yerda keshlanadi (owner
-  // qatoridagi select shundan to'ldiriladi).
   let tariffCacheForOwners = [];
   function ownerTariffLabel(tariffId) {
     if (!tariffId) return 'Tarif belgilanmagan';
@@ -536,9 +432,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function ownerItemHtml(o) {
-    // 65/66-bosqich: mijozlar qo'ygan reyting (bo'lsa) badge sifatida
-    // ko'rinadi — /api/owners javobida allaqachon reyting bo'yicha saralab
-    // yuborilgan, shu sababli bu yerda faqat ko'rsatish qoladi.
+
     const ratingBadgeHtml = o.avgRating !== null && o.avgRating !== undefined
       ? `<span class="badge" title="${o.ratingCount} ta baho asosida">⭐ ${o.avgRating}</span>`
       : '';
@@ -603,11 +497,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return ms > 0 && ms <= 3 * 86400000;
     }).length;
     const unpaidCount = owners.filter(o => !o.paid).length;
-    // 67-bosqich: admin dashboardida umumiy daromad — payments.json (to'liq
-    // to'lovlar tarixi) asosida hisoblanadi (server, /api/owners), shu bilan
-    // "Bu oy" va "Jami" haqiqiy tarixiy summalar (owner o'chirilgan/tarifi
-    // o'zgargan taqdirda ham to'g'ri qoladi). "Kutilmoqda" — hozirgi
-    // qarzdorlarning obuna narxlari yig'indisi (kelgusi kutilayotgan tushum).
+
     const thisMonthRevenue = revenue ? revenue.thisMonth : 0;
     const lifetimeRevenue = revenue ? revenue.totalLifetime : 0;
     const pendingRevenue = owners.filter(o => !o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
@@ -624,10 +514,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `;
 
-    // Admin panel endi bo'limlarga bo'lingan: bosh ekranda faqat umumiy
-    // statistika va bo'limlarga o'tish menyusi, har bir bo'lim (egalar
-    // ro'yxati, yangi ega qo'shish, tariflar, tizim holati) o'z alohida
-    // ekraniga ega — avvalgi bitta uzun sahifa o'rniga.
     ekran(`
       <div class="panel has-ko-bottom-nav">
         <div class="salom">Salom, admin</div>
@@ -670,11 +556,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     wireAdminBottomNav(owners, goBack);
   }
 
-  // Admin panelning pastki navigatsiyasi — Bosh sahifadagi katakchalar bilan
-  // bir xil 4 bo'limga o'tadi (egalar, yangi ega, tariflar, tizim), lekin
-  // do'kon egasi ekranidagi (ko-bottom-nav) kabi doimiy, katta iconli va
-  // markazda FAB'li panel ko'rinishida — bir xil CSS klasslar qayta
-  // ishlatiladi, shu sababli icon o'lchamlari bir xil "katta" bo'ladi.
   function adminBottomNavHtml(activeKey) {
     return `
       <div class="ko-bottom-nav" id="adminBottomNav">
@@ -726,13 +607,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // =========================================================================
-  // Admin bo'limi: "Do'kon egalari" — ro'yxat, qidiruv va har bir ega
-  // ustidagi tahrirlash amallari (to'lov holati, muddat, narx, login/parol,
-  // tarif, o'chirish). Har qanday amaldan keyin shu ekranning o'zi qayta
-  // yuklanadi (bosh sahifaga qaytarilmaydi) — shu bilan bir nechta amalni
-  // ketma-ket bajarish qulayroq.
-  // =========================================================================
   async function reloadAdminOwnersScreen(goBack) {
     const res = await apiPost('/api/owners', { initData });
     if (res.networkError) { renderNetworkErrorScreen(res.reason, () => reloadAdminOwnersScreen(goBack)); return; }
@@ -741,8 +615,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function renderAdminOwnersScreen(owners, goBack) {
     setAppHeader(null, 'KitchenOS', 'Admin');
-    // 57-bosqich: owner qatorlarida tarif nomini ko'rsatish uchun tariflar
-    // ro'yxatini oldindan yuklab olamiz (bo'sh bo'lsa ham davom etadi).
+
     const tariffRes = await apiPost('/api/tariff-list', { initData });
     if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
     const totalCount = owners.length;
@@ -815,11 +688,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (menuBtn) {
         const ownerId = menuBtn.getAttribute('data-manage-menu');
         const ownerName = menuBtn.getAttribute('data-manage-menu-name');
-        // 66-bosqich: admin shu egasi nomidan menyu/skladni to'ldiradi —
-        // Sklad ekrani allaqachon "egasi" rolida menyu bo'limini ham
-        // ko'rsatadi (qarang: menuAddSectionHtml). Ekrandan chiqilganda
-        // adminTargetOwnerId albatta tozalanadi (aks holda admin o'zining
-        // keyingi amallari ham shu egasi nomidan ketib qolishi mumkin).
+
         adminTargetOwnerId = ownerId;
         renderStockScreen(ownerName, 'egasi', () => {
           adminTargetOwnerId = null;
@@ -871,9 +740,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         `;
       }
 
-      // 63/64-bosqich: obuna muddatini uzaytirish/qisqartirish/bekor qilish —
-      // amal turiga qarab kerakli maydon (kun soni yoki aniq sana) ko'rsatiladi
-      // (qarang: pastdagi 'change' tinglovchisi va 'data-save-expiry' saqlash).
       const expiryEl = e.target.closest('[data-edit-expiry]');
       if (expiryEl && !expiryEl.querySelector('select')) {
         const editId = expiryEl.getAttribute('data-edit-expiry');
@@ -891,8 +757,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
-    // Amal turi almashtirilganda faqat shu amalga tegishli maydonni (kun
-    // soni yoki sana) ko'rsatadi — qolganini yashiradi.
     document.getElementById('ownerList').addEventListener('change', (e) => {
       const sel = e.target.closest('[data-expiry-action]');
       if (!sel) return;
@@ -987,13 +851,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 82-BOSQICH: Admin bo'limi "Kutilayotgan to'lovlar" — owner o'zi tarif
-  // tanlab, skrinshot yuborgan, lekin hali admin tasdiqlamagan barcha
-  // so'rovlar shu yerda ko'rinadi (asosiy tasdiqlash kanali - Telegram
-  // chatidagi ✅/❌ tugmalari, bu ekran esa admin panelidan ham xuddi shu
-  // amalni bajarish imkonini beradi - masalan admin bot chatini ko'rmasa ham).
-  // =========================================================================
   async function renderAdminPendingPaymentsScreen(goBack) {
     setAppHeader(null, 'KitchenOS', 'Admin');
     ekran(`
@@ -1059,13 +916,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     await loadPendingPaymentsList(goBack);
   }
 
-  // =========================================================================
-  // Admin bo'limi: "Yangi ega qo'shish" — bir martalik taklif havolasi
-  // yaratish va ID/username orqali qo'lda qo'shish, ikkalasi shu bitta
-  // ekranda. Muvaffaqiyatli qo'shilgandan so'ng ekranning o'zida qoladi
-  // (bosh sahifaga qaytarilmaydi) — shu bilan ketma-ket bir nechta ega
-  // qo'shish qulayroq.
-  // =========================================================================
   function renderAdminAddOwnerScreen(goBack) {
     setAppHeader(null, 'KitchenOS', 'Admin');
     ekran(`
@@ -1194,10 +1044,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // Galereyadan logotip tanlash uchun umumiy blok — rasm oldindan ko'rinadi,
-  // fayl tanlanganda avtomatik kichraytirilib (400px) base64 data URL'ga
-  // aylantiriladi. idPrefix — shu ekrandagi elementlarning id old qo'shimchasi,
-  // currentValue — hozirgi logotip (URL yoki data URL) bo'lishi mumkin.
   function logoPickerHtml(idPrefix, currentValue) {
     return `
       <label class="field-label">Logotip</label>
@@ -1217,9 +1063,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // logoPickerHtml bilan chizilgan blokka hodisalarni ulaydi. setValue orqali
-  // chaqiruvchi joy o'zining state'ini (masalan onboarding qadam ma'lumoti
-  // yoki oddiy o'zgaruvchi) yangilab turadi.
   function attachLogoPickerHandlers(idPrefix, setValue) {
     const fileInput = document.getElementById(`${idPrefix}FileInput`);
     const errEl = document.getElementById(`${idPrefix}Err`);
@@ -1256,10 +1099,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ---- Admin: kichik "System status" paneli (50-bosqich) ----
-  // Serverning umumiy holatini (ishlash vaqti, xotira, ma'lumotlar hajmi,
-  // webhook statistikasi) bitta oynada ko'rsatadi. /api/system-status'dan
-  // olinadi, faqat admin ko'ra oladi.
   function formatUptime(sec) {
     const d = Math.floor(sec / 86400);
     const h = Math.floor((sec % 86400) / 3600);
@@ -1336,10 +1175,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
   }
 
-  // ---- Admin: obuna tariflari — soni va nomlari (51-bosqich) ----
-  // 52-bosqich: narx ham shu ro'yxatda. 54-bosqich: har bir tarifga qaysi
-  // funksiyalar (53-bosqichdagi katalogdan) kirishini ✅/❌ belgilash —
-  // "Funksiyalar" tugmasi orqali alohida modalda.
   function tariffItemHtml(t) {
     const enabledCount = t.features ? Object.values(t.features).filter(Boolean).length : 0;
     return `
@@ -1358,12 +1193,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // =========================================================================
-  // Admin bo'limi: "To'lov sozlamalari" — egalarga "💳 Obuna" bo'limida
-  // ko'rsatiladigan to'lov rekvizitlarini (karta raqami/egasi, Click/Payme)
-  // tahrirlash. Ilgari bu ma'lumotlar faqat serverda standart ("***") qiymat
-  // bilan turardi va admin ularni HECH QAYERDAN o'zgartira olmasdi.
-  // =========================================================================
   async function renderPaymentSettingsScreen(onBack) {
     ekran(`
       <div class="panel">
@@ -1419,12 +1248,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // Admin bo'limi: "E'lon yuborish" (48-51-bosqich) — admin platformadagi
-  // barcha oshxonalar bo'yicha bitta toifaga (mijoz / oshxona egasi /
-  // xizmatchi) matn+rasm+tugma bilan umumiy xabar yuboradi. Pastda —
-  // avval yuborilgan e'lonlar tarixi va yetkazilganlik statistikasi.
-  // =========================================================================
   const BROADCAST_TARGET_LABELS = { customer: 'Mijozlar', owner: "Oshxona egalari", staff: 'Xizmatchilar (xodimlar)' };
 
   function broadcastHistoryRowHtml(b) {
@@ -1523,11 +1346,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadBroadcastHistoryAndRender();
   }
 
-  // =========================================================================
-  // Admin bo'limi: "Savatcha" (16-22-bosqich) — o'chirilgan do'kon egalari
-  // 3 kun davomida shu yerda turadi, admin ularni tiklashi yoki muddatidan
-  // oldin butunlay o'chirishi mumkin. Pastda — shu bilan bog'liq loglar.
-  // =========================================================================
   function trashRowHtml(t) {
     return `
       <div class="owner-item">
@@ -1620,14 +1438,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // =========================================================================
-  // Admin bo'limi: "Zaxira (Backup)" (52-54-bosqich) — butun bazani (barcha
-  // oshxona egalari, to'lovlar, sozlamalar va h.k.) bitta JSON faylga jamlab
-  // yuklab olish, va o'sha faylni yuklab bazani tiklash. Tiklash — juda xavfli
-  // amal (butun bazani almashtiradi) bo'lgani uchun ikki bosqichli: avval
-  // fayl tekshiriladi va xulosa ko'rsatiladi (preview), so'ng admin
-  // "TASDIQLAYMAN" so'zini qo'lda kiritib, aniq shu fayl uchun yaratilgan
-  // tasdiqlash kodi bilan tasdiqlaydi (server buni 10 daqiqa ichida talab qiladi).
   const BACKUP_SECTION_LABELS = {
     owners: "Do'kon egalari", admins: 'Adminlar', invites: 'Taklif havolalari',
     requests: "So'rovlar", profiles: 'Profillar', tariffs: 'Tariflar',
@@ -1675,7 +1485,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `);
     document.getElementById('backupBackBtn').addEventListener('click', () => onBack());
 
-    // ---- Yuklab olish (export) ----
     document.getElementById('backupExportBtn').addEventListener('click', async () => {
       const btn = document.getElementById('backupExportBtn');
       const msgEl = document.getElementById('backupExportMsg');
@@ -1694,7 +1503,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.textContent = `✅ Zaxira yuklab olindi (${Object.values(res.counts || {}).reduce((a, b) => a + b, 0)} ta yozuv).`;
     });
 
-    // ---- Fayl tanlanganda — avval faqat TEKSHIRUV (preview), hech narsa o'zgarmaydi ----
     let selectedBackupContent = null;
     let selectedConfirmToken = null;
     document.getElementById('backupFileInput').addEventListener('change', async (e) => {
@@ -1822,10 +1630,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     await loadFeatureCatalog();
   }
 
-  // ---- Admin: tizim funksiyalari katalogi (53-bosqich) ----
-  // Guruhlangan ro'yxatni bir marta yuklab keshlaydi — 54-bosqichdagi
-  // har-tarif "Funksiyalar" modali ham shu keshdan foydalanadi (qayta
-  // so'rov yubormaslik uchun).
   let featureCatalogCache = null;
   async function loadFeatureCatalog() {
     const el = document.getElementById('featureCatalogList');
@@ -1878,8 +1682,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (!confirm(`"${current ? current.name : ''}" tarifini o'chirasizmi?`)) return;
         const r = await apiPost('/api/tariff-remove', { initData, id });
         if (!r.ok) {
-          // 55-bosqich: agar tarifga do'kon egalari biriktirilgan bo'lsa,
-          // admin buni bilib, xohlasa tasdiqlab (force) baribir o'chirishi mumkin.
+
           if (r.blockedCount) {
             const forceConfirm = confirm(`${r.reason}\n\nBaribir o'chirilsinmi? (${r.blockedCount} ta do'kon egasi tarifsiz qoladi)`);
             if (!forceConfirm) return;
@@ -1896,10 +1699,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // 52-bosqich: tarif nomi va narxini birgalikda tahrirlash oynasi.
-  // 56-bosqich: shu oynadan to'g'ridan-to'g'ri "Ruxsatlar" (funksiyalar)
-  // modaliga o'tish tugmasi ham qo'shildi — ikkalasi bir yaxlit
-  // "tarifni tahrirlash" oqimi sifatida ishlaydi.
   function showTariffEditModal(tariff) {
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
@@ -1957,10 +1756,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     };
   }
 
-  // 54-bosqich: bitta tarif uchun "Funksiya × Tarif" jadvali — har bir
-  // funksiya guruhlangan holda checkbox bilan ko'rsatiladi, admin
-  // ✅/❌ belgilaydi. Saqlashda BUTUN xarita bir yo'la /api/tariff-set-features
-  // ga yuboriladi (checkbox'lar shu modalda birga saqlanadi).
   async function showTariffFeaturesModal(tariff) {
     let groups = featureCatalogCache;
     if (!groups) {
@@ -2012,16 +1807,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       loadTariffList();
     };
   }
-  // =========================================================================
-  // Admin bo'limi: "Obuna rejalari" (G-bo'lim, 73-bosqich) — owner "💳 Obuna"
-  // bo'limida ko'radigan muddat/narx rejalarini (masalan "1 oy — 50 000 so'm")
-  // admin to'liq boshqaradi: qo'shish, narx/muddatni tahrirlash, o'chirish.
-  // Ilgari bu rejalar kod ichida qattiq yozilgan edi (admin o'zgartira
-  // olmasdi) — endi "Tariflar" bo'limi bilan bir xil CRUD naqshi ishlatiladi.
-  // Har bir rejaga ixtiyoriy ravishda F-bo'lim tarifi ham biriktirilishi
-  // mumkin: owner shu rejani tanlab to'lasa, admin tasdiqlaganda muddat
-  // bilan birga owner'ning funksiya-tarifi ham shu tarifga o'zgaradi.
-  // =========================================================================
+
   function subscriptionPlanItemHtml(p) {
     return `
       <div class="owner-item" data-plan-id="${escapeHtml(p.id)}">
@@ -2170,13 +1956,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     };
   }
 
-  // =========================================================================
-  // Bosiladigan (accordion) bo'lim komponenti — renderProfileForm() ichida
-  // kamdan-kam o'zgartiriladigan bo'limlarni (kategoriyalar, aksiyalar,
-  // bonus, dostavka/oshxona guruhlari, xavfsizlik) yig'ib turadi. Har bir
-  // bo'lim boshida yopiq holda keladi, bosilganda ochiladi/yopiladi —
-  // shu bilan sahifa cheksiz uzun bo'lib ko'rinmaydi.
-  // =========================================================================
   function accSectionHtml(section) {
     return `
       <div class="acc-item" data-acc-key="${section.key}">
@@ -2207,7 +1986,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const p = existing;
     let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
     let pendingLogo = p.logoUrl || '';
-    let pendingBannerImg = ''; // 45-bosqich: yangi banner formasidagi tanlangan rasm (hali saqlanmagan)
+    let pendingBannerImg = '';
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     const accSections = [
       {
@@ -2425,9 +2204,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachLogoPickerHandlers('pLogo', (val) => { pendingLogo = val; });
     attachLogoPickerHandlers('bannerImg', (val) => { pendingBannerImg = val; });
 
-    // Jonli ko'rish saqlashdan oldingi taxminiy holat — shu sababli bekor
-    // qilinganda haqiqiy saqlangan rangga qaytarib, o'zgarishlarni tashlab
-    // yuboradi (29-bosqich: preview har doim rad etib bo'lishi kerak).
     document.getElementById('cancelProfileBtn').addEventListener('click', () => {
       applyBrandColor(p.brandColor);
       renderOwnerHomeScreen(p);
@@ -2629,7 +2405,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadOwnerTariffInfo();
   }
 
-  // 58-bosqich: do'kon egasi o'z profilida joriy tarifini ko'rishi.
   async function loadOwnerTariffInfo() {
     const el = document.getElementById('profileTariffInfo');
     if (!el) return;
@@ -2641,11 +2416,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     el.textContent = res.tariff ? res.tariff.name : 'Tarif belgilanmagan';
   }
 
-  // ---- Do'kon egasi: birinchi marta profil to'ldirish — bosqichma-bosqich
-  // "onboarding" ustasi (18-bosqich). Tahrirlashdan farqli, bu yerda
-  // ma'lumot 3 ta qadamga bo'lingan: (1) asosiy ma'lumot, (2) qo'shimcha
-  // ma'lumot, (3) hammasini tekshirib chiqish va saqlash. Har bir qadamda
-  // yuqorida progress-chiziq joriy holatni ko'rsatadi.
   const ONBOARDING_STEPS = [
     { title: "Asosiy ma'lumot" },
     { title: "Qo'shimcha ma'lumot" },
@@ -2774,7 +2544,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         renderProfileOnboarding();
         return;
       }
-      // 3-qadam — yakuniy saqlash
+
       const btn = document.getElementById('onboardNextBtn');
       btn.disabled = true;
       msgEl.textContent = 'Saqlanmoqda...';
@@ -2791,12 +2561,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
   const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer' };
   function rolesLabelClient(roles) {
     return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
   }
-  // Bir nechta vakolatli xodim uchun rol tanlash tugmalarida ishlatiladi (qarang: renderStaffRolePicker)
+
   const ROLE_ICONS = { kassir: 'wallet', oshpaz: 'chef-hat', sklad: 'box', dostavka: 'scooter' };
 
   function staffRoles(s) {
@@ -2804,10 +2573,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return s.role ? [s.role] : [];
   }
 
-  // Bir nechta vakolatli xodim TANLAGAN rol shu qurilmada (localStorage) eslab
-  // qolinadi — Mini App qayta ochilganda har safar so'ralmaydi, faqat xodim
-  // header'dagi "🔁 Rol almashtirish" tugmasini bossa (yoki admin uning
-  // vakolatlaridan birini olib tashlasa) qayta so'raladi.
   function staffChosenRoleKey() {
     const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
     return tgUserId ? `kitchenOsStaffRole:${tgUserId}` : null;
@@ -2874,11 +2639,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
   }
 
-  // 3-bosqich: KitchenOS bosh sahifa header'i — hamburger, logotip,
-  // nom/taglayn, sana va bildirishnoma qo'ng'irog'i (badge bilan).
-  // Hozircha faqat "Bosh" tabida sinov uchun ulangan — bildirishnomalar
-  // sonini serverdan olish (18-bosqich) va hamburger menyusi (14-bosqich)
-  // keyinroq ulanadi; hozircha ular placeholder ishlov beruvchiga ega.
   const KO_MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
     'Iyul', 'Avgust', 'Sentyabr', 'Oktyabr', 'Noyabr', 'Dekabr'];
 
@@ -2919,18 +2679,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderOwnerHomeScreen(profile)));
   }
 
-  // =========================================================================
-  // Bosh sahifa PASTKI navigatsiyasi — 5 band: Bosh sahifa, Savdo,
-  // Yangi buyurtma (markazda FAB), Ombor, Profil. Bildirishnomalar bandi
-  // olib tashlandi (header'dagi qo'ng'iroqcha bilan dublikat edi), o'rniga
-  // Ombor ekrani (renderStockScreen) qo'yildi. Eski 4-tabli tab-bar
-  // o'rnini shu egallaydi.
-  //
-  // 20-bosqich: "Menyu" (taom qo'shish / aksiya) paneli — rasmda unga aniq
-  // joy yo'q edi, shu sababli Sozlamalar ekraniga (renderProfileForm)
-  // ko'chirildi: do'kon egasi uchun eng yaqin mos joy shu, chunki menyu
-  // tarkibi ham do'kon sozlamasi hisoblanadi.
-  // =========================================================================
   function koBottomNavHtml(activeKey) {
     return `
       <div class="ko-bottom-nav" id="koBottomNav">
@@ -2958,13 +2706,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Barcha beshtasi ulangan: Bosh sahifa (joriy ekranning o'zi), Savdo
-  // (renderCashflowScreen), Ombor (renderStockScreen) va Profil (15-bosqichda
-  // qurilgan ekranlar), va Yangi buyurtma — egasi uchun ham server
-  // (/api/create-order) 'egasi' rolini qabul qiladi, shu sababli kassir
-  // uchun tayyor bo'lgan renderCashierScreen shu yerda qayta ishlatiladi,
-  // faqat "← Orqaga" tugmasi bilan (kassirning o'z ekranida bu tugma yo'q,
-  // chunki u uning doimiy bosh sahifasi).
   function wireKoBottomNav(profile) {
     const nav = document.getElementById('koBottomNav');
     if (!nav) return;
@@ -2986,19 +2727,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 18-bosqich: bell-badge (header'da) va "Bildirishnomalar" band-badge
-  // (pastki navda) sonini serverdan dinamik yangilaydi. Alohida
-  // bildirishnoma-ma'lumotlar bazasi hali yo'q (15-bosqichdagi izohga
-  // qarang), shu sababli /api/dashboard-alerts natijasining uzunligi
-  // (alerts.length) badge soni sifatida ishlatiladi — bu manba
-  // loadKoAlertsList() orqali baribir har safar bosh sahifa ochilganda
-  // yuklanadi, shuning uchun bu yerda alohida so'rov yubormay, o'sha
-  // natijadan foydalanamiz (pastga qarang). Butun header/nav qayta render
-  // qilinmaydi — faqat badge <span> qo'shiladi/yangilanadi/olib tashlanadi,
-  // shu bilan allaqachon ulangan click-handler'lar (wireKoHomeHeader,
-  // wireKoBottomNav) buzilmaydi.
-  // =========================================================================
   function updateKoNotifBadges(count) {
     const bellBtn = document.getElementById('koHeaderBellBtn');
     if (bellBtn) {
@@ -3010,20 +2738,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
         existing.remove();
       }
     }
-    // Pastki navda "Bildirishnomalar" bandi "Ombor"ga almashtirilgani sababli,
-    // bu yerda endi faqat header'dagi bell-badge yangilanadi.
+
   }
 
-  // =========================================================================
-  // 7-bosqich: KitchenOS bosh sahifa KPI-kartochkasi (icon + katta raqam +
-  // foiz-delta). Bu yerda faqat komponentning o'zi va uning skeleton holati
-  // bor — 4 tasini 2x2 grid'ga joylashtirib /api/dashboard-summary'ga ulash
-  // 8-bosqichda qilinadi.
-  // =========================================================================
-
-  // Katta summalarni mockupdagi kabi qisqa ko'rinishga o'tkazadi: 12 450 000
-  // -> "12.45M", 35 000 -> "35K". Million/ming chegarasidan pastdagi
-  // qiymatlar (masalan buyurtmalar soni "356") xom son sifatida qaytadi.
   function koFormatCompact(n) {
     const num = Number(n || 0);
     const abs = Math.abs(num);
@@ -3032,9 +2749,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return String(Math.round(num));
   }
 
-  // Bugungi va kechagi qiymatdan foiz-delta hisoblaydi. Kecha 0 bo'lsa (va
-  // bugun ham 0 bo'lsa) taqqoslash mantiqiy emas — shu holatda null qaytadi
-  // va chaqiruvchi joy delta'ni umuman ko'rsatmaydi.
   function koFormatDelta(todayVal, yesterdayVal) {
     const y = Number(yesterdayVal || 0);
     const t = Number(todayVal || 0);
@@ -3048,11 +2762,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return { tone, text: (pct >= 0 ? '+' : '') + rounded + '%' };
   }
 
-  // iconName — icon-sprite'dagi nom, label — kichik sarlavha (masalan
-  // "BUGUNGI SAVDO"), value — allaqachon formatlangan matn (masalan "12.45M"),
-  // delta — koFormatDelta() natijasi (yoki null, agar ko'rsatilmasa).
-  // 3-bosqich: cardId berilsa, kartochka bosiladigan (clickable) qilib
-  // belgilanadi — chaqiruvchi tomon shu id orqali click listener ulaydi.
   function koKpiCardHtml(iconName, label, value, delta, cardId) {
     return `
       <div class="ko-kpi-card${cardId ? ' ko-kpi-clickable' : ''}"${cardId ? ` id="${cardId}"` : ''}>
@@ -3080,18 +2789,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // 4 ta skeleton-kartochkani 2x2 grid ichida qaytaradi — sahifa birinchi
-  // chizilganda shu ko'rinadi, keyin loadKoKpiGrid() natija bilan almashtiradi.
-  // 2-bosqich: "O'rtacha chek" kartochkasi olib tashlandi — 3-bosqichda
-  // o'rniga "Kuryer hisoboti" kartochkasi qo'shiladi.
   function koKpiGridSkeletonHtml() {
     const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', 'Kuryer hisoboti'];
     return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
   }
 
-  // Buyurtmalar soni uchun delta foizda emas, xom sondagi farq sifatida
-  // ko'rsatiladi (mockupda "+18 ta"), chunki kichik sonlarda foiz
-  // o'qilishi qiyin va real ma'no bermaydi.
   function koFormatCountDelta(todayVal, yesterdayVal) {
     const t = Number(todayVal || 0);
     const y = Number(yesterdayVal || 0);
@@ -3101,11 +2803,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return { tone, text: (diff > 0 ? '+' : '') + diff + ' ta' };
   }
 
-  // 8-bosqich: 4 ta KPI-kartochkani /api/dashboard-summary natijasidan
-  // yasab, 2x2 grid ichida qaytaradi.
-  // 3-bosqich: "O'rtacha chek" o'rniga "Kuryer hisoboti" — bugun kuryerlar
-  // yetkazib bergan buyurtmalar soni. Bosilsa (loadKoKpiGrid'da ulanadi)
-  // to'liq kuryer hisoboti ekraniga (har bir kuryer bo'yicha qator, tarix) o'tadi.
   function koKpiGridHtml(summary) {
     const cards = [
       koKpiCardHtml('wallet', 'Bugungi savdo',
@@ -3130,12 +2827,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!el) return;
     const res = await apiPost('/api/dashboard-summary', { initData });
     const el2 = document.getElementById('koKpiGrid');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!el2) return;
     if (res.networkError) {
-      // koKpiGrid CSS grid (2 ustunli) ekanligi sababli xatolik holatini
-      // to'g'ridan-to'g'ri shu konteyner ichiga qo'ymaymiz (grid katakchasiga
-      // siqilib, noto'g'ri ko'rinardi) — avval oddiy kartochkaga almashtirib,
-      // keyin renderNetworkErrorInline() shu yangi elementga ulanadi.
+
       el2.outerHTML = `<div class="kartochka" id="koKpiGrid"></div>`;
       renderNetworkErrorInline(document.getElementById('koKpiGrid'), res.reason, () => loadKoKpiGrid(profile));
       return;
@@ -3146,10 +2840,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     el2.outerHTML = koKpiGridHtml(res.summary);
 
-    // 5-bosqich: "Kuryer hisoboti" kartochkasiga bosilganda batafsil oyna —
-    // har bir kuryer bo'yicha alohida qator va kassaga qaytarish tarixini
-    // ko'rsatadigan mavjud ekran (renderCourierReportScreen, ilgari faqat
-    // Moliya ichidan ochilar edi).
     const courierCard = document.getElementById('koCourierCard');
     if (courierCard) {
       courierCard.addEventListener('click', () => {
@@ -3158,13 +2848,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // =========================================================================
-  // 9-bosqich: KitchenOS bosh sahifa "Bugungi holat" banneri — qizil
-  // sarlavha ("BUGUNGI HOLAT" + "Barchasi" havolasi) va pastida 4 ustun
-  // (icon + katta son + label): Yangi / Tayyorlanmoqda / Tayyor /
-  // Kechikayotgan. Bu yerda faqat komponentning o'zi va skeleton holati —
-  // /api/order-status-counts'ga ulash 10-bosqichda qilinadi.
-  // =========================================================================
   const KO_STATUS_COLUMNS = [
     { key: 'yangi', icon: 'file-plus', label: 'Yangi' },
     { key: 'tayyorlanmoqda', icon: 'chef-hat', label: 'Tayyorlanmoqda' },
@@ -3201,23 +2884,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       .replace('id="koStatusBanner"', 'id="koStatusBanner" data-loading="1"');
   }
 
-  // "Barchasi" tugmasini buyurtmalar ekraniga ulaydi. Skeleton va real
-  // holatning ikkalasida ham chaqiriladi (data hali kelmagan bo'lsa ham
-  // "Barchasi" ishlashi kerak), shuning uchun renderni har safar (ham
-  // skeleton, ham real HTML bilan almashtirilgach) alohida chaqiramiz.
   function wireKoStatusBanner(profile) {
     const btn = document.getElementById('koStatusAllBtn');
     if (btn) btn.addEventListener('click', () => renderKitchenScreen(profile.name, () => renderOwnerHomeScreen(profile)));
   }
 
-  // 10-bosqich: "Bugungi holat" bannerini /api/order-status-counts
-  // natijasiga ulaydi — skeletonni real sonlar bilan almashtiradi.
   async function loadKoStatusBanner(profile) {
     const el = document.getElementById('koStatusBanner');
     if (!el) return;
     const res = await apiPost('/api/order-status-counts', { initData });
     const el2 = document.getElementById('koStatusBanner');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoStatusBanner(profile)); return; }
     if (!res.ok) {
       el2.outerHTML = `<div class="ko-status-banner kartochka" id="koStatusBanner"><div class="bosh">Bugungi holat yuklanmadi.</div></div>`;
@@ -3227,12 +2904,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     wireKoStatusBanner(profile);
   }
 
-  // =========================================================================
-  // 11-bosqich: KitchenOS bosh sahifa asosiy menyu-grid — 2 qator x 5 ustun,
-  // 10 ta icon+label tugma. Bu yerda faqat komponentning o'zi: har bir
-  // tugma data-menu-key bilan belgilanadi, lekin ularni mavjud ekranlarga
-  // ulash (bosilganda nima ochilishi) 12-bosqichda qilinadi.
-  // =========================================================================
   const KO_MENU_ITEMS = [
     { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
     { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
@@ -3262,24 +2933,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return `<div class="ko-menu-grid">${KO_MENU_ITEMS.map(koMenuItemHtml).join('')}</div>`;
   }
 
-  // 12-bosqich (14-bosqichda kengaytirildi): har bir grid tugmasi va hamburger
-  // yon-menyusi bandi bir xil manzillarga borishi kerak, shu sababli
-  // navigatsiya funksiyalari shu yerda BIR MARTA belgilanadi va ikkalasi
-  // ham shu obyektni qayta ishlatadi.
-  // Aniq mos ekrani bor bandlar rejadagidek ulanadi: Oshxona, Ombor,
-  // Xodimlar (nazorat ekrani), Moliya, Yetkazib berish, AI Tavsiyalar,
-  // Bildirishnomalar, Profil, Yangi buyurtma (kassir ekrani, "← Orqaga" bilan).
-  // Qolganlar uchun qaror:
-  //  - Savdo: alohida "savdo" ekrani yo'q — eng yaqin mos ekran Moliya bilan
-  //    bir xil (renderCashflowScreen), chunki savdo dinamikasi grafigi va
-  //    davr tanlash (Bugun/Hafta/Oy) allaqachon o'sha yerda.
-  //  - Hisobotlar: kunlik yakuniy Z-hisobot ekrani (renderZReportScreen)
-  //    "hisobot" ma'nosiga to'g'ridan-to'g'ri mos keladi.
-  //  - Filiallar: alohida ekran kerak emas — "Bosh" tabining o'zida
-  //    Filiallar bo'limi allaqachon bor, shu sababli faqat o'sha bo'limga
-  //    scroll qilinadi (yangi ekran ochilmaydi).
-  //  - Sozlamalar: do'kon profilini tahrirlash formasi (renderProfileForm)
-  //    — mavjud "Profilni tahrirlash" tugmasi bilan bir xil maqsad.
   function koNavHandlers(profile) {
     const goBack = () => renderOwnerHomeScreen(profile);
     return {
@@ -3318,19 +2971,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 14-bosqich: hamburger yon-menyu (sidebar). koMenuGridHtml() bilan bir xil
-  // manzillarga o'tadi (koNavHandlers orqali), ustiga "Bosh sahifa" va
-  // "Yangi buyurtma" bandlari qo'shilgan — chunki sidebar istalgan ekrandan
-  // ochilishi mumkin bo'lgan to'liq navigatsiya deb mo'ljallangan, faqat
-  // Bosh sahifadagi katakchalar ro'yxati emas.
-  //
-  // #app'ning O'ZIDAN TASHQARIDA (document.body farzandi sifatida)
-  // qo'shiladi — shu sababli ekran(html) #app ichini qayta chizsa ham
-  // (masalan foydalanuvchi biror bandni bosib boshqa ekranga o'tsa) sidebar
-  // avval closeKoSidebar() bilan olib tashlanadi, keyin navigatsiya sodir
-  // bo'ladi — osilib qolgan overlay bo'lmaydi.
-  // =========================================================================
   const KO_SIDEBAR_ITEMS = [
     { key: 'bosh', icon: 'home', label: 'Bosh sahifa' },
     { key: 'yangiBuyurtma', icon: 'plus', label: 'Yangi buyurtma' },
@@ -3384,7 +3024,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openKoSidebar(profile) {
-    if (document.getElementById('koSidebarOverlay')) return; // allaqachon ochiq
+    if (document.getElementById('koSidebarOverlay')) return;
     document.body.insertAdjacentHTML('beforeend', koSidebarHtml(profile));
     const overlay = document.getElementById('koSidebarOverlay');
     const handlers = koNavHandlers(profile);
@@ -3401,13 +3041,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 13-bosqich: KitchenOS bosh sahifa "Muhim ogohlantirishlar" ro'yxati —
-  // /api/dashboard-alerts natijasidagi har bir element uchun: turi bo'yicha
-  // rangli icon (xato=qizil, ogohlantirish=sariq, info=ko'k), matn,
-  // son-badge (agar count berilgan bo'lsa) va chevron. Bosilganda alert
-  // o'zining `screen` maydoniga qarab tegishli ekranga o'tkazadi.
-  // =========================================================================
   const KO_ALERT_LEVEL_ICON = { error: 'warning', warning: 'warning', info: 'info' };
 
   function koAlertItemHtml(alert, index) {
@@ -3443,8 +3076,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // `screen` qiymatini haqiqiy navigatsiyaga aylantiradi (backend'dagi
-  // /api/dashboard-alerts izohiga qarang: ombor / buyurtmalar_kechikkan / zreport).
   function koAlertScreenRoute(profile, screenKey) {
     const goBack = () => renderOwnerHomeScreen(profile);
     if (screenKey === 'ombor') return () => renderStockScreen(profile.name, 'egasi', goBack);
@@ -3468,13 +3099,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!el) return;
     const res = await apiPost('/api/dashboard-alerts', { initData });
     const el2 = document.getElementById('koAlertsList');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoAlertsList(profile)); return; }
     if (!res.ok) {
       el2.outerHTML = `<div class="ko-alerts-card kartochka" id="koAlertsList"><div class="section-label">Muhim ogohlantirishlar</div><div class="bosh">Yuklanmadi.</div></div>`;
-      // Xatolik holatida badge sonini eskicha (yuklanmagan) holatda
-      // qoldiramiz — noto'g'ri "0" ko'rsatib, bor ogohlantirishni
-      // yashirib qo'ymaslik uchun bu yerda updateKoNotifBadges chaqirilmaydi.
+
       return;
     }
     el2.outerHTML = koAlertsListHtml(res.alerts);
@@ -3482,15 +3111,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     updateKoNotifBadges(res.alerts.length);
   }
 
-  // =========================================================================
-  // 15-bosqich: "Bildirishnomalar" — to'liq ekranli ro'yxat. Alohida
-  // bildirishnoma-ma'lumotlar bazasi hali yo'q, shu sababli 13-bosqichdagi
-  // /api/dashboard-alerts'ning o'zi qayta ishlatiladi (bir xil ma'lumot,
-  // header'dagi bell va bu ekran bir xil manbadan keladi — 18-bosqichda
-  // badge soni ham shu yerdan olinadi). Har bir band bosilganda
-  // koAlertScreenRoute() orqali tegishli ekranga o'tadi (12/13-bosqichdagi
-  // bilan bir xil xaritalash).
-  // =========================================================================
   function koNotificationsListHtml(alerts) {
     return (alerts && alerts.length)
       ? alerts.map((a, i) => koAlertItemHtml(a, i)).join('')
@@ -3514,7 +3134,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!el) return;
     const res = await apiPost('/api/dashboard-alerts', { initData });
     const el2 = document.getElementById('notifList');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadNotificationsList(profile)); return; }
     if (!res.ok) {
       el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
@@ -3528,15 +3148,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 15-bosqich: "Profil" ekrani — "Do'kon ma'lumotlari" bo'limi "bosh"
-  // tabidan shu yerga ko'chirildi (endi u yerda ikki marta ko'rsatilmaydi).
-  //
-  // MA'LUM CHEKLOV: "Profilni tahrirlash" tugmasi mavjud renderProfileForm()
-  // ekranini ochadi — u saqlagach doim renderOwnerHomeScreen(profile) (Bosh
-  // sahifa)ga qaytaradi, Profil ekraniga emas, chunki forma ichidagi
-  // navigatsiya shunday yozilgan (bu joyning o'zgarishi emas).
-  // =========================================================================
   function renderOwnerProfileScreen(profile, onBack) {
     ekran(`
       <div class="panel">
@@ -3563,8 +3174,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadNotificationPrefs();
   }
 
-  // ---- 59-bosqich: egasi qaysi toifadagi shaxsiy xabarlarni (yangi
-  // buyurtma, kam qoldiq) botdan olishini o'zi yoqib/o'chira oladi. ----
   async function loadNotificationPrefs() {
     const card = document.getElementById('notifPrefsCard');
     if (!card) return;
@@ -3590,13 +3199,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 82-BOSQICH: "💳 Obuna" — egasi o'zi tarif tanlab, to'lov skrinshotini
-  // botga yuboradi -> admin tasdiqlagach obuna muddati AVTOMATIK uzayadi.
-  // Skrinshotning o'zi Mini App'dan emas, botning shaxsiy chatiga oddiy RASM
-  // qilib yuboriladi (server.js'dagi photo-listener shuni kutib turadi) -
-  // shu sababli bu ekran faqat "tarif tanlash" va "holatni kuzatish" qiladi.
-  // =========================================================================
   function subStatusLabel(status, inGrace) {
     if (status === 'active') return inGrace ? "⏳ Muhlat davrida" : '✅ Faol';
     if (status === 'pending_trial') return "🕓 Tasdiqlanishi kutilmoqda";
@@ -3623,8 +3225,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     await loadOwnerSubscriptionHistory();
   }
 
-  // 15-bosqich (B-bo'lim): egasi o'ziga tegishli barcha o'tgan obuna
-  // to'lovlarini (tasdiqlangan, muddatni uzaytirgan) shu yerda ko'radi.
   async function loadOwnerSubscriptionHistory() {
     const listEl = document.getElementById('subHistoryList');
     if (!listEl) return;
@@ -3645,11 +3245,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // To'lov rekvizitlari (admin kartasi) kartochkasini chizadi va "Nusxalash"
-  // tugmasini ulaydi. Ilgari bu markup to'g'ridan-to'g'ri
-  // loadOwnerSubscriptionStatus() ichida, faqat "so'rov yo'q" holatida
-  // chizilardi va boshqa holatlarda karta butunlay yashirilardi — endi
-  // bitta joyda, har doim chaqiriladi.
   function renderPaymentRequisitesCard(requisitesCard, requisites) {
     if (!requisitesCard) return;
     requisitesCard.style.display = '';
@@ -3699,17 +3294,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ${(res.daysLeft !== null && res.daysLeft !== undefined) ? `<div class="profile-row"><b>Qolgan kun:</b> ${escapeHtml(String(res.daysLeft))}</div>` : ''}
     `;
 
-    // MUHIM TUZATISH: ilgari tarif tanlangач (yoki skrinshot yuborilgach)
-    // to'lov rekvizitlari (admin kartasi) BUTUNLAY yashirilardi
-    // (requisitesCard.style.display = 'none') — natijada egasi to'lov
-    // qilish jarayonida karta raqamini qayta ko'ra olmasdi. Endi bu karta
-    // HAR DOIM ko'rinadi (pastda, "So'rov holati"dan keyin), va karta
-    // raqamini bitta bosishda nusxalab olish mumkin.
     renderPaymentRequisitesCard(requisitesCard, res.requisites);
 
     const req = res.pendingRequest;
 
-    // Tarif tanlangan, lekin skrinshot hali yuborilmagan - botga o'tishni eslatamiz.
     if (req && req.status === 'kutilmoqda_skrinshot') {
       plansCard.style.display = '';
       plansCard.innerHTML = `
@@ -3727,7 +3315,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
-    // Skrinshot yuborilgan, admin tasdig'i kutilmoqda.
     if (req && req.status === 'kutilmoqda_tasdiq') {
       plansCard.style.display = '';
       plansCard.innerHTML = `
@@ -3737,7 +3324,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
-    // So'rov yo'q (yoki avvalgisi tasdiqlangan/rad etilgan) - yangi tarif tanlash imkoni.
     plansCard.style.display = '';
     const rejectedNote = (req && req.status === 'rad_etildi')
       ? `<div class="xabar err" style="margin-bottom:10px;">Oldingi so'rovingiz (${escapeHtml(req.planLabel)}) rad etilgan. Qaytadan tarif tanlang.</div>`
@@ -3774,33 +3360,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // =========================================================================
-  // 16-bosqich: "Bosh sahifa" — mustaqil ekran funksiyasi. Ilgari shu kontent
-  // renderProfileView(profile) ichidagi "bosh" tabida yashar edi; endi u
-  // yerdan olib tashlanib, shu funksiyaga ko'chirildi va navigatsiyaning
-  // haqiqiy boshlang'ich nuqtasiga aylandi: login/onboarding tugagach hamda
-  // barcha "bosh sahifaga qaytish" callback'lari (pastki nav, "Bugungi
-  // holat → Barchasi", ogohlantirish bandlari, menyu-grid, header
-  // qo'ng'irog'i) endi shu funksiyani chaqiradi — renderProfileView(profile)
-  // emas.
-  //
-  // 20-bosqich: renderProfileView butunlay olib tashlandi (o'lik kod edi,
-  // hech qayerdan chaqirilmasdi). Undagi 3 ta eski tab yangi joylarga
-  // ko'chirildi: "menyu"/"moliya" tabidagi taom, aksiya, bonus va dostavka
-  // guruhi bo'limlari renderProfileForm() (Sozlamalar) ichiga, "xodimlar"
-  // tabidagi xodim qo'shish/ro'yxati esa renderStaffControlScreen()
-  // (Xodimlar) ichiga.
-  // =========================================================================
   function renderOwnerHomeScreen(profile) {
-    // Rasmda faqat bitta (qizil, KitchenOS uslubidagi) header bor — shu
-    // sababli umumiy app-shell header (setAppHeader, boshqa barcha
-    // ekranlarda ishlatiladi) shu ekranda ko'rsatilmaydi, o'rniga faqat
-    // koHomeHeaderHtml() qoladi.
+
     clearAppHeader();
-    // 18-bosqich: bu yerdagi "0" — dastlabki (ma'lumot hali kelmagan) holat,
-    // pastdagi loadKoAlertsList() natijasi kelgach updateKoNotifBadges()
-    // orqali haqiqiy songa almashtiriladi (shu sababli boshida hech qanday
-    // badge ko'rinmaydi, keyin kerak bo'lsa paydo bo'ladi).
+
     ekran(`
       <div class="panel has-ko-bottom-nav ko-home-panel">
         ${koHomeHeaderHtml(0, profile.name)}
@@ -3924,8 +3487,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // 13-bosqich: Oshpazlar guruhi holatini yuklaydi — dostavka guruhidan
-  // mustaqil, alohida biriktiriladigan guruh.
   async function loadKitchenGroupStatus() {
     const statusEl = document.getElementById('kitchenGroupStatus');
     const removeBtn = document.getElementById('removeKitchenGroupBtn');
@@ -3940,11 +3501,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ==================== F. Bo'lim (kategoriya) boshqaruvi (36-40-bosqich) ====================
-  // Egasi panelidagi "Bo'limlar" kartochkasi shu yerda boshqariladi. Yuklab
-  // olingan ro'yxat `ownerCategoriesCache`da saqlanadi — shu bilan bir
-  // vaqtda "Menyuga taom qo'shish" formasidagi select ham to'ldiriladi
-  // (39-bosqich), alohida so'rov yubormasdan.
   let ownerCategoriesCache = [];
 
   function categoryListHtml(categories) {
@@ -4031,9 +3587,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
   }
 
-  // 46-bosqich: bannerlar ro'yxati (egasi boshqaruv paneli) — promoListHtml
-  // bilan bir xil kartochka ko'rinishi, farqi: rasm kichik ko'rinishda chap
-  // tomonda, va sana oynasi (bor bo'lsa) ko'rsatiladi.
   function bannerListHtml(banners) {
     if (!banners || !banners.length) return `<div class="bosh">Hali banner qo'shilmagan.</div>`;
     return banners.map(b => `
@@ -4097,8 +3650,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // ---- Menyuga taom qo'shish bo'limi — qayta ishlatiladigan blok (avval
-  // faqat Sklad ekranida edi, endi Oshxona ekranida ham egasiga ko'rinadi) ----
   function menuAddSectionHtml() {
     return `
       <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
@@ -4152,8 +3703,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
-    // "Turi" tanlovi — "To'g'ridan skladdan" tanlansa, markaziy skladdagi
-    // mahsulotlar ro'yxati (bir marta) yuklanib, select to'ldiriladi.
     document.getElementById('menuTypeInput').addEventListener('change', (e) => {
       const wrap = document.getElementById('menuDirectStockWrap');
       const isDirect = e.target.value === 'direct';
@@ -4240,11 +3789,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
-  // YANGI: bir nechta vakolatli xodim uchun "qaysi bo'limda ishlaysiz?" ekrani -
-  // oshxona logotipi va "Xush kelibsiz!" yozuvi bilan (oddiy "Tekshirilmoqda..."
-  // o'rniga - shu ekran endi shuning o'rnini bosadi, chunki bu vaqtga kelib
-  // /api/verify allaqachon javob qaytargan, oshxona ma'lumotlari ma'lum).
   function renderStaffRolePicker(data) {
     clearAppHeader();
     applyBrandColor(data.ownerBrandColor);
@@ -4280,9 +3824,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function renderStaffScreen(role, roleLabel, restaurantName, logoUrl, brandColor, roles) {
     applyBrandColor(brandColor);
-    // Bir nechta vakolati bo'lgan xodimga header'da "🔁 Rol almashtirish"
-    // tugmasi ko'rsatiladi - bosilsa, tanlovi shu qurilmadan o'chiriladi va
-    // ilova qaytadan "qaysi bo'limda ishlaysiz?" ekranini so'raydi.
+
     const multiRole = Array.isArray(roles) && roles.length > 1;
     setAppHeader(logoUrl, restaurantName, roleLabel, multiRole ? staffRoleSwitchHandler : null);
     if (role === 'kassir') {
@@ -4320,16 +3862,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `);
   }
 
-  // "🔁" tugmasi bosilganda: shu qurilmadagi tanlovni tozalab, /api/verify'ni
-  // qaytadan chaqiradi (bootstrapApp) — shu bilan rol ro'yxati ham yangilanadi
-  // (masalan admin bu orada bitta vakolatini olib tashlagan bo'lishi mumkin).
   function staffRoleSwitchHandler() {
     const key = staffChosenRoleKey();
     if (key) localStorage.removeItem(key);
     bootstrapApp();
   }
 
-  // ---- Xodim: shaxsiy kunlik/haftalik/oylik statistika (45-bosqich) ----
   let myStatsState = { period: 'today' };
 
   function myStatsPeriodLabel(period) {
@@ -4416,18 +3954,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     bodyEl.innerHTML = myStatsBodyHtml(res.stats);
   }
 
-  // ---- Kassir: buyurtma ekrani (menyu → savat → tur/to'lov → yuborish) ----
   const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
 
-  // 19/20-bosqich: "Stolga" va "Olib ketish" buyurtmalarida faqat "Naqd" va
-  // "Karta" to'lov usullari ko'rsatiladi. 21/22/23-bosqich: "Dostavka
-  // orqali" varianti (matni) FAQAT haqiqiy Dostavka buyurtmalarida
-  // ko'rinadi — ilgari bu variant barcha buyurtma turlarida (Stolga, Olib
-  // ketishda ham) chiqib, mijozlarni chalkashtirib yuborardi. Dostavka
-  // buyurtmasida esa "Naqd" ko'rsatilmaydi — kuryer naqd pulni mijozdan
-  // olishi aynan "Dostavka orqali" varianti bilan ifodalanadi, ikkalasi bir
-  // vaqtda kerak emas (chalkashlikni oldini olish).
   function visiblePaymentTypeEntries(orderType) {
     return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
       if (k === 'dostavka_orqali' && customerState.cardOnlyRestricted) return false;
@@ -4435,11 +3964,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return k !== 'dostavka_orqali';
     });
   }
-  // orderType o'zgarganda, agar hozirgi tanlov endi ko'rinmaydigan variant
-  // bo'lib qolsa (masalan "dostavka"dan "stol"ga o'tilganda "dostavka_orqali"
-  // tanlangan bo'lsa, yoki "stol"dan "dostavka"ga o'tilganda "naqd" tanlangan
-  // bo'lsa) — variant "karta"ga almashtiriladi, aks holda ko'rinmaydigan
-  // tanlov "yopishib" qolib, mijoz buni sezmasdan yuborib yuborishi mumkin edi.
+
   function ensureValidPaymentType(state) {
     const visibleKeys = visiblePaymentTypeEntries(state.orderType).map(([k]) => k);
     if (!visibleKeys.includes(state.paymentType)) {
@@ -4536,7 +4061,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadCashierMenu(restaurantName);
   }
 
-  // ---- Kassir: "Buyurtmalar holati" tabi — real-vaqtda ro'yxat, faqat "Tayyor" tugmasi bilan ----
   function renderCashierOrdersTab(restaurantName, onBack) {
     ekran(`
       <div class="panel">
@@ -4565,7 +4089,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       document.querySelectorAll('#cashierStatusChips [data-status-chip]').forEach(el => {
         el.classList.toggle('selected', el.getAttribute('data-status-chip') === key);
       });
-      lastOrdersSnapshot = null; // filtr o'zgardi — taxtani majburiy qayta chizamiz
+      lastOrdersSnapshot = null;
       refreshOrdersBoard('kassir');
     });
     attachSoundToggleHandler();
@@ -4574,16 +4098,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     startOrdersPolling('kassir');
   }
 
-  // ==================== K. Umumiy: bo'limlarga bo'lingan menyu (29-30-bosqich) ====================
-  // Mijoz va kassir menyusi bir xil "bo'lim + sticky tab-bar + scrollspy"
-  // mantig'iga muhtoj edi — shu komponent ikkalasida ham qayta ishlatiladi,
-  // faqat karta ko'rinishi (renderItem) va konteyner id'lari (opts) farq qiladi.
-
-  // categories (ixtiyoriy) — owner.categories ro'yxati (F-bo'lim, 36-40-bosqich).
-  // Berilsa, bo'limlar shu yerdagi tartib (order) bo'yicha chiqadi; ro'yxatda
-  // yo'q kategoriyalar (masalan, bo'lim keyinchalik o'chirilgan bo'lsa yoki
-  // taomda umuman kategoriya belgilanmagan bo'lsa — "Boshqa") oxiriga,
-  // taomlarda uchragan tartibda qo'shiladi.
   function groupMenuItems(items, categories) {
     const orderIndex = {};
     (categories || []).forEach((c, i) => { orderIndex[c.name] = i; });
@@ -4602,7 +4116,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return { order, groups };
   }
 
-  // opts: { sectionIdPrefix, itemsWrapperClass, renderItem, emptyText, categories }
   function renderSectionedMenu(items, opts) {
     if (!items.length) return `<div class="bosh">${opts.emptyText}</div>`;
     const { order, groups } = groupMenuItems(items, opts.categories);
@@ -4614,7 +4127,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // opts: { tabRowId, sectionIdPrefix, listElId, categories }
   function sectionedMenuTabsHtml(items, opts) {
     const { order } = groupMenuItems(items, opts.categories);
     if (order.length <= 1) return '';
@@ -4626,9 +4138,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // tabRowId bo'yicha kalitlangan IntersectionObserver'lar — mijoz va
-  // kassir ekranlari bir vaqtda alohida ishlaydi, biri ikkinchisiga
-  // xalaqit bermaydi.
   const sectionedMenuObservers = {};
 
   function disconnectSectionedMenuObserver(tabRowId) {
@@ -4677,8 +4186,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const thumbHtml = m.imageUrl
       ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
       : `<div class="menu-item-thumb-empty"></div>`;
-    // 47-bosqich: sklad tugagan taom avtomatik "Tugagan" deb belgilanadi —
-    // savatga qo'shib bo'lmaydi (miqdor tugmalari o'chiriladi).
+
     if (m.outOfStock) {
       return `
         <div class="menu-item" style="opacity:0.55;">
@@ -4715,8 +4223,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // 29-bosqich: kassirning "Yangi buyurtma" menyusi ham mijoznikiga
-  // o'xshab bo'limlarga ajratildi (umumiy komponent — 30-bosqich).
   function cashierMenuHtml() {
     return `
       ${sectionedMenuTabsHtml(cashierState.menu, { tabRowId: 'cashierCatRow', sectionIdPrefix: 'menu-section-cashier', listElId: 'cashierMenuList', categories: cashierState.categories })}
@@ -4787,11 +4293,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
-    // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
-    // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
     if (sendBtn) sendBtn.disabled = true;
-    // Bitta chek-aut urinishi uchun bitta requestId — server shu orqali
-    // takroriy so'rovni aniqlab, bir xil natijani qaytaradi
+
     if (!cashierState.lastOrderRequestId) {
       cashierState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
@@ -4809,7 +4312,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     if (res.ok) {
       cashierState.cart = {};
-      cashierState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
+      cashierState.lastOrderRequestId = null;
       msgEl.textContent = '';
       renderCashierScreen(restaurantName, onBack);
       const topMsg = document.createElement('div');
@@ -4817,23 +4320,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${fmtNum(res.total)} so'm)`;
       document.querySelector('.panel').prepend(topMsg);
     } else {
-      if (sendBtn) sendBtn.disabled = false; // xato bo'lsa — qayta urinib ko'rish uchun tugma yoqiladi
+      if (sendBtn) sendBtn.disabled = false;
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
       msgEl.className = 'xabar err';
     }
   }
 
-
-  // ---- Oshpaz va kassir uchun umumiy: buyurtmalar taxtasi (real-vaqtda) ----
   const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor', bekor_qilindi: 'Bekor qilindi' };
   let ordersPollTimer = null;
   let lastOrdersSnapshot = null;
-  let knownOrderIds = null; // 46-bosqich: yangi buyurtmani aniqlash uchun oldingi ID'lar to'plami
+  let knownOrderIds = null;
 
-  // 19-bosqich: kassir uchun "Buyurtmalar holati" ekranida chip-filtr —
-  // faqat kassir roli uchun (oshpaz/kuryer ekranlariga tegmaydi),
-  // mavjud .cat-row/.cat-opt chip komponentidan (24-bosqichdagi mijoz
-  // menyu filtri bilan bir xil) qayta foydalanadi.
   let cashierStatusFilter = 'hammasi';
   const CASHIER_STATUS_CHIPS = [
     { key: 'hammasi', label: 'Hammasi' },
@@ -4852,12 +4349,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function stopOrdersPolling() {
     if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
     lastOrdersSnapshot = null;
-    knownOrderIds = null; // keyingi safar ochilganda mavjud buyurtmalar "eski" deb hisoblansin
+    knownOrderIds = null;
   }
 
-  // ---- Yangi buyurtma kelganda ovozli bildirishnoma (46-bosqich) ----
-  // Har bir xodim (shu qurilmada) ovozni o'chirib/yoqib qo'ya oladi —
-  // localStorage'da saqlanadi, standart holat: yoqilgan.
   const SOUND_NOTIF_STORAGE_KEY = 'kitchenOsSoundNotif';
   function soundNotifEnabled() {
     return localStorage.getItem(SOUND_NOTIF_STORAGE_KEY) !== 'off';
@@ -4872,7 +4366,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!sharedAudioCtx) sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const ctx = sharedAudioCtx;
       if (ctx.state === 'suspended') ctx.resume();
-      // Ikkita qisqa "bip" — e'tiborni tortish uchun yetarli, lekin bezovta qilmaydigan darajada
+
       [0, 0.22].forEach(delay => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -4887,15 +4381,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
         osc.stop(ctx.currentTime + delay + 0.2);
       });
     } catch (e) {
-      // Audio ishlamasa (masalan brauzer bloklagan bo'lsa) — jim o'tkazib yuboriladi, ilova buzilmaydi
+
     }
   }
-  // ---- Kassir/oshpaz: smena boshlash/tugatish (49-bosqich) ----
-  // Ish kunini boshlaganda/tugatganda bosadigan tugma. Holat serverda
-  // saqlanadi (/api/shift-status, /api/shift-toggle) — shu bois qaysi
-  // qurilmadan ochilsa ham bir xil ko'rinadi. shiftState — shu klient
-  // sessiyasidagi keshlangan nusxa: ekran darhol (eski ma'lumot bilan)
-  // chizilib, so'ng loadShiftWidget() serverdan yangi holatni olib keladi.
+
   let shiftState = { active: false, startedAt: null };
   let shiftTickTimer = null;
 
@@ -4912,9 +4401,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (shiftTickTimer) { clearInterval(shiftTickTimer); shiftTickTimer = null; }
   }
 
-  // Smena faol bo'lsa, "necha vaqtdan beri" matnini har 30 soniyada yangilaydi.
-  // Ekran o'sha vaqtda boshqa joyga o'tib ketgan bo'lsa (element yo'q) —
-  // interval o'zi to'xtatiladi.
   function startShiftTickerIfNeeded() {
     stopShiftTicker();
     if (!shiftState.active) return;
@@ -4952,8 +4438,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Placeholder — o'zining "wrap" idsi bilan, keyinroq DOM'ning shu qismi
-  // (butun ekranni qayta chizmasdan) yangilanadi.
   function shiftWidgetHtml() {
     return `<div id="shiftWidgetWrap" style="margin-bottom:12px;">${shiftWidgetInnerHtml()}</div>`;
   }
@@ -4980,7 +4464,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function loadShiftWidget() {
     const res = await apiPost('/api/shift-status', { initData });
-    if (!res.ok) return; // jim o'tkazib yuboriladi — tugma keshlangan holat bilan ham ishlayveradi
+    if (!res.ok) return;
     shiftState.active = res.active;
     shiftState.startedAt = res.startedAt;
     const wrap = document.getElementById('shiftWidgetWrap');
@@ -4999,8 +4483,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     btn.addEventListener('click', () => {
       setSoundNotifEnabled(!soundNotifEnabled());
       btn.textContent = soundNotifEnabled() ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan';
-      // Yoqishda o'zi bosgan tugma bosilishi (user gesture) AudioContext'ni
-      // ba'zi brauzerlarda "qulflab" ochib beradi — shu bois kichik sinov bipi.
+
       if (soundNotifEnabled()) playNewOrderBeep();
     });
   }
@@ -5018,9 +4501,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const orderLabel = `${ORDER_TYPE_LABELS[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtml(order.tableNumber) : ''}`;
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
 
-    // 15-bosqich: buyurtmadagi BARCHA taomlar skladdan to'g'ridan sotiladigan
-    // (retseptsiz, directStockId orqali) bo'lsa - oshpaz tayyorlashi shart emas,
-    // shuning uchun "Boshlash" bosqichisiz to'g'ridan "Tayyor" tugmasi chiqadi.
     const allDirectStock = Array.isArray(order.items) && order.items.length > 0 &&
       order.items.every(it => it.directStockId);
 
@@ -5031,16 +4511,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
       } else if (role === 'oshpaz') {
         actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyorlanmoqda">Boshlash</button>`;
       } else if (role === 'egasi') {
-        // Egasi tuzatish/favqulodda holat uchun bosqichni chetlab o'tishi mumkin (server ham shunga ruxsat beradi)
+
         actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor (majburiy)</button>`;
       }
-      // kassir uchun (allDirectStock bo'lmasa) bu yerda hech qanday tugma chiqmaydi — buyurtma
-      // hali oshpaz tomonidan "Boshlash" bosilmagan, shuning uchun kassir uni to'g'ridan-to'g'ri
-      // "Tayyor" qila olmaydi.
+
     } else if (order.status === 'tayyorlanmoqda') {
       actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
     } else if (role === 'egasi' && order.orderType === 'dostavka' && order.deliveredBy) {
-      // Kuryer xato bosib yuborgan bo'lishi mumkin — egasi shu belgini bekor qila oladi
+
       actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
     }
     const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
@@ -5091,7 +4569,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
         }
-        lastOrdersSnapshot = null; // majburiy qayta chizish
+        lastOrdersSnapshot = null;
         await refreshOrdersBoard(role);
       });
     });
@@ -5115,19 +4593,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!board) { stopOrdersPolling(); return; }
     const res = await apiPost('/api/orders-list', { initData });
     if (!res.ok) {
-      // Faqat hali hech qanday ma'lumot yuklanmagan bo'lsa (birinchi urinish)
-      // to'liq "aloqa yo'q" holatini ko'rsatamiz — aks holda oshpaz ekranidagi
-      // mavjud buyurtmalar ro'yxatini vaqtinchalik uzilish tufayli tozalamaymiz.
+
       if (res.networkError && lastOrdersSnapshot === null) {
         renderNetworkErrorInline(board, res.reason, () => refreshOrdersBoard(role));
       }
       return;
     }
 
-    // 46-bosqich: yangi ("yangi" holatidagi) buyurtma paydo bo'lsa — ovozli
-    // bildirishnoma. Birinchi yuklanishda (knownOrderIds hali yo'q) beep
-    // chalinmaydi — aks holda ekran ochilgan zahoti barcha mavjud
-    // buyurtmalar uchun bir vaqtda ovoz chiqib ketardi.
     const currentIds = new Set((res.orders || []).map(o => o.id));
     if (knownOrderIds && (role === 'oshpaz' || role === 'kassir')) {
       const hasNew = (res.orders || []).some(o => o.status === 'yangi' && !knownOrderIds.has(o.id));
@@ -5136,7 +4608,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     knownOrderIds = currentIds;
 
     const snapshot = JSON.stringify(res.orders);
-    if (snapshot === lastOrdersSnapshot) return; // o'zgarish yo'q — qayta chizmaymiz
+    if (snapshot === lastOrdersSnapshot) return;
     lastOrdersSnapshot = snapshot;
     board.innerHTML = ordersBoardHtml(res.orders, role);
     attachOrdersBoardHandlers(role);
@@ -5148,17 +4620,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ordersPollTimer = setInterval(() => refreshOrdersBoard(role), 4000);
   }
 
-  // ---- Oshpaz: kelgan buyurtmalar ro'yxati real-vaqtda, holatni bosqichma-bosqich o'zgartirish ----
-  // onBack ixtiyoriy: xodim sifatida kirilganda berilmaydi (orqaga qaytish
-  // yo'q, bu yagona vazifali ekran); egasi "Bugungi holat" bannerdan yoki
-  // menyudan kirganda beriladi (10-bosqich).
   function renderKitchenScreen(restaurantName, onBack) {
-    // 13-bosqich: bitta vazifali rol — restoran nomi allaqachon doimiy
-    // header'da (11-bosqich) ko'rinadi, shuning uchun bu yerda takrorlanmaydi;
-    // ekran to'g'ridan-to'g'ri yagona vazifaga — buyurtmalarga — qaratiladi.
-    // 62-bosqich: egasi bu ekranga menyudan kirganda (onBack mavjud bo'lganda)
-    // "Menyuga taom qo'shish" bo'limi ham shu yerda ko'rinadi — oshpazning
-    // o'z ish ekranida (onBack yo'q) bu bo'lim chiqmaydi.
+
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
@@ -5183,14 +4646,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (onBack) attachMenuAddSectionHandlers();
   }
 
-
-  // ---- Kuryer: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
-  // ---- Kuryer: bitta tugma bilan Google Maps marshruti (48-bosqich) ----
-  // Mijoz buyurtma berayotganda joylashuvini (location: {lat,lng}) yuborgan
-  // bo'lsa — to'g'ridan-to'g'ri o'sha nuqtagacha navigatsiya (marshrut)
-  // ochiladi. Joylashuv bo'lmasa, mijoz yozgan manzil izohi (addressNote)
-  // bo'yicha Google Maps qidiruvi ochiladi — hech biri bo'lmasa tugma umuman
-  // ko'rsatilmaydi.
   function deliveryRouteUrl(order) {
     const loc = order.location;
     if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') {
@@ -5211,11 +4666,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function deliveryCardHtml(order) {
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
-    // 20-bosqich: yetkazib bo'lingan buyurtmaning holati (status) hali ham
-    // "tayyor" bo'lib qoladi (faqat deliveredBy/deliveredAt qo'yiladi) —
-    // shuning uchun bu yerda ko'rinadigan yorliq shu belgiga qarab
-    // "Tayyor" o'rniga "Yetkazildi" deb yoziladi, tugma esa endi bosilmaydigan
-    // holatga o'tadi (qayta bosilib xato chiqarmasligi uchun).
+
     const isDelivered = !!order.deliveredBy;
     const routeUrl = deliveryRouteUrl(order);
     return `
@@ -5245,10 +4696,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   let lastDeliveryOrdersById = new Map();
   function deliveryBoardHtml(orders) {
-    // 20-bosqich: bu taxta FAQAT dostavka turidagi va "tayyor" holatidagi
-    // buyurtmalarni ko'rsatishi kerak — avval bu yerda hech qanday filtr
-    // yo'q edi, shuning uchun stol/olib ketish buyurtmalari ham xato
-    // ravishda "Dostavka"/"Tayyor" deb chiqib, tugmasi doim yoniq ko'rinardi.
+
     const relevant = (orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor');
     lastDeliveryOrdersById = new Map(relevant.map(o => [o.id, o]));
     if (!relevant.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
@@ -5281,7 +4729,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         let reason = '';
         while (true) {
           reason = prompt('Buyurtma bekor qilinadi. Sababini yozing (majburiy):', reason || '');
-          if (reason === null) return; // foydalanuvchi bekor qildi
+          if (reason === null) return;
           reason = reason.trim();
           if (reason) break;
           alert('Bekor qilish sababini yozish majburiy.');
@@ -5307,7 +4755,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
-    // 46-bosqich: kuryerga yetkazish uchun yangi tayyor buyurtma chiqsa — ovozli bildirishnoma
     const relevant = (res.orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
     const currentIds = new Set(relevant.map(o => o.id));
     if (knownOrderIds) {
@@ -5329,11 +4776,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ordersPollTimer = setInterval(refreshDeliveryBoard, 4000);
   }
 
-  // onBack ixtiyoriy: kuryer xodim sifatida kirilganda berilmaydi;
-  // egasi menyu-griddan ("Yetkazib berish") kirganda beriladi (12-bosqich).
   function renderDeliveryScreen(restaurantName, onBack) {
-    // 13-bosqich: bitta vazifali rol — restoran nomi header'da (11-bosqich)
-    // ko'rinadi, shu sabab bu yerda sarlavha bevosita vazifani nomlaydi.
+
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">Yetkazib berish</div>
@@ -5351,9 +4795,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       stopOrdersPolling();
       renderMyStatsScreen(() => renderDeliveryScreen(restaurantName, onBack));
     });
-    // 60-bosqich: bu tugma faqat egasi bu ekranga "Yetkazib berish" menyusi
-    // orqali kirganda (onBack mavjud bo'lganda) ko'rinadi — kuryerning o'zi
-    // (o'z asosiy ekrani, onBack yo'q) mijozlarni boshqara olmasligi kerak.
+
     const restrictedBtn = document.getElementById('restrictedCustomersBtn');
     if (restrictedBtn) {
       restrictedBtn.addEventListener('click', () => {
@@ -5372,11 +4814,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     startDeliveryPolling();
   }
 
-  // ---- Egasi: "Faqat karta" bilan cheklangan mijozlar ro'yxati (60-bosqich) ----
-  // Ketma-ket bir necha marta dostavkani bekor qildirgan mijozlarga tizim
-  // avtomatik "naqd/dostavka orqali" to'lovni yopib qo'yadi. Bu ekranda
-  // egasi kimlar shu holatda ekanini, nima sababdan bekor qilinganini
-  // ko'radi va kerak bo'lsa cheklovni qo'lda olib tashlaydi/qaytaradi.
   function restrictedCustomerCardHtml(c) {
     const cancelsHtml = (c.recentCancellations || []).map(rc => `
       <div class="order-time" style="margin-top:4px;">
@@ -5402,10 +4839,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // ---- Mijoz sharhlari (65-bosqich) — egasi o'zi (targetOwnerId=null,
-  // "Yetkazib berish" ekranidagi tugmadan) yoki admin istalgan do'kon uchun
-  // (targetOwnerId bilan, "Do'kon egalari" ro'yxatidagi "⭐ Sharhlar"
-  // tugmasidan) ochadi. Ikkalasi ham bir xil ma'lumotni ko'radi. ----
   async function renderReviewsScreen(targetOwnerId, title, onBack) {
     ekran(`
       <div class="panel">
@@ -5484,7 +4917,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Sklad: birliklar, ro'yxat, kirim formasi, harakatlar tarixi, kunlik audit ----
   const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
   let stockState = { stock: [] };
   let currentStockRole = null;
@@ -5492,7 +4924,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function stockListHtml(stock, canRemove, canTransfer) {
     if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
-    // Kam qolgan mahsulotlar ro'yxat boshida ko'rinsin — birinchi navbatda e'tibor talab qiladi.
+
     const sorted = stock.slice().sort((a, b) => {
       const lowA = a.minQty != null && a.qty <= a.minQty;
       const lowB = b.minQty != null && b.qty <= b.minQty;
@@ -5501,8 +4933,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
     return sorted.map(s => {
       const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
-      // Darajani vizual ko'rsatish uchun chegaraning ikki barobarini "to'liq" deb olamiz;
-      // chegara qo'yilmagan bo'lsa — chiziq ko'rsatilmaydi (nisbiy solishtirish uchun asos yo'q).
+
       const levelPct = s.minQty != null && s.minQty > 0
         ? Math.max(4, Math.min(100, Math.round(s.qty / (s.minQty * 2) * 100)))
         : null;
@@ -5590,10 +5021,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadStockAndRender();
         loadMovementsAndRender();
       });
-      // Admin boshqa egasi nomidan kirganda (adminTargetOwnerId), eski
-      // keshlangan branchState o'sha egasiga tegishli bo'lmasligi mumkin —
-      // shu sababli ekran ochilganda filiallar ro'yxati har doim qayta
-      // so'raladi va select yangilanadi.
+
       apiPost('/api/branch-list', { initData }).then(res => {
         branchState.branches = res.ok ? res.branches : [];
         const sel = document.getElementById('stockBranchSelect');
@@ -5616,8 +5044,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
         return;
       }
-      // 5-bosqich: narx endi majburiy — har bir kirim uchun avtomatik
-      // xarajat yozuvi (Moliya) shu narxdan hisoblanadi.
+
       if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) {
         msgEl.textContent = 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.';
         msgEl.className = 'xabar err';
@@ -5676,7 +5103,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Markaziy skladdan filialga o'tkazish (transfer) oynasi ----
   function openTransferForm(item) {
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
@@ -5732,7 +5158,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
   }
 
-  // ---- Kunlik audit: haqiqiy qoldiqni kiritish oynasi ----
   function openAuditForm() {
     const stock = stockState.stock;
     const overlay = document.createElement('div');
@@ -5788,16 +5213,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     };
   }
 
-  // ---- Umumiy mini-grafik yordamchilari (21-bosqich): Z-hisobot va Moliya trendlari uchun ----
-  // Sanani qisqa "kun.oy" ko'rinishida chiqaradi (masalan "2026-07-21" → "21.07")
   function shortDateLabel(dateKey) {
     const parts = String(dateKey || '').split('-');
     if (parts.length !== 3) return dateKey || '';
     return `${parts[2]}.${parts[1]}`;
   }
 
-  // Bitta qatorli ustunli grafik: har bir kun uchun bitta ustun (musbat — success, manfiy — danger).
-  // points: [{ label, value }] — eng ko'pi bilan oxirgi ~14 nuqta chiroyli sig'adi.
   function trendBarChartSvg(points) {
     if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
     const W = 300, H = 120, padTop = 10, padBottom = 20, padSide = 6;
@@ -5823,8 +5244,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Ikki qatorli (kirim/chiqim) taqqoslash grafigi — har bir kun uchun ikkita yonma-yon ustun.
-  // points: [{ label, income, expense }]
   function incomeExpenseChartSvg(points) {
     if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
     const W = 300, H = 130, padTop = 10, padBottom = 20, padSide = 6;
@@ -5859,8 +5278,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Kategoriya taqsimotini gorizontal ustunlar (bar) ko'rinishida chiqaradi — eng kattasi 100%.
-  // rows: [{ name, sum }]
   function categoryBarChartHtml(rows) {
     if (!rows || !rows.length) return '';
     const maxSum = Math.max(1, ...rows.map(r => r.sum));
@@ -5872,7 +5289,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // ---- Egasi: Moliya (Cashflow) — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik ----
   let cashflowState = { period: 'today' };
   let cashflowCategories = { ijara: 'Ijara', maosh: 'Maosh', kommunal: 'Kommunal', mahsulot: 'Mahsulot xaridi', boshqa: 'Boshqa' };
 
@@ -6027,7 +5443,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (branchState.branches.length) loadBranchReportAndRender();
   }
 
-  // Moliya ekranidagi "Savdo va xarajat dinamikasi" grafigi — saqlangan Z-hisobotlar (oxirgi kunlar)ga asoslanadi.
   async function loadCfTrendChart() {
     const el = document.getElementById('cfTrendChart');
     if (!el) return;
@@ -6096,9 +5511,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Egasi: H. AI analitika (32-34-bosqich) — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ----
   let aiState = { period: 'week' };
-  // Chat tarixi shu sessiya davomida saqlanadi (sahifa yangilansa tozalanadi) — { role: 'user'|'bot', text, isError }
+
   let aiChatState = { messages: [], sending: false };
   const AI_SUGGESTIONS = [
     "Bugun foyda qancha bo'ldi?",
@@ -6153,7 +5567,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // ---- AI chat: xabarlar ro'yxati, so'rov jo'natish va avtomatik pastga skroll ----
   function aiChatMessagesHtml() {
     if (!aiChatState.messages.length) {
       return `<div class="ai-msg-empty">Savolingizni yozing yoki quyidagi takliflardan birini tanlang.</div>`;
@@ -6327,9 +5740,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadAiDirectorPreviews();
   }
 
-  // AI Direktor kunlik va haftalik hisobot preview matnini, yoqilgan/
-  // o'chirilganligini va joriy davrda allaqachon yuborilganmi-yo'qmi
-  // holatini yuklab, kartochkalarga chiqaradi.
   async function loadAiDirectorPreviews() {
     const dailyTextEl = document.getElementById('aiDirDailyText');
     const dailyToggle = document.getElementById('aiDirDailyToggle');
@@ -6389,7 +5799,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     forecastEl.innerHTML = aiForecastHtml(res.forecast);
   }
 
-  // ---- Egasi: I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ----
   let staffControlState = { period: 'month' };
   const STAFF_ACTION_LABELS = {
     buyurtma_yaratdi: 'Buyurtma yaratdi',
@@ -6416,7 +5825,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  // 17-bosqich: Telegramga yetib bormagan bildirishnomalar ro'yxati.
   function notificationErrorLogHtml(entries) {
     if (!entries || !entries.length) return `<div class="bosh">Hammasi joyida — yaqinda yetkazilmagan bildirishnoma yo'q.</div>`;
     return entries.map(e => `
@@ -6594,7 +6002,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
         const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
         if (!roles.length) {
-          e.target.checked = true; // kamida bitta lavozim qolishi shart
+          e.target.checked = true;
           alert('Xodimda kamida bitta lavozim qolishi kerak.');
           return;
         }
@@ -6646,7 +6054,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ---- Egasi: Kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
   let courierReportState = { period: 'today' };
 
   function courierReportRowsHtml(report) {
@@ -6787,7 +6194,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Egasi: Buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
   let orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
   let orderHistoryEmployeesCache = null;
 
@@ -6883,8 +6289,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       renderOrderHistoryScreen(profile, onBack);
     });
 
-    // 44-bosqich: joriy filtrga mos BARCHA (sahifalashsiz) buyurtmalarni
-    // Excel (CSV) yoki PDF sifatida yuklab olish.
     document.getElementById('ohExportCsvBtn').addEventListener('click', (e) => exportOrderHistory('csv', e.target));
     document.getElementById('ohExportPdfBtn').addEventListener('click', (e) => exportOrderHistory('pdf', e.target));
 
@@ -6901,9 +6305,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // 44-bosqich: fayl (CSV yoki PDF) mazmunini brauzerda "yuklab olish"
-  // sifatida saqlaydi — hech qanday tashqi kutubxonasiz, oddiy Blob + vaqtinchalik
-  // <a download> havolasi orqali. base64 — true bo'lsa content base64 deb hisoblanadi.
   function downloadFile(filename, mime, content, isBase64) {
     let blob;
     if (isBase64) {
@@ -6997,7 +6398,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
   function zReportCardHtml(z) {
     const netClass = z.net >= 0 ? 'positive' : 'negative';
     const paymentRows = Object.entries(z.paymentBreakdown || {})
@@ -7032,17 +6432,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return reports.map(z => zReportCardHtml(z)).join('');
   }
 
-  // =========================================================================
-  // 57-bosqich: stollar uchun QR-kod — egasi stol raqamini kiritadi,
-  // shu stol uchun maxsus bot-havola (/api/table-qr-link) va shu havoladan
-  // yasalgan QR-rasm ko'rsatiladi. Mijoz QR-ni skanerlasa, Mini App
-  // to'g'ridan-to'g'ri "Stolga" buyurtma turi va stol raqami oldindan
-  // to'ldirilgan holda ochiladi (qarang: server.js — menu_..._table_...
-  // /start payload, va bu faylda renderCustomerApp'dagi ?table= o'qish).
-  // QR-rasm tashqi (offline'da ishlamaydigan) xizmat orqali yasaladi —
-  // shuning uchun rasm yuklanmasa ham havolaning o'zi ko'rinadi va
-  // nusxalab bo'ladi.
-  // =========================================================================
   function tableQrImageUrl(link) {
     return `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(link)}`;
   }
@@ -7100,14 +6489,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
           const old = btn.textContent;
           btn.textContent = 'Nusxalandi!';
           setTimeout(() => { btn.textContent = old; }, 1500);
-        } catch (e) { /* clipboard mavjud bo'lmasa — jim o'tkaziladi, matn qo'lda tanlanadi */ }
+        } catch (e) {  }
       });
       wrap.prepend(card);
       input.value = '';
     });
   }
 
-  // ==================== H63-bosqich: Tezkor qo'llab-quvvatlash chat (xodim/egasi tomoni) ====================
   let supportStaffPollTimer = null;
 
   function supportStaffMsgTime(iso) {
@@ -7300,20 +6688,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
     };
   }
 
-  // ---- Egasi: taom uchun retsept (ingredientlar) tahrirlash oynasi ----
   let recipeEditorMenuId = null;
   let recipeEditorStock = [];
 
-  // 13-bosqich: "Menyuga taom qo'shish" formasidagi "To'g'ridan skladdan"
-  // selectini markaziy sklad ro'yxati bilan to'ldiradi. Faqat "direct" turi
-  // tanlanganda (birinchi marta) chaqiriladi — har safar qayta yuklamaslik
-  // uchun oddiy keshlash shart emas, chunki bu kamdan-kam bosiladigan tugma.
   async function loadMenuDirectStockOptions() {
     const select = document.getElementById('menuDirectStockInput');
     if (!select) return;
     select.innerHTML = '<option value="">Yuklanmoqda...</option>';
     const res = await apiPost('/api/stock-list', { initData });
-    if (!select.isConnected) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!select.isConnected) return;
     const stock = (res.ok && Array.isArray(res.stock)) ? res.stock : [];
     if (!stock.length) {
       select.innerHTML = '<option value="">Avval skladga mahsulot qo\'shing</option>';
@@ -7386,17 +6769,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function renderMenuItemEditOverlay(menuItem) {
     let pendingImage = menuItem.imageUrl || '';
     const isDirectInitially = !!menuItem.directStockId;
-    // 17-bosqich: "To'g'ridan skladdan" turini tanlash uchun markaziy sklad
-    // ro'yxati oldindan yuklab qo'yiladi (select tayyor tursin).
+
     const stockRes = await apiPost('/api/stock-list', { initData });
     const stockList = (stockRes.ok && Array.isArray(stockRes.stock)) ? stockRes.stock : [];
     const stockOptionsHtml = stockList.length
       ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
       : '';
-    // 39-bosqich: bo'limlar ro'yxatini yuklab, select uchun tayyorlaymiz.
-    // Agar taomning joriy kategoriyasi biror sababdan ro'yxatda bo'lmasa
-    // (masalan, o'sha bo'lim keyinchalik o'chirilgan bo'lsa), uni saqlashda
-    // sezdirmasdan yo'qotib qo'ymaslik uchun alohida belgi bilan qo'shamiz.
+
     const catRes = await apiPost('/api/category-list', { initData });
     const categoriesList = (catRes.ok && Array.isArray(catRes.categories)) ? catRes.categories : [];
     let categoryOptionsHtml = '<option value="">— Bo\'lim tanlanmagan —</option>';
@@ -7502,8 +6881,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     renderAdminPanel(res.ok ? res.owners : [], res.ok ? res.revenue : null);
   }
 
-  // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
-  // Mijoz "Mijozlar havolasi" orqali kirganda bot ?customer=<ownerId> bilan Mini App'ni ochadi
   let customerState = {
     ownerId: null,
     restaurant: null,
@@ -7534,13 +6911,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     aiRecommendations: null
   };
 
-  // ---- 39-bosqich: mijoz uchun bildirishnomalar markazi ----
-  // Alohida bildirishnoma-bazasi kerak emas — /api/customer-notifications
-  // mijozning o'z buyurtmalari (holat o'zgarishlari) va faol aksiyalar
-  // asosida ro'yxatni serverda hisoblab qaytaradi (owner tomonidagi
-  // "Bildirishnomalar" ekrani bilan bir xil yondashuv). "Ko'rilgan" belgisi
-  // faqat shu qurilmada (localStorage) saqlanadi — oshxona tanlanganiga
-  // qarab kalit ajratiladi.
   function customerNotifSeenKey() {
     return `kitchenOsCustNotifSeen_${customerState.ownerId}`;
   }
@@ -7548,7 +6918,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     try { return localStorage.getItem(customerNotifSeenKey()) || null; } catch (e) { return null; }
   }
   function setCustomerNotifSeenNow() {
-    try { localStorage.setItem(customerNotifSeenKey(), new Date().toISOString()); } catch (e) { /* ignore */ }
+    try { localStorage.setItem(customerNotifSeenKey(), new Date().toISOString()); } catch (e) {  }
   }
   function updateCustomerNotifBellBadge() {
     const btn = document.getElementById('custNotifBellBtn');
@@ -7615,14 +6985,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // 30-bosqich: mijoz uchun ham xuddi shu umumiy komponent (K-bo'lim,
-  // yuqorida) ishlatiladi — alohida customerMenuGroups/customerSectionId
-  // endi kerak emas.
-  // 36-37-bosqich: qidiruv+saralash — filtrlangan/saralangan ro'yxatni
-  // hisoblaydi. Qidiruv matni bo'lsa, kategoriya bo'linishi (tab/sections)
-  // ma'nosiz bo'lib qoladi (natijalar bir nechta kategoriyadan bo'lishi
-  // mumkin), shuning uchun bunday holatda customerCategoriesHtml/
-  // customerMenuListHtml TEKIS (flat) ro'yxat ko'rsatadi.
   function customerVisibleMenu() {
     let items = customerState.menu.slice();
     const q = (customerState.searchQuery || '').trim().toLowerCase();
@@ -7665,8 +7027,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function customerItemCardHtml(m) {
     const qty = customerState.cart[m.id] || 0;
     const isFav = customerState.favorites.includes(m.id);
-    // 47-bosqich: sklad tugagan taom mijoz menyusida "Tugagan" deb
-    // ko'rinadi, savatga qo'shish tugmasi o'chiriladi.
+
     if (m.outOfStock) {
       return `
         <div class="catalog-item" style="opacity:0.55;">
@@ -7727,11 +7088,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // 45-bosqich: mijoz ekranidagi rasmli reklama/e'lon karuseli — egasi
-  // "Reklama bannerlari" bo'limida qo'shgan, hozir faol bannerlar
-  // (customerState.banners — /api/customer-menu-list orqali keladi, faqat
-  // active=true va startAt/endAt oynasi ichidagilar, qarang: activeOwnerBanners
-  // server.js'da). Bittadan ko'p bo'lsa gorizontal surilib turadi.
   function customerAdBannerHtml() {
     if (!customerState.banners || !customerState.banners.length) return '';
     return `
@@ -7746,9 +7102,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // Banner bosilganda (agar havola berilgan bo'lsa) — mavjud
-  // openExternalLink() yordamchisi orqali ochiladi (Telegram ichida
-  // tg.openLink, aks holda yangi tab).
   function attachCustomerAdBannerHandlers() {
     document.querySelectorAll('[data-ad-banner-id]').forEach(el => {
       const banner = (customerState.banners || []).find(b => b.id === el.getAttribute('data-ad-banner-id'));
@@ -7806,11 +7159,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ---- Savat cho'ntak paneli (pastda mahkam turadigan kichik panel) ----
-  // 15-bosqich: checkout formasi endi shu yerda emas — faqat "N ta
-  // mahsulot / summa" va bitta tugma. Tugma bosilganda checkout ALOHIDA
-  // oynada (overlay/modal) ochiladi, ya'ni menyu ustiga xunuk chiqib
-  // qolmaydi.
   function cartFabBarHtml() {
     const qty = customerCartQty();
     return `
@@ -7839,16 +7187,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (countEl) countEl.textContent = qty + ' ta mahsulot';
     const totalEl = document.getElementById('cCartFabTotal');
     if (totalEl) totalEl.textContent = fmtNum(customerCartTotal()) + " so'm";
-    // Agar checkout oynasi hozir ochiq bo'lsa, undagi summani ham yangilaymiz.
+
     const modalTotalEl = document.getElementById('cCartTotalVal');
     if (modalTotalEl) modalTotalEl.textContent = fmtNum(customerCartTotal()) + " so'm";
   }
 
-  // ---- H64-bosqich: "AI ofitsiant" — mijozni tanigan holda uning doim
-  // yoqtiradigan taomlarini va shularga o'xshash (bir toifadagi, hali
-  // sinamagan) taomlarni yuqorida alohida qator qilib ko'rsatadi.
-  // customerState.aiRecommendations — /api/customer-menu-list orqali keladi
-  // (qarang: buildAiWaiterRecommendations() server.js'da).
   function customerAiRecommendationsHtml() {
     const reco = customerState.aiRecommendations;
     if (!reco || (!reco.favorites.length && !reco.similar.length)) return '';
@@ -7923,9 +7266,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // 36-37-bosqich: qidiruv/saralash o'zgarganda BUTUN ekran emas, faqat
-  // kategoriya-tab qatori va taomlar ro'yxati qayta chiziladi — shu bilan
-  // qidiruv maydonidagi fokus (klaviatura) yo'qolmaydi.
   function attachCustomerSearchSortHandlers() {
     const searchInput = document.getElementById('cMenuSearchInput');
     if (searchInput) {
@@ -7957,11 +7297,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ---- Checkout — ALOHIDA oynada (overlay/modal) ----
-  // Buyurtma turi, stol/dostavka, to'lov turi, bonus va "Buyurtma
-  // berish" shu yerda. Har bir tanlov o'zgarganda faqat shu modal ichi
-  // qayta chiziladi (butun sahifa emas), shuning uchun modal ochiq
-  // qolaveradi.
   function customerCheckoutModalBodyHtml() {
     return `
       <h3>Buyurtmani rasmiylashtirish</h3>
@@ -8009,7 +7344,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // ==================== H63-bosqich: Tezkor qo'llab-quvvatlash chat (mijoz tomoni) ====================
   let customerSupportPollTimer = null;
 
   function customerSupportMsgTime(iso) {
@@ -8127,8 +7461,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const tableInput = modalEl.querySelector('#cTableInput');
     if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
 
-    // Dostavka - joylashuvni aniqlash (brauzer/Telegram webview
-    // Geolocation API orqali) va manzil izohi.
     const locationBtn = modalEl.querySelector('#cLocationBtn');
     const locationStatusEl = modalEl.querySelector('#cLocationStatus');
     if (locationBtn) locationBtn.addEventListener('click', () => {
@@ -8160,8 +7492,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const addressNoteInput = modalEl.querySelector('#cAddressNoteInput');
     if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
 
-    // 56-bosqich: saqlangan manzil chip'i bosilsa — joylashuv/manzil izohi/
-    // qo'shimcha telefon shu manzildan avtomatik to'ldiriladi.
     const addrChipRow = modalEl.querySelector('#cAddrChipRow');
     if (addrChipRow) {
       addrChipRow.addEventListener('click', (e) => {
@@ -8185,7 +7515,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     modalEl.querySelector('#cSendOrderBtn').addEventListener('click', () => sendCustomerOrder(overlay));
   }
-
 
   function attachCustomerTabHandlers() {
     const tabRow = document.querySelector('.tab-row');
@@ -8229,11 +7558,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // =========================================================================
-  // 56-bosqich: mijoz uchun manzillar kitobi — dostavka buyurtmasi berishda
-  // har safar qaytadan yozmasligi uchun, bir necha manzilni ("Uy", "Ish"
-  // kabi nomlar bilan) saqlab qo'yish va checkout'da tanlash imkoniyati.
-  // =========================================================================
   function customerAddressItemHtml(a) {
     const parts = [];
     if (a.location) parts.push(`${icon('pin', 'icon-xs icon-muted')} Joylashuv aniqlangan`);
@@ -8372,7 +7696,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // 39-bosqich: bildirishnoma bandi ikonkasi va matni turiga qarab.
   function customerNotifItemHtml(n) {
     return `
       <div class="cust-notif-item">
@@ -8401,8 +7724,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `);
     document.getElementById('custNotifBackBtn').addEventListener('click', () => {
-      // Ekrandan chiqqanda barchasi "ko'rilgan" deb belgilanadi — qo'ng'iroqcha
-      // ustidagi son yo'qoladi, orqaga qaytilgan tabda darhol yangilanadi.
+
       customerState.notifUnseenCount = 0;
       onBack && onBack();
     });
@@ -8414,7 +7736,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!el) return;
     const res = await apiPost('/api/customer-notifications', { initData, ownerId: customerState.ownerId });
     const el2 = document.getElementById('custNotifList');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerNotifList()); return; }
     if (!res.ok) {
       el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
@@ -8442,10 +7764,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCartFabHandler();
   }
 
-  // ---- 55-bosqich: buyurtma holatini real vaqtda kuzatish uchun bosqichli
-  // yo'l (stepper). Dostavka buyurtmalarida 4 bosqich (+ "Yetkazildi"),
-  // qolganlarida 3 bosqich. "Bekor qilindi" holatida stepper o'rniga hech
-  // narsa ko'rsatilmaydi — yuqoridagi status-badge yetarli.
   function customerOrderTrackHtml(o) {
     if (o.status === 'bekor_qilindi') return '';
     const isDelivery = o.orderType === 'dostavka';
@@ -8456,7 +7774,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ];
     if (isDelivery) steps.push({ key: 'yetkazildi', label: 'Yetkazildi' });
 
-    // Joriy bosqich indeksi: status + (dostavka uchun) deliveredAt maydoniga qarab.
     let activeIdx = 0;
     if (o.status === 'tayyorlanmoqda') activeIdx = 1;
     else if (o.status === 'tayyor') activeIdx = isDelivery ? (o.deliveredAt ? 3 : 2) : 2;
@@ -8495,13 +7812,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  // ---- 55-bosqich: mijoz "Buyurtmalarim" ekrani real vaqtda (pollingda)
-  // yangilanadi — xuddi xodimlar taxtasidagi ordersPollTimer kabi, lekin
-  // alohida o'zgaruvchilar bilan (bir vaqtning o'zida ikkalasi ham
-  // ishlamaydi, lekin nom to'qnashmasligi uchun alohida saqlanadi).
   let customerHistoryPollTimer = null;
   let lastCustomerHistorySnapshot = null;
-  let knownCustomerOrderStates = null; // orderId -> "status|deliveredAt" — holat o'zgarishini payqash uchun
+  let knownCustomerOrderStates = null;
 
   function stopCustomerHistoryPolling() {
     if (customerHistoryPollTimer) { clearInterval(customerHistoryPollTimer); customerHistoryPollTimer = null; }
@@ -8509,11 +7822,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     knownCustomerOrderStates = null;
   }
 
-  // 40-bosqich: tezkor takroriy buyurtma — bosilganda o'sha buyurtmadagi
-  // taomlarni (hozir ham menyuda mavjud bo'lganlarini) savatga solib,
-  // to'g'ridan-to'g'ri Menyu bo'limiga o'tkazadi. Ro'yxat har safar poll
-  // orqali yangilanganda ham qayta ulanishi kerak bo'lgani uchun alohida
-  // funksiyaga chiqarilgan.
   function attachCustomerHistoryHandlers(listEl, orders) {
     listEl.querySelectorAll('[data-reorder-id]').forEach(btn => btn.addEventListener('click', () => {
       const orderId = btn.getAttribute('data-reorder-id');
@@ -8546,27 +7854,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }));
   }
 
-  // Har 5 soniyada chaqiriladi: agar ekran hali "Buyurtmalarim"da bo'lsa
-  // va tarkib avvalgisidan farq qilsa, faqat o'zgargan qismini qayta chizadi
-  // (butun ekranni emas — foydalanuvchi scroll holatini yo'qotmasin uchun).
-  // Yangi holatga o'tgan buyurtma bo'lsa, o'sha kartochka bir lahza
-  // (.order-track-flash) yorqinroq ko'rinadi va yengil tebranish beriladi.
   async function refreshCustomerHistoryList() {
     const listEl = document.getElementById('customerHistoryList');
     if (!listEl) { stopCustomerHistoryPolling(); return; }
     const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
     const listEl2 = document.getElementById('customerHistoryList');
-    if (!listEl2) return; // shu orada foydalanuvchi boshqa ekranga o'tgan bo'lishi mumkin
+    if (!listEl2) return;
     if (!res.ok) {
       if (lastCustomerHistorySnapshot === null) {
         listEl2.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`;
       }
-      return; // vaqtinchalik uzilish — mavjud ro'yxatni saqlab qolamiz
+      return;
     }
     const orders = res.orders || [];
 
     const snapshot = JSON.stringify(orders);
-    if (snapshot === lastCustomerHistorySnapshot) return; // o'zgarish yo'q
+    if (snapshot === lastCustomerHistorySnapshot) return;
 
     const newStates = new Map(orders.map(o => [o.id, `${o.status}|${o.deliveredAt || ''}`]));
     const changedIds = [];
@@ -8581,7 +7884,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl2.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
     attachCustomerHistoryHandlers(listEl2, orders);
 
-    // Holati yangi o'zgargan buyurtmalarni ko'zga tashlanadigan qilib beramiz.
     if (changedIds.length) {
       if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
         try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
@@ -8639,11 +7941,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
 
-    // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
-    // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
     if (sendBtn) sendBtn.disabled = true;
-    // Bitta chek-aut urinishi uchun bitta requestId — server shu orqali
-    // takroriy so'rovni aniqlab, bir xil natijani qaytaradi
+
     if (!customerState.lastOrderRequestId) {
       customerState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
@@ -8672,7 +7971,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.location = null;
       customerState.addressNote = '';
       customerState.extraPhone = '';
-      customerState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
+      customerState.lastOrderRequestId = null;
       if (overlay) overlay.remove();
       if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
       else renderCustomerMenuTab();
@@ -8683,13 +7982,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           topMsg.innerHTML = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm).<br>` +
             `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
         } else {
-          // 24-bosqich: ilgari shu joyda faqat kichik, page tepasida
-          // ko'rinadigan xabar (topMsg) bo'lgan — ayniqsa Dostavka+Karta
-          // holatida (boshqa joylashuv/manzil xabarlari orasida) mijoz
-          // buni ko'rmay qolib, skrinshot yubormasdan qolib ketishi mumkin
-          // edi. 25/26-bosqich: endi bu ALOHIDA, undov belgili, qizil
-          // ramkali modal sifatida ochiladi — mijoz uni yopmaguncha davom
-          // eta olmaydi.
+
           topMsg.innerHTML = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm) — <b>tasdiqlash kutilmoqda</b>.`;
           showPaymentProofModal();
         }
@@ -8698,18 +7991,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       document.querySelector('.panel').prepend(topMsg);
     } else {
-      if (sendBtn) sendBtn.disabled = false; // xato bo'lsa — qayta urinib ko'rish uchun tugma yoqiladi
+      if (sendBtn) sendBtn.disabled = false;
       msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
       msgEl.className = 'xabar err';
     }
   }
 
-  // 25/26-bosqich: karta bilan to'lagan mijozga - to'lov skrinshotini
-  // yuborish shartligi haqida ALOHIDA, aniq ko'rinadigan (⚠️, qizil ramkali)
-  // modal oyna. Mijoz "Tushundim" tugmasini bosmaguncha (yoki fonga
-  // bosmaguncha) yopilmaydi - shu bilan e'tiborsiz qoldirib ketish
-  // ehtimoli kamayadi. Buyurtma turi qanday bo'lishidan (Stolga, Olib
-  // ketish, Dostavka) qat'iy nazar bir xil ishlaydi.
   function showPaymentProofModal() {
     const overlay = document.createElement('div');
     overlay.className = 'overlay';
@@ -8727,9 +8014,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     overlay.querySelector('#paymentProofOkBtn').addEventListener('click', () => overlay.remove());
   }
 
-  // ---- Ism, familiya, telefon raqam bilan ro'yxatdan o'tish (Mini App ichida,
-  // botning shaxsiy chatiga chiqmasdan). onDone — muvaffaqiyatli yuborilgandan
-  // keyin chaqiriladigan callback (odatda joriy ekranni qayta yuklaydigan funksiya). ----
   async function renderPersonRegistrationScreen(onDone) {
     const canRequestContact = tg && typeof tg.requestContact === 'function';
     ekran(`
@@ -8768,7 +8052,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
               document.getElementById('regLastName').value = contact.last_name;
             }
           });
-        } catch (e) { /* eski Telegram versiyalarida requestContact bo'lmasligi mumkin */ }
+        } catch (e) {  }
       });
     }
 
@@ -8804,10 +8088,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('regSubmitBtn').addEventListener('click', doSubmit);
   }
 
-  // Mijoz ilovasi ochilganda ko'rsatiladigan "Xush kelibsiz" yuklanish ekrani —
-  // oshxonaning logotipi orqa fonda (xira/qorong'ilashtirilgan), ustida
-  // "Xush kelibsiz!" va oshxona nomi. brand — /api/restaurant-brand natijasi
-  // ({name, logoUrl}) yoki null (topilmasa/hali kelmagan bo'lsa umumiy ko'rinish).
   function customerWelcomeLoadingHtml(brand) {
     const name = (brand && brand.name) || 'Oshxona';
     const logoUrl = brand && brand.logoUrl;
@@ -8828,10 +8108,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function renderCustomerApp(ownerId) {
     clearAppHeader();
     ekran(customerWelcomeLoadingHtml(null));
-    // Brend (logo/nom) va to'liq tekshiruv PARALLEL yuboriladi — logo tezroq
-    // qaytsa, ekran darhol yangilanadi. `stillLoading` — brend so'rovi
-    // tekshiruvdan KECHROQ qaytib qolsa (ekran allaqachon menyuga o'tgan
-    // bo'lsa), uni qayta "Xush kelibsiz" ekrani bilan bosib qo'ymasligi uchun.
+
     let stillLoading = true;
     apiPost('/api/restaurant-brand', { ownerId }).then(r => {
       if (stillLoading && r && r.ok) ekran(customerWelcomeLoadingHtml(r));
@@ -8860,9 +8137,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
 
-    // 57-bosqich: QR-kod orqali kirilgan bo'lsa (?table=<raqam>) — buyurtma
-    // turi va stol raqami oldindan avtomatik to'ldiriladi, mijoz stol
-    // raqamini qo'lda kiritmasligi kerak.
     const qrTableNumber = urlParams.get('table');
     if (qrTableNumber) {
       customerState.orderType = 'stol';
@@ -8877,8 +8151,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.aiRecommendations = menuRes.ok ? (menuRes.recommendations || null) : null;
 
     renderCustomerMenuTab();
-    // 39-bosqich: qo'ng'iroqcha ustidagi son ekran chizilgach fonda yuklanadi
-    // (butun ilova ochilishini sekinlashtirmaslik uchun).
+
     refreshCustomerNotifBadge();
   }
 
@@ -8924,13 +8197,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // ==================== Bosh oynani ochish ====================
   const urlParams = new URLSearchParams(location.search);
   const customerOwnerId = urlParams.get('customer');
 
   if (!tg && !customerOwnerId) {
-    // Oddiy brauzerdan (Telegram tashqarisidan) ochilsa — oshxona egasi
-    // login/parol bilan kirishi mumkin (admin bergan login/parol orqali).
+
     if (initData) {
       bootstrapApp();
     } else {
@@ -8949,7 +8220,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ---- Login/parol orqali kirish ekrani (Telegram tashqarisida) ----
   function renderOwnerLoginScreen(errorText) {
     clearAppHeader();
     resetBrandColor();
@@ -9005,15 +8275,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // 3-4-bosqich: renderProfileForm() ichidagi "Xavfsizlik" bo'limi uchun
-  // event handlerlar — egasi (admin emas, o'zi) o'z parolini almashtiradi
-  // yoki butunlay o'chiradi. Parol o'zgarganda/o'chirilganda server barcha
-  // sess_ sessiyalarni bekor qiladi — shu sababli usingOwnerSession bo'lsa,
-  // muvaffaqiyatli almashtirishdan so'ng mahalliy sessiya ham tozalanib,
-  // qayta login ekraniga qaytariladi. Parolni o'chirish tugmasi faqat
-  // Telegram orqali kirilganda (tg mavjud bo'lganda) ko'rsatiladi — aks
-  // holda egasi (usingOwnerSession, Telegramsiz brauzer sessiyasi) parolni
-  // o'chirib, hech qanday kirish usulisiz qolib ketishi mumkin edi.
   function attachOwnerPasswordSecurityHandlers() {
     const toggleChangeBtn = document.getElementById('togglePwChangeBtn');
     const changeForm = document.getElementById('pwChangeForm');
@@ -9072,7 +8333,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           return;
         }
         if (usingOwnerSession) {
-          // Server bu sessiyani ham bekor qildi — qayta login qildiramiz
+
           localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
           initData = null;
           renderOwnerLoginScreen('Parol muvaffaqiyatli o\'zgartirildi. Yangi parol bilan qayta kiring.');
@@ -9128,8 +8389,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           msgEl.className = 'xabar err';
           return;
         }
-        // Parol o'chirilgach faqat Telegram orqali kirish qoladi — gate
-        // eslatmasi ham tozalanadi, shunda keyingi safar parol so'ralmaydi.
+
         const gateKey = ownerTelegramGateKey();
         if (gateKey) localStorage.removeItem(gateKey);
         ownerHasTelegramLogin = false;
@@ -9138,7 +8398,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // Login/parol orqali kirilgan sessiyani tugatadi (owner profil ekranidagi "Chiqish" tugmasi)
   async function ownerLogout() {
     await apiPost('/api/owner-logout', { initData });
     localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
@@ -9154,13 +8413,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
   function writeCachedBrand(name, logoUrl) {
     if (!name && !logoUrl) return;
-    try { localStorage.setItem(LAST_BRAND_STORAGE_KEY, JSON.stringify({ name, logoUrl })); } catch (e) { /* joy yetmasa e'tiborsiz qoldiramiz */ }
+    try { localStorage.setItem(LAST_BRAND_STORAGE_KEY, JSON.stringify({ name, logoUrl })); } catch (e) {  }
   }
 
   async function bootstrapApp() {
-    // Ilova oldin ochilgan bo'lsa, o'sha oshxonaning nomi/logotipi shu qurilmada
-    // eslab qolingan (localStorage) — shuning uchun /api/verify javob berishini
-    // kutmasdan ham darhol tanish "Xush kelibsiz" ekranini ko'rsatish mumkin.
+
     ekran(customerWelcomeLoadingHtml(readCachedBrand()));
     const data = await apiPost('/api/verify', { initData });
     if (data.networkError) {
@@ -9172,13 +8429,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     if (!data.ok) {
       if (usingOwnerSession) {
-        // Login/parol orqali kirilgan sessiya yaroqsiz/eskirgan — qaytadan kirishni so'raymiz
+
         localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
         initData = null;
         renderOwnerLoginScreen(data.reason);
         return;
       }
-      // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
+
       renderCustomerEntry();
       return;
     }
@@ -9191,9 +8448,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     } else if (data.isOwner) {
       maybeGateOwnerWithPassword(data);
     } else if (data.role) {
-      // YANGI: bir nechta vakolatli xodim - avval qaysi bo'limda ishlashini
-      // so'raymiz (bu qurilmada avval tanlagan bo'lsa, localStorage'dan
-      // o'qib to'g'ridan-to'g'ri o'sha ekranga kiradi - qarang: staffChosenRoleKey).
+
       if (Array.isArray(data.roles) && data.roles.length > 1) {
         const key = staffChosenRoleKey();
         const savedRole = key ? localStorage.getItem(key) : null;
@@ -9210,12 +8465,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  // ---- Telegram orqali kirgan egasi uchun bir martalik parol darvozasi ----
-  // Admin shu egasiga login/parol o'rnatgan bo'lsa (data.hasOwnerLogin), birinchi
-  // marta parol so'raladi. To'g'ri kiritilsa, shu qurilmada (localStorage'da)
-  // eslab qolinadi — Telegram ilovasi yopilib qayta ochilsa ham qayta so'ralmaydi,
-  // faqat foydalanuvchi "Chiqish" tugmasini bossa yoki brauzer ma'lumotlari
-  // tozalansa, keyingi safar yana parol so'raladi.
   function ownerTelegramGateKey() {
     const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
     return tgUserId ? `kitchenOsOwnerPwOk:${tgUserId}` : null;
@@ -9279,7 +8528,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  // Telegram-gate eslatmasini shu qurilmadan o'chiradi — keyingi ochishda yana parol so'raladi
   function ownerTelegramGateLogout() {
     const gateKey = ownerTelegramGateKey();
     if (gateKey) localStorage.removeItem(gateKey);
