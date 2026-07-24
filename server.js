@@ -1502,8 +1502,14 @@ function sendMessage(chatId, text, replyMarkup) {
 // kartochkasi, Sozlamalar) buni ko'ra oladi — Telegram/server logiga
 // kirish shart emas. Chaqiruvchi tomon o'zgarishdan keyin owner obyektini
 // saqlashi (saveOwners) kerak — bu funksiya faylga o'zi yozmaydi.
-function notifyStaffList(owner, targetIds, text, context) {
-  const uniqueIds = [...new Set((targetIds || []).map(String))];
+function notifyStaffList(owner, targetIds, text, context, category) {
+  // 59-bosqich: agar `category` berilgan bo'lsa va egasi shu toifani
+  // o'chirib qo'ygan bo'lsa (owner.notificationPrefs[category] === false),
+  // EGANING o'ziga xabar yubormaymiz — lekin xodimlarga baribir boradi
+  // (bu sozlama faqat egasi uchun, xodimlar o'z xabarlarini o'chira olmaydi).
+  const ownerMuted = category && isNotificationCategoryMuted(owner, category);
+  const uniqueIds = [...new Set((targetIds || []).map(String))]
+    .filter(id => !(ownerMuted && id === String(owner.id)));
   const promises = uniqueIds.map(targetId => sendMessage(targetId, text).then(result => {
     if (!result || !result.ok) {
       const reason = (result && result.description) || 'yuborilmadi (tarmoq xatosi)';
@@ -1521,6 +1527,20 @@ function notifyStaffList(owner, targetIds, text, context) {
     }
   }));
   return Promise.all(promises);
+}
+
+// 59-bosqich: owner.notificationPrefs — { newOrder, lowStock, staffActions }
+// (hammasi standart bo'yicha yoqilgan — maydon umuman yo'q yoki `undefined`
+// bo'lsa MUTED emas deb hisoblanadi, faqat ANIQ `false` o'chirilgan deb
+// hisoblanadi). Obuna/to'lov/tasdiqlash kabi MUHIM xabarlar bu yerga
+// kirmaydi — ular hech qachon o'chirib bo'lmaydi.
+const NOTIFICATION_CATEGORIES = {
+  newOrder: 'Yangi buyurtma xabarlari',
+  lowStock: 'Ombordagi kam qoldiq ogohlantirishlari'
+};
+
+function isNotificationCategoryMuted(owner, category) {
+  return !!(owner && owner.notificationPrefs && owner.notificationPrefs[category] === false);
 }
 
 function answerCallbackQuery(callbackId, text, showAlert) {
@@ -2965,7 +2985,7 @@ async function handleTelegramUpdate(update) {
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`);
+        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`, 'newOrder');
         saveOwners(owners);
         notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
@@ -5465,7 +5485,7 @@ const server = http.createServer((req, res) => {
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`);
+        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
         notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
         saveOwners(owners);
@@ -5504,9 +5524,11 @@ const server = http.createServer((req, res) => {
       if (!item.lowStockAlertSent) {
         item.lowStockAlertSent = true;
         const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
+        const ownerMuted = isNotificationCategoryMuted(owner, 'lowStock');
         const targets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'sklad') && (s.branchId || null) === (branchId || null)).map(s => s.id))];
         for (const t of new Set(targets)) {
           if (String(t) === String(excludeUserId)) continue;
+          if (ownerMuted && String(t) === String(owner.id)) continue;
           sendMessage(t, text);
         }
       }
@@ -5755,7 +5777,7 @@ const server = http.createServer((req, res) => {
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
         `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
-      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`);
+      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
       notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       saveOwners(owners);
@@ -8035,6 +8057,64 @@ const server = http.createServer((req, res) => {
       owner.notificationErrors = [];
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ==================== 59-BOSQICH: Egasi uchun push-bildirishnoma sozlamalari ====================
+  // Egasi qaysi toifadagi xabarlarni shaxsiy chatida olishni xohlashini
+  // o'zi belgilaydi (masalan do'kon juda gavjum bo'lsa, har bir yangi
+  // buyurtma haqida alohida xabar kelaverishi charchatishi mumkin — kassir
+  // panelida buyurtmalar ro'yxati baribir real-vaqtda yangilanib turadi).
+  // MUHIM: bu — oddiy shaxsiy sozlama, hech qanday tarifga bog'liq emas
+  // (barcha egalar uchun ochiq, xuddi profil ma'lumotlari kabi).
+  if (req.method === 'POST' && req.url === '/api/notification-prefs-get') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const prefs = {};
+      for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
+        prefs[key] = !isNotificationCategoryMuted(owner, key);
+      }
+      return sendJSON(res, 200, {
+        ok: true,
+        prefs,
+        categories: Object.entries(NOTIFICATION_CATEGORIES).map(([key, label]) => ({ key, label }))
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/notification-prefs-save') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const incoming = payload.prefs && typeof payload.prefs === 'object' ? payload.prefs : {};
+      if (!owner.notificationPrefs) owner.notificationPrefs = {};
+      for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
+        if (key in incoming) owner.notificationPrefs[key] = !!incoming[key];
+      }
+      saveOwners(owners);
+
+      const prefs = {};
+      for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
+        prefs[key] = !isNotificationCategoryMuted(owner, key);
+      }
+      return sendJSON(res, 200, { ok: true, prefs });
     });
     return;
   }
