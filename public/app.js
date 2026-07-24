@@ -6747,8 +6747,48 @@ const tg = window.Telegram && window.Telegram.WebApp;
     cardOnlyRestricted: false,
     lastOrderRequestId: null,
     searchQuery: '',
-    sortBy: 'default'
+    sortBy: 'default',
+    notifUnseenCount: 0
   };
+
+  // ---- 39-bosqich: mijoz uchun bildirishnomalar markazi ----
+  // Alohida bildirishnoma-bazasi kerak emas — /api/customer-notifications
+  // mijozning o'z buyurtmalari (holat o'zgarishlari) va faol aksiyalar
+  // asosida ro'yxatni serverda hisoblab qaytaradi (owner tomonidagi
+  // "Bildirishnomalar" ekrani bilan bir xil yondashuv). "Ko'rilgan" belgisi
+  // faqat shu qurilmada (localStorage) saqlanadi — oshxona tanlanganiga
+  // qarab kalit ajratiladi.
+  function customerNotifSeenKey() {
+    return `kitchenOsCustNotifSeen_${customerState.ownerId}`;
+  }
+  function getCustomerNotifSeenTime() {
+    try { return localStorage.getItem(customerNotifSeenKey()) || null; } catch (e) { return null; }
+  }
+  function setCustomerNotifSeenNow() {
+    try { localStorage.setItem(customerNotifSeenKey(), new Date().toISOString()); } catch (e) { /* ignore */ }
+  }
+  function updateCustomerNotifBellBadge() {
+    const btn = document.getElementById('custNotifBellBtn');
+    if (!btn) return;
+    const existing = btn.querySelector('.cust-notif-bell-badge');
+    if (existing) existing.remove();
+    if (customerState.notifUnseenCount > 0) {
+      const span = document.createElement('span');
+      span.className = 'cust-notif-bell-badge';
+      span.textContent = customerState.notifUnseenCount > 9 ? '9+' : String(customerState.notifUnseenCount);
+      btn.appendChild(span);
+    }
+  }
+  async function refreshCustomerNotifBadge() {
+    if (!customerState.ownerId) return;
+    const res = await apiPost('/api/customer-notifications', { initData, ownerId: customerState.ownerId });
+    if (!res || !res.ok) return;
+    const seen = getCustomerNotifSeenTime();
+    customerState.notifUnseenCount = seen
+      ? res.notifications.filter(n => new Date(n.time) > new Date(seen)).length
+      : res.notifications.length;
+    updateCustomerNotifBellBadge();
+  }
 
   function customerCartTotal() {
     return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
@@ -6778,6 +6818,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
           ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
         </div>
+        <button type="button" class="cust-notif-bell-btn" id="custNotifBellBtn" title="Bildirishnomalar" aria-label="Bildirishnomalar">
+          ${icon('bell', 'icon-sm')}
+          ${customerState.notifUnseenCount > 0 ? `<span class="cust-notif-bell-badge">${customerState.notifUnseenCount > 9 ? '9+' : customerState.notifUnseenCount}</span>` : ''}
+        </button>
       </div>
     `;
   }
@@ -7176,16 +7220,78 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function attachCustomerTabHandlers() {
     const tabRow = document.querySelector('.tab-row');
-    if (!tabRow) return;
-    tabRow.addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-customer-tab');
-      if (!t || t === customerState.tab) return;
-      customerState.tab = t;
-      disconnectSectionedMenuObserver('customerCatRow');
-      if (t === 'sevimli') renderCustomerFavoritesTab();
-      else if (t === 'tarix') renderCustomerHistoryTab();
-      else renderCustomerMenuTab();
+    if (tabRow) {
+      tabRow.addEventListener('click', (e) => {
+        const t = e.target.getAttribute('data-customer-tab');
+        if (!t || t === customerState.tab) return;
+        customerState.tab = t;
+        disconnectSectionedMenuObserver('customerCatRow');
+        if (t === 'sevimli') renderCustomerFavoritesTab();
+        else if (t === 'tarix') renderCustomerHistoryTab();
+        else renderCustomerMenuTab();
+      });
+    }
+    const bellBtn = document.getElementById('custNotifBellBtn');
+    if (bellBtn) {
+      bellBtn.addEventListener('click', () => renderCustomerNotificationsScreen(() => {
+        if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+        else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
+        else renderCustomerMenuTab();
+      }));
+    }
+  }
+
+  // 39-bosqich: bildirishnoma bandi ikonkasi va matni turiga qarab.
+  function customerNotifItemHtml(n) {
+    return `
+      <div class="cust-notif-item">
+        <span class="cust-notif-icon ${n.type === 'promo' ? 'promo' : 'order'}">${icon(n.icon || 'bell', 'icon-xs')}</span>
+        <div class="cust-notif-body">
+          <div class="cust-notif-title">${escapeHtml(n.title)}</div>
+          ${n.text ? `<div class="cust-notif-text">${escapeHtml(n.text)}</div>` : ''}
+          <div class="cust-notif-time">${timeAgo(n.time)}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function customerNotifListHtml(notifications) {
+    return (notifications && notifications.length)
+      ? notifications.map(customerNotifItemHtml).join('')
+      : `<div class="bosh">Hozircha bildirishnoma yo'q.</div>`;
+  }
+
+  function renderCustomerNotificationsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Bildirishnomalar</div>
+        <button class="btn ikkinchi" id="custNotifBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="custNotifList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('custNotifBackBtn').addEventListener('click', () => {
+      // Ekrandan chiqqanda barchasi "ko'rilgan" deb belgilanadi — qo'ng'iroqcha
+      // ustidagi son yo'qoladi, orqaga qaytilgan tabda darhol yangilanadi.
+      customerState.notifUnseenCount = 0;
+      onBack && onBack();
     });
+    loadCustomerNotifList();
+  }
+
+  async function loadCustomerNotifList() {
+    const el = document.getElementById('custNotifList');
+    if (!el) return;
+    const res = await apiPost('/api/customer-notifications', { initData, ownerId: customerState.ownerId });
+    const el2 = document.getElementById('custNotifList');
+    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerNotifList()); return; }
+    if (!res.ok) {
+      el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
+      return;
+    }
+    el2.innerHTML = customerNotifListHtml(res.notifications);
+    setCustomerNotifSeenNow();
+    customerState.notifUnseenCount = 0;
   }
 
   function renderCustomerFavoritesTab() {
@@ -7528,6 +7634,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.promotions = menuRes.ok ? menuRes.promotions : [];
 
     renderCustomerMenuTab();
+    // 39-bosqich: qo'ng'iroqcha ustidagi son ekran chizilgach fonda yuklanadi
+    // (butun ilova ochilishini sekinlashtirmaslik uchun).
+    refreshCustomerNotifBadge();
   }
 
   function customerRestaurantPickerHtml(restaurants) {
