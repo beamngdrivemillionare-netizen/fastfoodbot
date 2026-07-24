@@ -3497,10 +3497,40 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
         </div>
+        <div class="section-label" style="margin-top:18px;">${icon('bell', 'icon-xs')} Push-bildirishnoma sozlamalari</div>
+        <div class="kartochka" id="notifPrefsCard"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
     document.getElementById('profileBackBtn').addEventListener('click', () => onBack && onBack());
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+    loadNotificationPrefs();
+  }
+
+  // ---- 59-bosqich: egasi qaysi toifadagi shaxsiy xabarlarni (yangi
+  // buyurtma, kam qoldiq) botdan olishini o'zi yoqib/o'chira oladi. ----
+  async function loadNotificationPrefs() {
+    const card = document.getElementById('notifPrefsCard');
+    if (!card) return;
+    const res = await apiPost('/api/notification-prefs-get', { initData });
+    const card2 = document.getElementById('notifPrefsCard');
+    if (!card2) return;
+    if (res.networkError) { renderNetworkErrorInline(card2, res.reason, loadNotificationPrefs); return; }
+    if (!res.ok) { card2.innerHTML = `<div class="bosh">Sozlamalar yuklanmadi.</div>`; return; }
+    card2.innerHTML = res.categories.map(c => `
+      <label class="toggle-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+        <span>${escapeHtml(c.label)}</span>
+        <input type="checkbox" data-notif-key="${c.key}" ${res.prefs[c.key] ? 'checked' : ''}>
+      </label>
+    `).join('');
+    card2.querySelectorAll('[data-notif-key]').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        cb.disabled = true;
+        const key = cb.getAttribute('data-notif-key');
+        const saveRes = await apiPost('/api/notification-prefs-save', { initData, prefs: { [key]: cb.checked } });
+        cb.disabled = false;
+        if (!saveRes.ok) { cb.checked = !cb.checked; alert(saveRes.reason || 'Saqlanmadi, qayta urinib ko\'ring.'); }
+      });
+    });
   }
 
   // =========================================================================
