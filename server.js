@@ -1885,6 +1885,117 @@ function daysKeyboard(reqId) {
 // ====== "Boshqa son" — admin qo'lda kun sonini yozmoqchi bo'lganda, shu so'rov navbatda kutib turadi ======
 const AWAITING_FILE = path.join(DATA_DIR, 'awaiting.json');
 
+// ==================== 52-54-BOSQICH: DB zaxira (backup) eksport/import ====================
+// Butun bazani (DATA_DIR ichidagi barcha .json fayllar) bitta faylga
+// jamlab yuklab olish (52), o'sha faylni yuklab bazani tiklash (53) va
+// buni xavfsiz, ikki bosqichli tasdiqlash bilan qilish (54).
+// MUHIM: bu ro'yxat DATA_DIR'dagi HAMMA fayl konstantalarini o'z ichiga
+// olishi kerak — yangi *_FILE qo'shilsa, shu yerga ham (key + file) qo'shing.
+const BACKUP_FILE_DEFS = [
+  { key: 'owners', file: OWNERS_FILE },
+  { key: 'admins', file: ADMINS_FILE },
+  { key: 'invites', file: INVITES_FILE },
+  { key: 'requests', file: REQUESTS_FILE },
+  { key: 'profiles', file: PROFILES_FILE },
+  { key: 'tariffs', file: TARIFFS_FILE },
+  { key: 'payments', file: PAYMENTS_FILE },
+  { key: 'archived_orders', file: ARCHIVED_ORDERS_FILE },
+  { key: 'subscription_plans', file: SUBSCRIPTION_PLANS_FILE },
+  { key: 'settings', file: SETTINGS_FILE },
+  { key: 'broadcasts', file: BROADCASTS_FILE },
+  { key: 'trash', file: TRASH_FILE },
+  { key: 'trash_log', file: TRASH_LOG_FILE },
+  { key: 'awaiting', file: AWAITING_FILE }
+];
+const BACKUP_FORMAT_VERSION = 1;
+// Tiklashdan OLDIN joriy holatni avtomatik saqlab qo'yish uchun papka —
+// noto'g'ri/eskirgan zaxira yuklansa ham, oldingi holatga qaytish imkoni bo'lsin.
+const PRE_RESTORE_BACKUP_DIR = path.join(DATA_DIR, 'pre_restore_backups');
+// Tasdiqlash kodlari xotirada saqlanadi (server qayta ishga tushsa, eskiradi —
+// bu ataylab shunday: xavfsizlik uchun kod umr bo'yi kuchda qolmasligi kerak).
+const pendingBackupRestores = new Map(); // token -> { adminId, contentHash, createdAt, snapshot }
+const BACKUP_RESTORE_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 daqiqa
+
+function readJSONFileRaw(file) {
+  try {
+    if (!fs.existsSync(file)) return { present: false, value: null };
+    const raw = fs.readFileSync(file, 'utf8');
+    return { present: true, value: JSON.parse(raw) };
+  } catch (e) {
+    return { present: false, value: null, error: e.message };
+  }
+}
+
+// 52-bosqich: barcha DB fayllarini bitta obyektga jamlaydi.
+function buildBackupSnapshot(adminId) {
+  const files = {};
+  const counts = {};
+  for (const def of BACKUP_FILE_DEFS) {
+    const r = readJSONFileRaw(def.file);
+    files[def.key] = r.present ? r.value : (Array.isArray(r.value) ? [] : null);
+    counts[def.key] = Array.isArray(files[def.key]) ? files[def.key].length
+      : (files[def.key] && typeof files[def.key] === 'object' ? Object.keys(files[def.key]).length : 0);
+  }
+  return {
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: new Date().toISOString(),
+    exportedBy: String(adminId),
+    counts,
+    files
+  };
+}
+
+// 53-bosqich: zaxiradan olingan fayllarni DATA_DIR'ga qaytaradi. Har bir
+// fayl avval vaqtinchalik nomga yoziladi, so'ng almashtiriladi (atomik) —
+// yozish paytida xatolik chiqib qolsa ham eski fayl buzilmaydi.
+function writeJSONFileAtomic(file, value) {
+  const tmp = file + '.tmp' + crypto.randomBytes(4).toString('hex');
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
+}
+
+function applyBackupSnapshot(snapshot) {
+  const applied = [];
+  for (const def of BACKUP_FILE_DEFS) {
+    if (!snapshot.files || !(def.key in snapshot.files)) continue; // zaxirada yo'q — teginilmaydi
+    const value = snapshot.files[def.key];
+    if (value === null || value === undefined) continue;
+    writeJSONFileAtomic(def.file, value);
+    applied.push(def.key);
+  }
+  reloadAdminsCache(); // admins.json to'g'ridan-to'g'ri yozildi — xotiradagi Set yangilanishi shart
+  return applied;
+}
+
+// Tiklashdan oldin joriy holatni diskka saqlab qo'yadi (xavfsizlik).
+function savePreRestoreSafetySnapshot(adminId) {
+  try {
+    fs.mkdirSync(PRE_RESTORE_BACKUP_DIR, { recursive: true });
+    const snapshot = buildBackupSnapshot(adminId);
+    const filename = `pre_restore_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    const filePath = path.join(PRE_RESTORE_BACKUP_DIR, filename);
+    fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), 'utf8');
+    // Faqat oxirgi 10 tasini saqlaymiz — disk to'lib ketmasligi uchun.
+    const files = fs.readdirSync(PRE_RESTORE_BACKUP_DIR).filter(f => f.startsWith('pre_restore_')).sort();
+    while (files.length > 10) {
+      const old = files.shift();
+      try { fs.unlinkSync(path.join(PRE_RESTORE_BACKUP_DIR, old)); } catch (e) {}
+    }
+    return filename;
+  } catch (e) {
+    console.error('pre-restore xavfsizlik nusxasini saqlashda xatolik:', e.message);
+    return null;
+  }
+}
+
+// Eski (muddati o'tgan) tasdiqlash kodlarini vaqti-vaqti bilan tozalab turadi.
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, entry] of pendingBackupRestores.entries()) {
+    if (now - entry.createdAt > BACKUP_RESTORE_TOKEN_TTL_MS) pendingBackupRestores.delete(token);
+  }
+}, 5 * 60 * 1000);
+
 function getAwaitingCustom() {
   try {
     const raw = fs.readFileSync(AWAITING_FILE, 'utf8');
@@ -8967,6 +9078,153 @@ const server = http.createServer((req, res) => {
 
       const log = loadTrashLog().slice().sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 200);
       return sendJSON(res, 200, { ok: true, log });
+    });
+    return;
+  }
+
+  // ==================== 52-54-BOSQICH: DB zaxira (backup) ====================
+  // ---- API: butun bazani bitta JSON faylga jamlab yuklab olish (52-bosqich, faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/backup-export') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin zaxira yuklab ola oladi' });
+
+      let snapshot;
+      try {
+        snapshot = buildBackupSnapshot(userId);
+      } catch (e) {
+        console.error('backup-export xatolik:', e.message);
+        return sendJSON(res, 200, { ok: false, reason: 'Zaxira tayyorlashda xatolik yuz berdi.' });
+      }
+
+      const json = JSON.stringify(snapshot, null, 2);
+      const filename = `zaxira_${new Date().toISOString().slice(0, 10)}.json`;
+
+      // Xavfsizlik: kim, qachon zaxira yuklab olganini BARCHA adminlarga
+      // (shu jumladan boshqa qurilmadagi adminlarga ham) xabar qilamiz —
+      // shu orqali ruxsatsiz/kutilmagan yuklab olishlar darhol ko'rinadi.
+      const adminName = (check.user && (check.user.first_name || check.user.username)) || userId;
+      const totalRecords = Object.values(snapshot.counts).reduce((a, b) => a + b, 0);
+      allAdminIds().forEach(aid => {
+        sendMessage(aid, `🔐 <b>DB zaxirasi yuklab olindi</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Jami ${totalRecords} ta yozuv`)
+          .catch(() => {});
+      });
+
+      return sendJSON(res, 200, {
+        ok: true,
+        filename,
+        mime: 'application/json;charset=utf-8',
+        content: json,
+        counts: snapshot.counts
+      });
+    });
+    return;
+  }
+
+  // ---- API: yuklangan zaxira faylini TEKSHIRISH va xulosa qaytarish
+  // (hali hech narsa o'zgartirilmaydi — 54-bosqich, 1-qadam: ko'rib chiqish) ----
+  if (req.method === 'POST' && req.url === '/api/backup-import-preview') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin bazani tiklay oladi' });
+
+      const rawContent = payload.content;
+      if (!rawContent || typeof rawContent !== 'string') {
+        return sendJSON(res, 200, { ok: false, reason: 'Fayl tanlanmagan yoki bo\'sh.' });
+      }
+
+      let snapshot;
+      try {
+        snapshot = JSON.parse(rawContent);
+      } catch (e) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu fayl to\'g\'ri JSON zaxira fayli emas.' });
+      }
+
+      if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') {
+        return sendJSON(res, 200, { ok: false, reason: 'Fayl formati noto\'g\'ri — bu Mini App zaxira fayli emasga o\'xshaydi.' });
+      }
+      const knownKeys = new Set(BACKUP_FILE_DEFS.map(d => d.key));
+      const fileKeys = Object.keys(snapshot.files).filter(k => knownKeys.has(k));
+      if (fileKeys.length === 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faylda tanish bo\'limlar topilmadi.' });
+      }
+
+      // Tasdiqlash tokeni — 10 daqiqa amal qiladi, faqat shu admin va shu
+      // aniq fayl mazmuni uchun (contentHash mos kelmasa confirm rad etiladi).
+      const contentHash = crypto.createHash('sha256').update(rawContent).digest('hex');
+      const token = crypto.randomBytes(16).toString('hex');
+      pendingBackupRestores.set(token, { adminId: userId, contentHash, createdAt: Date.now(), snapshot });
+
+      return sendJSON(res, 200, {
+        ok: true,
+        confirmToken: token,
+        version: snapshot.version || null,
+        exportedAt: snapshot.exportedAt || null,
+        counts: snapshot.counts || null,
+        sections: fileKeys
+      });
+    });
+    return;
+  }
+
+  // ---- API: tiklashni YAKUNIY tasdiqlash va bazoni almashtirish
+  // (54-bosqich, 2-qadam). Ikkita himoya qatlami talab qilinadi:
+  // (1) oldingi preview'dan olingan confirmToken (10 daqiqa muddatli,
+  //     faylning aniq mazmuniga bog'langan), (2) admin qo'lda kiritgan
+  // "TASDIQLAYMAN" so'zi — tasodifan bosilib ketmasligi uchun. ----
+  if (req.method === 'POST' && req.url === '/api/backup-import-confirm') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin bazani tiklay oladi' });
+
+      const { confirmToken, confirmText, content } = payload;
+      if ((confirmText || '').trim().toUpperCase() !== 'TASDIQLAYMAN') {
+        return sendJSON(res, 200, { ok: false, reason: 'Tasdiqlash uchun "TASDIQLAYMAN" so\'zini aniq kiriting.' });
+      }
+      const pending = confirmToken && pendingBackupRestores.get(confirmToken);
+      if (!pending) {
+        return sendJSON(res, 200, { ok: false, reason: 'Tasdiqlash muddati tugagan yoki noto\'g\'ri. Faylni qaytadan yuklang.' });
+      }
+      if (String(pending.adminId) !== userId) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu tasdiqlash boshqa admin uchun yaratilgan.' });
+      }
+      if (Date.now() - pending.createdAt > BACKUP_RESTORE_TOKEN_TTL_MS) {
+        pendingBackupRestores.delete(confirmToken);
+        return sendJSON(res, 200, { ok: false, reason: 'Tasdiqlash muddati (10 daqiqa) tugagan. Faylni qaytadan yuklang.' });
+      }
+      const contentHash = crypto.createHash('sha256').update(String(content || '')).digest('hex');
+      if (contentHash !== pending.contentHash) {
+        return sendJSON(res, 200, { ok: false, reason: 'Fayl mazmuni preview qilingandan beri o\'zgargan. Qaytadan yuklang.' });
+      }
+
+      pendingBackupRestores.delete(confirmToken);
+
+      let safetyFile = null;
+      let applied = [];
+      try {
+        safetyFile = savePreRestoreSafetySnapshot(userId); // tiklashdan oldingi holatni saqlab qo'yamiz
+        applied = applyBackupSnapshot(pending.snapshot);
+      } catch (e) {
+        console.error('backup-import-confirm xatolik:', e.message);
+        return sendJSON(res, 200, { ok: false, reason: 'Bazani tiklashda xatolik yuz berdi. Hech narsa o\'zgartirilmadi yoki qisman o\'zgargan bo\'lishi mumkin — pre_restore_backups papkasini tekshiring.' });
+      }
+
+      const adminName = (check.user && (check.user.first_name || check.user.username)) || userId;
+      allAdminIds().forEach(aid => {
+        sendMessage(aid, `⚠️ <b>DB TIKLANDI (restore)</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Almashtirilgan bo'limlar: ${applied.join(', ') || 'yo\'q'}\n💾 Tiklashdan oldingi holat saqlandi: ${safetyFile || 'saqlanmadi (xatolik)'}`)
+          .catch(() => {});
+      });
+
+      return sendJSON(res, 200, { ok: true, applied, safetyFile });
     });
     return;
   }
