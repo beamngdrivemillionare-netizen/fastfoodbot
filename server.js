@@ -850,6 +850,7 @@ const FEATURE_CATALOG = [
   { id: 'category-manage', name: "Kategoriyalar boshqaruvi", group: 'menyu' },
   { id: 'combo-manage', name: "Combo boshqaruvi", group: 'menyu' },
   { id: 'promo-manage', name: "Aksiya/promo boshqaruvi", group: 'menyu' },
+  { id: 'banner-manage', name: "Reklama banner boshqaruvi", group: 'menyu' },
   // Buyurtmalar va yetkazish
   { id: 'orders-manage', name: "Buyurtmalarni boshqarish", group: 'buyurtma' },
   { id: 'delivery-group', name: "Dostavka guruh xabarnomasi", group: 'buyurtma' },
@@ -4349,6 +4350,201 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ==================== G-bo'lim: Reklama banner tizimi (45-47-bosqich) ====================
+  // Bannerlar — egasi mijozlar ekraniga (mini-ilova menyusi tepasida) chiqadigan
+  // rasmli reklama/e'lon kartochkalari. Har birida: rasm (majburiy, promo/menyu
+  // rasmlari bilan bir xil qoidada — https:// havola yoki galereyadan tanlangan
+  // base64, qarang: isValidImageValue), sarlavha va bosilganda ochiladigan havola
+  // (ikkalasi ham ixtiyoriy), hamda ixtiyoriy faollik oynasi (startAt/endAt — 47-
+  // bosqich: berilmasa banner cheksiz muddat faol hisoblanadi). owner.promotions
+  // bilan bir xil CRUD naqshiga amal qiladi (46-bosqich: admin/egasi boshqaruvi).
+
+  // 47-bosqich: banner hozir (joriy vaqtda) ko'rsatilishi kerakmi — faqat
+  // active bayrog'i emas, startAt/endAt oynasi ham hisobga olinadi.
+  function isBannerWithinWindow(banner) {
+    const now = Date.now();
+    if (banner.startAt && new Date(banner.startAt).getTime() > now) return false;
+    if (banner.endAt && new Date(banner.endAt).getTime() < now) return false;
+    return true;
+  }
+  // 45-bosqich: mijoz ekraniga chiqadigan, HOZIR faol bannerlar ro'yxati
+  // (customer-menu-list ichida ishlatiladi — qarang pastda).
+  function activeOwnerBanners(owner) {
+    return (owner.banners || [])
+      .filter(b => b.active !== false && isBannerWithinWindow(b))
+      .map(b => ({ id: b.id, imageUrl: b.imageUrl, title: b.title, link: b.link }));
+  }
+
+  // ---- API: bannerlar ro'yxati (egasi, boshqaruv paneli — hammasi, nofaol/rejalashtirilganlari ham) ----
+  if (req.method === 'POST' && req.url === '/api/banner-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      return sendJSON(res, 200, { ok: true, banners: owner.banners || [] });
+    });
+    return;
+  }
+
+  // ---- API: yangi banner qo'shish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/banner-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, imageUrl, title, link, startAt, endAt } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
+
+      const imageTrim = String(imageUrl || '').trim();
+      if (!imageTrim) return sendJSON(res, 200, { ok: false, reason: 'Banner uchun rasm tanlang.' });
+      if (!isValidImageValue(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+      }
+      const linkTrim = String(link || '').trim();
+      if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Havola http:// yoki https:// bilan boshlanishi kerak.' });
+      }
+      let startAtVal = null;
+      if (startAt) {
+        const d = new Date(startAt);
+        if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Boshlanish sanasi noto\'g\'ri.' });
+        startAtVal = d.toISOString();
+      }
+      let endAtVal = null;
+      if (endAt) {
+        const d = new Date(endAt);
+        if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi noto\'g\'ri.' });
+        endAtVal = d.toISOString();
+      }
+      if (startAtVal && endAtVal && new Date(endAtVal).getTime() <= new Date(startAtVal).getTime()) {
+        return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.' });
+      }
+
+      if (!owner.banners) owner.banners = [];
+      const banner = {
+        id: crypto.randomBytes(4).toString('hex'),
+        imageUrl: imageTrim,
+        title: String(title || '').trim() || null,
+        link: linkTrim || null,
+        active: true,
+        startAt: startAtVal,
+        endAt: endAtVal,
+        createdAt: new Date().toISOString()
+      };
+      owner.banners.unshift(banner); // eng yangisi ro'yxat boshida ko'rinsin
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, banner });
+    });
+    return;
+  }
+
+  // ---- API: bannerni tahrirlash (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/banner-update') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, imageUrl, title, link, startAt, endAt } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
+
+      const banner = (owner.banners || []).find(b => b.id === id);
+      if (!banner) return sendJSON(res, 200, { ok: false, reason: 'Banner topilmadi.' });
+
+      if (imageUrl !== undefined) {
+        const imageTrim = String(imageUrl || '').trim();
+        if (!imageTrim) return sendJSON(res, 200, { ok: false, reason: 'Banner uchun rasm tanlang.' });
+        if (!isValidImageValue(imageTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+        }
+        banner.imageUrl = imageTrim;
+      }
+      if (title !== undefined) banner.title = String(title || '').trim() || null;
+      if (link !== undefined) {
+        const linkTrim = String(link || '').trim();
+        if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Havola http:// yoki https:// bilan boshlanishi kerak.' });
+        }
+        banner.link = linkTrim || null;
+      }
+      if (startAt !== undefined) {
+        if (!startAt) banner.startAt = null;
+        else {
+          const d = new Date(startAt);
+          if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Boshlanish sanasi noto\'g\'ri.' });
+          banner.startAt = d.toISOString();
+        }
+      }
+      if (endAt !== undefined) {
+        if (!endAt) banner.endAt = null;
+        else {
+          const d = new Date(endAt);
+          if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi noto\'g\'ri.' });
+          banner.endAt = d.toISOString();
+        }
+      }
+      if (banner.startAt && banner.endAt && new Date(banner.endAt).getTime() <= new Date(banner.startAt).getTime()) {
+        return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.' });
+      }
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, banner });
+    });
+    return;
+  }
+
+  // ---- API: bannerni faol/nofaol qilish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/banner-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+
+      const banner = (owner.banners || []).find(b => b.id === id);
+      if (!banner) return sendJSON(res, 200, { ok: false, reason: 'Banner topilmadi.' });
+      banner.active = !banner.active;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, banner });
+    });
+    return;
+  }
+
+  // ---- API: bannerni o'chirish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/banner-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.banners = (owner.banners || []).filter(b => b.id !== id);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- API: bonus tizimi sozlamalarini olish (egasi) ----
   if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
     readBody(req, (err, payload) => {
@@ -4495,7 +4691,10 @@ const server = http.createServer((req, res) => {
         outOfStock: comboOutOfStock(owner, c)
       }));
       const promotions = (owner.promotions || []).filter(p => p.active);
-      return sendJSON(res, 200, { ok: true, menu, combos, promotions, categories: sortedOwnerCategories(owner) });
+      // 45-bosqich: rasmli reklama bannerlari — faqat HOZIR faol bo'lganlari
+      // (active=true va startAt/endAt oynasi ichida), qarang: activeOwnerBanners().
+      const banners = activeOwnerBanners(owner);
+      return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(owner) });
     });
     return;
   }
