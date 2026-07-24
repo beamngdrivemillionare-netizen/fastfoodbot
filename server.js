@@ -2112,8 +2112,20 @@ async function handleStartCommand(chatId, from, text) {
   }
 
   // Mijoz uchun oshxona menyusi havolasi: /start menu_<ownerId>
+  // 57-bosqich: QR-kod orqali stolga bog'langan havola bo'lsa —
+  // /start menu_<ownerId>_table_<stolRaqami> ko'rinishida keladi (qarang:
+  // /api/table-qr-link — egasi shu havoladan stol uchun QR yaratadi).
+  // Bunday holatda Mini App to'g'ridan-to'g'ri o'sha stol raqami bilan,
+  // "Stolga" buyurtma turi oldindan tanlangan holda ochiladi.
   if (payload.startsWith('menu_')) {
-    const ownerId = payload.replace(/^menu_/, '').trim();
+    let rest = payload.replace(/^menu_/, '').trim();
+    let tableNumber = null;
+    const tableMatch = rest.match(/^(.*)_table_(.+)$/);
+    if (tableMatch) {
+      rest = tableMatch[1];
+      tableNumber = tableMatch[2];
+    }
+    const ownerId = rest;
     const owners = pruneExpiredOwners();
     const owner = findOwner(owners, ownerId);
     if (!owner || !isOwnerAccessValid(owner)) {
@@ -2125,8 +2137,12 @@ async function handleStartCommand(chatId, from, text) {
       return;
     }
     const restaurantName = (owner.profile && owner.profile.name) || 'Oshxona';
-    const menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
-    await sendMessage(chatId, `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`, {
+    let menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
+    if (tableNumber) menuUrl += `&table=${encodeURIComponent(tableNumber)}`;
+    const welcomeText = tableNumber
+      ? `🍽 <b>${escapeHtmlServer(restaurantName)}</b> — stol ${escapeHtmlServer(tableNumber)} uchun buyurtma bering!`
+      : `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`;
+    await sendMessage(chatId, welcomeText, {
       inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]]
     });
     return;
@@ -4301,6 +4317,35 @@ const server = http.createServer((req, res) => {
       }
       const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}`;
       return sendJSON(res, 200, { ok: true, link });
+    });
+    return;
+  }
+
+  // ---- API: 57-bosqich — muayyan stol uchun QR-havola (tez buyurtma) ----
+  // Egasi stol raqamini kiritadi, server shu stol uchun maxsus deep-link
+  // qaytaradi (/start menu_<ownerId>_table_<stol>) — frontend shu havoladan
+  // QR-kod rasmini yasab, chop etish/yuklab olish uchun ko'rsatadi. Mijoz
+  // shu QR-ni skanerlasa, Mini App to'g'ridan-to'g'ri "Stolga" buyurtma
+  // turi va stol raqami oldindan to'ldirilgan holda ochiladi.
+  if (req.method === 'POST' && req.url === '/api/table-qr-link') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+      const tableNumber = String(payload.tableNumber || '').trim().slice(0, 20);
+      if (!tableNumber) return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
+      if (!/^[a-zA-Z0-9\-]+$/.test(tableNumber)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Stol raqami faqat harf, raqam va chiziqchadan iborat bo\'lsin.' });
+      }
+      const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}_table_${encodeURIComponent(tableNumber)}`;
+      return sendJSON(res, 200, { ok: true, link, tableNumber });
     });
     return;
   }
