@@ -5538,11 +5538,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function aiForecastHtml(forecast) {
     if (!forecast || !forecast.length) return `<div class="bosh">Prognoz uchun yetarli sklad harakati tarixi yo'q (oxirgi 7 kun).</div>`;
-    return forecast.slice(0, 10).map(f => `
+    const urgentCount = forecast.filter(f => f.urgent).length;
+    const urgentNote = urgentCount
+      ? `<div class="xabar err" style="margin-bottom:8px;">⚠️ ${urgentCount} ta mahsulot 3 kun ichida tugashi mumkin.</div>`
+      : '';
+    return urgentNote + forecast.slice(0, 10).map(f => `
       <div class="menu-item">
         <div style="flex:1;">
-          <div class="m-name">${escapeHtml(f.name)}${f.shortage ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
-          <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)} · Ertangi ehtiyoj: ${f.predictedNeed} ${escapeHtml(f.unit)}</div>
+          <div class="m-name">${escapeHtml(f.name)}${f.urgent ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
+          <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)}</div>
+          <div class="m-price">${f.daysLeft === null ? 'Muddatni hisoblab bo\'lmadi' : (f.daysLeft < 1 ? 'Bugun-erta tugashi mumkin' : `Taxminan ${f.daysLeft} kunga yetadi`)}</div>
         </div>
       </div>
     `).join('');
@@ -5626,6 +5631,28 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <h2>Ertangi sklad ehtiyoji (prognoz)</h2>
           <div id="aiForecast"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
+        <div class="kartochka">
+          <h2>🤖 AI Direktor — kunlik hisobot</h2>
+          <div class="bosh" style="margin-bottom:8px;">Har kuni soat 08:00 (Toshkent) shu hisobot avtomatik Telegram'ga yuboriladi.</div>
+          <label class="check-label" style="font-size:var(--fs-body);">
+            <input type="checkbox" id="aiDirDailyToggle">
+            Avtomatik kunlik hisobotni yoqish
+          </label>
+          <div id="aiDirDailyText" class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>
+          <button class="btn ikkinchi" id="aiDirDailySendBtn" style="margin-top:10px;">Hozir yubor</button>
+          <div class="xabar" id="aiDirDailyMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>📅 AI Direktor — haftalik hisobot</h2>
+          <div class="bosh" style="margin-bottom:8px;">Har Dushanba soat 08:00 (Toshkent) haftalik yig'ma hisobot avtomatik Telegram'ga yuboriladi.</div>
+          <label class="check-label" style="font-size:var(--fs-body);">
+            <input type="checkbox" id="aiDirWeeklyToggle">
+            Avtomatik haftalik hisobotni yoqish
+          </label>
+          <div id="aiDirWeeklyText" class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>
+          <button class="btn ikkinchi" id="aiDirWeeklySendBtn" style="margin-top:10px;">Hozir yubor</button>
+          <div class="xabar" id="aiDirWeeklyMsg"></div>
+        </div>
         <div class="kartochka ai-chat-card">
           <h2>${icon('ai', 'icon-xs')} AI-yordamchi</h2>
           <div class="ai-chat-messages" id="aiChatMessages">${aiChatMessagesHtml()}</div>
@@ -5659,8 +5686,80 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (q) aiSendQuestion(q);
     });
 
+    document.getElementById('aiDirDailyToggle').addEventListener('change', async (e) => {
+      const checked = e.target.checked;
+      e.target.disabled = true;
+      const res = await apiPost('/api/ai-director-toggle', { initData, enabled: checked });
+      e.target.disabled = false;
+      if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
+    });
+    document.getElementById('aiDirDailySendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('aiDirDailySendBtn');
+      const msgEl = document.getElementById('aiDirDailyMsg');
+      btn.disabled = true;
+      const res = await apiPost('/api/ai-director-send-now', { initData });
+      btn.disabled = false;
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      msgEl.textContent = 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.';
+      msgEl.className = 'xabar ok';
+    });
+
+    document.getElementById('aiDirWeeklyToggle').addEventListener('change', async (e) => {
+      const checked = e.target.checked;
+      e.target.disabled = true;
+      const res = await apiPost('/api/ai-director-weekly-toggle', { initData, enabled: checked });
+      e.target.disabled = false;
+      if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
+    });
+    document.getElementById('aiDirWeeklySendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('aiDirWeeklySendBtn');
+      const msgEl = document.getElementById('aiDirWeeklyMsg');
+      btn.disabled = true;
+      const res = await apiPost('/api/ai-director-weekly-send-now', { initData });
+      btn.disabled = false;
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      msgEl.textContent = 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.';
+      msgEl.className = 'xabar ok';
+    });
+
     aiRenderChat();
     loadAiData();
+    loadAiDirectorPreviews();
+  }
+
+  // AI Direktor kunlik va haftalik hisobot preview matnini, yoqilgan/
+  // o'chirilganligini va joriy davrda allaqachon yuborilganmi-yo'qmi
+  // holatini yuklab, kartochkalarga chiqaradi.
+  async function loadAiDirectorPreviews() {
+    const dailyTextEl = document.getElementById('aiDirDailyText');
+    const dailyToggle = document.getElementById('aiDirDailyToggle');
+    if (dailyTextEl) {
+      const res = await apiPost('/api/ai-director-preview', { initData });
+      if (res.ok) {
+        dailyTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
+          (res.sentToday ? `<div class="bosh" style="margin-top:6px;">✅ Bugun allaqachon yuborilgan.</div>` : '');
+        dailyToggle.checked = res.enabled;
+      } else if (res.blockedFeature) {
+        renderFeatureBlockedInline(dailyTextEl, res.reason);
+      } else {
+        dailyTextEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      }
+    }
+
+    const weeklyTextEl = document.getElementById('aiDirWeeklyText');
+    const weeklyToggle = document.getElementById('aiDirWeeklyToggle');
+    if (weeklyTextEl) {
+      const res = await apiPost('/api/ai-director-weekly-preview', { initData });
+      if (res.ok) {
+        weeklyTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
+          (res.sentThisWeek ? `<div class="bosh" style="margin-top:6px;">✅ Shu hafta allaqachon yuborilgan.</div>` : '');
+        weeklyToggle.checked = res.enabled;
+      } else if (res.blockedFeature) {
+        renderFeatureBlockedInline(weeklyTextEl, res.reason);
+      } else {
+        weeklyTextEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      }
+    }
   }
 
   async function loadAiData() {
