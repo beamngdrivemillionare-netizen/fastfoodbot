@@ -7591,85 +7591,105 @@ const tg = window.Telegram && window.Telegram.WebApp;
     renderCheckoutModalBody(overlay);
   }
 
-  let customerQueueState = { pollTimer: null, tickTimer: null, secondsLeft: 0 };
+  // ---- Jonli navbat taxtasi (live board): "Tayyorlanmoqda" / "Tayyor" ustunlari ----
+  let liveBoardState = { pollTimer: null, myOrderIds: [], lastPreparingIds: [] };
 
-  function stopCustomerQueuePolling() {
-    if (customerQueueState.pollTimer) { clearInterval(customerQueueState.pollTimer); customerQueueState.pollTimer = null; }
-    if (customerQueueState.tickTimer) { clearInterval(customerQueueState.tickTimer); customerQueueState.tickTimer = null; }
+  function stopLiveBoardPolling() {
+    if (liveBoardState.pollTimer) { clearInterval(liveBoardState.pollTimer); liveBoardState.pollTimer = null; }
   }
 
-  function queueTimeText(seconds) {
-    const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
-    const ss = String(seconds % 60).padStart(2, '0');
-    return `${mm}:${ss}`;
-  }
-
-  function customerQueueModalBodyHtml(data) {
-    if (!data) {
-      return `<h3>Navbat holati</h3><div class="bosh">Yuklanmoqda...</div>`;
-    }
-    if (data.status === 'tayyor') {
-      return `
-        <h3>Navbat holati</h3>
-        <div class="queue-done">${icon('check-circle', 'icon-md icon-success')}<div>Buyurtmangiz tayyor!</div></div>
-        <div class="btn-row"><button type="button" class="btn" id="cQueueCloseBtn">Yopish</button></div>
-      `;
-    }
-    if (data.status === 'bekor_qilindi') {
-      return `
-        <h3>Navbat holati</h3>
-        <div class="bosh">Bu buyurtma bekor qilingan.</div>
-        <div class="btn-row"><button type="button" class="btn" id="cQueueCloseBtn">Yopish</button></div>
-      `;
-    }
+  function liveBoardBannerHtml(activeCount) {
+    if (!activeCount) return '';
     return `
-      <h3>Navbat holati</h3>
-      <div class="queue-ahead">${data.aheadCount > 0 ? `Sizdan oldin <b>${data.aheadCount}</b> ta buyurtma bor` : "Navbatda birinchi buyurtmasiz"}</div>
-      <div class="queue-timer">${queueTimeText(customerQueueState.secondsLeft)}</div>
-      <div class="bosh" style="text-align:center;">taxminiy kutish vaqti</div>
-      <div class="btn-row"><button type="button" class="btn ikkinchi" id="cQueueCloseBtn">Yopish</button></div>
+      <button type="button" class="live-board-open-btn" id="liveBoardOpenBtn">
+        <span class="live-board-open-icon">${icon('clock', 'icon-md')}</span>
+        <span class="live-board-open-text">
+          <span class="live-board-open-title">Navbatni ko'rish</span>
+          <span class="live-board-open-sub">${activeCount} ta faol buyurtma — jonli holatni kuzating</span>
+        </span>
+        <span class="live-board-open-arrow">›</span>
+      </button>
     `;
   }
 
-  function closeCustomerQueueModal(overlay) {
-    stopCustomerQueuePolling();
-    overlay.remove();
+  function liveBoardColumnHtml(title, iconName, orders, myOrderIds, emptyText) {
+    return `
+      <div class="live-board-col">
+        <div class="live-board-col-head">
+          ${icon(iconName, 'icon-sm')}
+          <span>${escapeHtml(title)}</span>
+          <span class="live-board-col-count">${orders.length}</span>
+        </div>
+        <div class="live-board-col-body">
+          ${orders.length ? orders.map(o => `
+            <div class="live-board-chip${myOrderIds.includes(o.id) ? ' mine' : ''}" data-board-id="${escapeHtml(o.id)}">#${escapeHtml(o.id)}</div>
+          `).join('') : `<div class="live-board-empty">${escapeHtml(emptyText)}</div>`}
+        </div>
+      </div>
+    `;
   }
 
-  function wireCustomerQueueModal(overlay) {
-    const closeBtn = overlay.querySelector('#cQueueCloseBtn');
-    if (closeBtn) closeBtn.addEventListener('click', () => closeCustomerQueueModal(overlay));
+  function liveBoardBodyHtml(data) {
+    if (!data) return `<div class="bosh">Yuklanmoqda...</div>`;
+    return `
+      <div class="live-board-cols">
+        ${liveBoardColumnHtml('Tayyorlanmoqda', 'chef-hat', data.preparing || [], data.myOrderIds || [], "Hozircha tayyorlanayotgan buyurtma yo'q")}
+        ${liveBoardColumnHtml('Tayyor', 'cloche', data.ready || [], data.myOrderIds || [], "Hozircha tayyor buyurtma yo'q")}
+      </div>
+    `;
   }
 
-  async function openCustomerQueueModal(orderId) {
-    stopCustomerQueuePolling();
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `<div class="modal" style="max-width:340px;"></div>`;
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomerQueueModal(overlay); });
-    const modalEl = overlay.querySelector('.modal');
-    modalEl.innerHTML = customerQueueModalBodyHtml(null);
-
-    const poll = async () => {
-      const res = await apiPost('/api/customer-queue-status', { initData, ownerId: customerState.ownerId, orderId });
-      if (!document.body.contains(overlay)) { stopCustomerQueuePolling(); return; }
-      if (!res.ok) return;
-      customerQueueState.secondsLeft = (res.etaMinutes || 0) * 60;
-      modalEl.innerHTML = customerQueueModalBodyHtml(res);
-      wireCustomerQueueModal(overlay);
-      if (res.status === 'tayyor' || res.status === 'bekor_qilindi') stopCustomerQueuePolling();
-    };
-
-    await poll();
-    customerQueueState.pollTimer = setInterval(poll, 8000);
-    customerQueueState.tickTimer = setInterval(() => {
-      if (customerQueueState.secondsLeft > 0) {
-        customerQueueState.secondsLeft--;
-        const timerEl = overlay.querySelector('.queue-timer');
-        if (timerEl) timerEl.textContent = queueTimeText(customerQueueState.secondsLeft);
+  async function refreshLiveBoard() {
+    const bodyEl = document.getElementById('liveBoardBody');
+    if (!bodyEl) { stopLiveBoardPolling(); return; }
+    const res = await apiPost('/api/live-board', { initData, ownerId: customerState.ownerId });
+    const bodyEl2 = document.getElementById('liveBoardBody');
+    if (!bodyEl2) return;
+    if (res.networkError) { renderNetworkErrorInline(bodyEl2, res.reason, refreshLiveBoard); return; }
+    if (!res.ok) {
+      bodyEl2.innerHTML = `<div class="bosh">Navbat yuklanmadi.</div>`;
+      return;
+    }
+    liveBoardState.myOrderIds = res.myOrderIds || [];
+    const prevPreparingIds = liveBoardState.lastPreparingIds || [];
+    bodyEl2.innerHTML = liveBoardBodyHtml(res);
+    (res.ready || []).forEach(o => {
+      if (prevPreparingIds.includes(o.id)) {
+        const chip = bodyEl2.querySelector(`[data-board-id="${CSS && CSS.escape ? CSS.escape(o.id) : o.id}"]`);
+        if (chip) {
+          chip.classList.add('live-board-chip-new');
+          if (liveBoardState.myOrderIds.includes(o.id) && tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
+            try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
+          }
+        }
       }
-    }, 1000);
+    });
+    liveBoardState.lastPreparingIds = (res.preparing || []).map(o => o.id);
+  }
+
+  function startLiveBoardPolling() {
+    stopLiveBoardPolling();
+    liveBoardState.lastPreparingIds = [];
+    refreshLiveBoard();
+    liveBoardState.pollTimer = setInterval(refreshLiveBoard, 4000);
+  }
+
+  function renderLiveBoardScreen(onBack) {
+    ekran(`
+      <div class="panel live-board-panel">
+        <div class="live-board-header">
+          <button class="btn ikkinchi live-board-back" id="liveBoardBackBtn">← Orqaga</button>
+          <div class="live-board-title">${icon('clock', 'icon-sm')} Jonli navbat</div>
+        </div>
+        <div class="bosh live-board-hint">Buyurtma raqamingiz "Tayyorlanmoqda"dan "Tayyor" ustuniga o'zi o'tadi — hech narsa bosish shart emas.</div>
+        <div id="liveBoardBody" class="live-board-body">${liveBoardBodyHtml(null)}</div>
+      </div>
+    `);
+    document.getElementById('liveBoardBackBtn').addEventListener('click', () => {
+      stopLiveBoardPolling();
+      onBack();
+    });
+    startLiveBoardPolling();
   }
 
   function renderCheckoutModalBody(overlay) {
@@ -8062,7 +8082,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
         </div>
         ${o.orderType !== 'dostavka' && o.status === 'tayyor' && !o.customerReceivedAt ? `<button type="button" class="order-received-btn" data-received-id="${escapeHtml(o.id)}">${icon('check-circle', 'icon-xs')} Oldim</button>` : ''}
-        ${(o.status === 'yangi' || o.status === 'tayyorlanmoqda') ? `<button type="button" class="order-queue-btn" data-queue-id="${escapeHtml(o.id)}">${icon('clock', 'icon-xs')} Navbatni ko'rish</button>` : ''}
         <button type="button" class="order-reorder-btn" data-reorder-id="${escapeHtml(o.id)}">${icon('repeat', 'icon-xs')} Yana buyurtma berish</button>
       </div>
     `;
@@ -8079,10 +8098,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function attachCustomerHistoryHandlers(listEl, orders) {
-    listEl.querySelectorAll('[data-queue-id]').forEach(btn => btn.addEventListener('click', () => {
-      openCustomerQueueModal(btn.getAttribute('data-queue-id'));
-    }));
-
     listEl.querySelectorAll('[data-received-id]').forEach(btn => btn.addEventListener('click', async () => {
       const orderId = btn.getAttribute('data-received-id');
       btn.disabled = true;
@@ -8160,6 +8175,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl2.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
     attachCustomerHistoryHandlers(listEl2, orders);
 
+    const bannerWrap = document.getElementById('liveBoardBannerWrap');
+    if (bannerWrap) {
+      const activeCount = orders.filter(o => o.status === 'yangi' || o.status === 'tayyorlanmoqda').length;
+      bannerWrap.innerHTML = liveBoardBannerHtml(activeCount);
+      const openBtn = document.getElementById('liveBoardOpenBtn');
+      if (openBtn) {
+        openBtn.addEventListener('click', () => {
+          stopCustomerHistoryPolling();
+          renderLiveBoardScreen(() => renderCustomerHistoryTab());
+        });
+      }
+    }
+
     if (changedIds.length) {
       if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
         try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
@@ -8182,6 +8210,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         ${customerHeaderHtml()}
         ${customerTabRowHtml()}
+        <div id="liveBoardBannerWrap"></div>
         <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
