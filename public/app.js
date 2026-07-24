@@ -7176,6 +7176,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     promotions: [],
     banners: [],
     favorites: [],
+    addresses: [],
     bonusPoints: 0,
     bonusEnabled: false,
     cart: {},
@@ -7263,6 +7264,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
           ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
         </div>
+        <button type="button" class="cust-notif-bell-btn" id="custAddrBookBtn" title="Manzillarim" aria-label="Manzillarim" style="margin-right:6px;">
+          ${icon('pin', 'icon-sm')}
+        </button>
         <button type="button" class="cust-notif-bell-btn" id="custNotifBellBtn" title="Bildirishnomalar" aria-label="Bildirishnomalar">
           ${icon('bell', 'icon-sm')}
           ${customerState.notifUnseenCount > 0 ? `<span class="cust-notif-bell-badge">${customerState.notifUnseenCount > 9 ? '9+' : customerState.notifUnseenCount}</span>` : ''}
@@ -7584,6 +7588,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
       </div>
       <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
+        ${customerState.addresses.length ? `
+          <div class="cust-addr-chip-row" id="cAddrChipRow">
+            ${customerState.addresses.map(a => `<div class="cust-addr-chip" data-addr-chip="${escapeHtml(a.id)}">${icon('pin', 'icon-xs')} ${escapeHtml(a.label)}</div>`).join('')}
+          </div>
+        ` : ''}
         <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
           ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
         </button>
@@ -7686,6 +7695,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const addressNoteInput = modalEl.querySelector('#cAddressNoteInput');
     if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
 
+    // 56-bosqich: saqlangan manzil chip'i bosilsa — joylashuv/manzil izohi/
+    // qo'shimcha telefon shu manzildan avtomatik to'ldiriladi.
+    const addrChipRow = modalEl.querySelector('#cAddrChipRow');
+    if (addrChipRow) {
+      addrChipRow.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-addr-chip]');
+        if (!chip) return;
+        const id = chip.getAttribute('data-addr-chip');
+        const addr = customerState.addresses.find(a => a.id === id);
+        if (!addr) return;
+        customerState.location = addr.location || null;
+        customerState.addressNote = addr.addressNote || '';
+        if (addr.extraPhone) customerState.extraPhone = addr.extraPhone;
+        renderCheckoutModalBody(overlay);
+      });
+    }
+
     const extraPhoneInput = modalEl.querySelector('#cExtraPhoneInput');
     if (extraPhoneInput) extraPhoneInput.addEventListener('input', (e) => { customerState.extraPhone = e.target.value; });
 
@@ -7721,6 +7747,160 @@ const tg = window.Telegram && window.Telegram.WebApp;
         });
       });
     }
+    const addrBookBtn = document.getElementById('custAddrBookBtn');
+    if (addrBookBtn) {
+      addrBookBtn.addEventListener('click', () => {
+        stopCustomerHistoryPolling();
+        renderCustomerAddressesScreen(() => {
+          if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+          else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
+          else renderCustomerMenuTab();
+        });
+      });
+    }
+  }
+
+  // =========================================================================
+  // 56-bosqich: mijoz uchun manzillar kitobi — dostavka buyurtmasi berishda
+  // har safar qaytadan yozmasligi uchun, bir necha manzilni ("Uy", "Ish"
+  // kabi nomlar bilan) saqlab qo'yish va checkout'da tanlash imkoniyati.
+  // =========================================================================
+  function customerAddressItemHtml(a) {
+    const parts = [];
+    if (a.location) parts.push(`${icon('pin', 'icon-xs icon-muted')} Joylashuv aniqlangan`);
+    if (a.addressNote) parts.push(escapeHtml(a.addressNote));
+    if (a.extraPhone) parts.push(`${icon('send', 'icon-xs icon-muted')} ${escapeHtml(a.extraPhone)}`);
+    return `
+      <div class="owner-item" data-addr-id="${escapeHtml(a.id)}">
+        <div class="owner-item-heading">
+          <div class="owner-item-top"><span class="owner-id">${escapeHtml(a.label)}</span></div>
+          <div class="owner-username">${parts.join(' · ') || 'Manzil ma\'lumoti yo\'q'}</div>
+        </div>
+        <button type="button" class="owner-remove-btn" data-addr-remove="${escapeHtml(a.id)}" title="O'chirish" aria-label="O'chirish">${icon('trash', 'icon-xs')}</button>
+      </div>
+    `;
+  }
+
+  function renderCustomerAddressesScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Manzillarim</div>
+        <button class="btn ikkinchi" id="custAddrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="custAddrList"><div class="bosh">Yuklanmoqda...</div></div>
+        <button type="button" class="btn" id="custAddrAddBtn" style="margin-top:12px;">${icon('plus', 'icon-xs')} Yangi manzil qo'shish</button>
+      </div>
+    `);
+    document.getElementById('custAddrBackBtn').addEventListener('click', () => onBack && onBack());
+    document.getElementById('custAddrAddBtn').addEventListener('click', () => renderCustomerAddressFormScreen(null, () => renderCustomerAddressesScreen(onBack)));
+    loadCustomerAddressList(onBack);
+  }
+
+  async function loadCustomerAddressList(onBack) {
+    const el = document.getElementById('custAddrList');
+    if (!el) return;
+    const res = await apiPost('/api/customer-address-list', { initData, ownerId: customerState.ownerId });
+    const el2 = document.getElementById('custAddrList');
+    if (!el2) return;
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerAddressList(onBack)); return; }
+    if (!res.ok) { el2.innerHTML = `<div class="bosh">Manzillar yuklanmadi.</div>`; return; }
+    customerState.addresses = res.addresses || [];
+    el2.innerHTML = customerState.addresses.length
+      ? customerState.addresses.map(customerAddressItemHtml).join('')
+      : `<div class="bosh">Hali saqlangan manzil yo'q.</div>`;
+    el2.querySelectorAll('[data-addr-remove]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        btn.disabled = true;
+        const id = btn.getAttribute('data-addr-remove');
+        const res2 = await apiPost('/api/customer-address-remove', { initData, ownerId: customerState.ownerId, addressId: id });
+        if (res2.ok) { customerState.addresses = res2.addresses || []; loadCustomerAddressList(onBack); }
+        else btn.disabled = false;
+      });
+    });
+    el2.querySelectorAll('[data-addr-id]').forEach(row => {
+      row.addEventListener('click', () => {
+        const id = row.getAttribute('data-addr-id');
+        const addr = customerState.addresses.find(a => a.id === id);
+        if (addr) renderCustomerAddressFormScreen(addr, () => renderCustomerAddressesScreen(onBack));
+      });
+    });
+  }
+
+  function renderCustomerAddressFormScreen(existing, onDone) {
+    const formLoc = { current: existing ? existing.location : null };
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${existing ? 'Manzilni tahrirlash' : 'Yangi manzil'}</div>
+        <button class="btn ikkinchi" id="custAddrFormBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <input type="text" id="custAddrLabelInput" placeholder="Nomi (masalan: Uy, Ish)" value="${escapeHtml(existing ? existing.label : '')}" style="margin-bottom:8px;">
+        <button type="button" class="btn ikkinchi" id="custAddrLocBtn" style="width:100%; margin-bottom:6px;">
+          ${formLoc.current ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
+        </button>
+        <div id="custAddrLocStatus" class="xabar" style="margin-bottom:6px;"></div>
+        <textarea id="custAddrNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.)" rows="2" style="margin-bottom:8px;">${escapeHtml(existing ? (existing.addressNote || '') : '')}</textarea>
+        <input type="tel" id="custAddrPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam" value="${escapeHtml(existing ? (existing.extraPhone || '') : '')}" inputmode="tel" style="margin-bottom:8px;">
+        <div class="xabar" id="custAddrFormMsg"></div>
+        <div class="btn-row">
+          <button type="button" class="btn" id="custAddrSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('custAddrFormBackBtn').addEventListener('click', () => onDone && onDone());
+    const locBtn = document.getElementById('custAddrLocBtn');
+    const locStatusEl = document.getElementById('custAddrLocStatus');
+    locBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        locStatusEl.textContent = 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni pastga yozib qoldiring.';
+        locStatusEl.className = 'xabar err';
+        return;
+      }
+      locStatusEl.textContent = 'Aniqlanmoqda...';
+      locStatusEl.className = 'xabar';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          formLoc.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          locStatusEl.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi.`;
+          locStatusEl.className = 'xabar ok';
+          locBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
+        },
+        () => {
+          locStatusEl.textContent = 'Joylashuvni aniqlab bo\'lmadi. Manzilni pastga yozib qoldiring.';
+          locStatusEl.className = 'xabar err';
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    document.getElementById('custAddrSaveBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('custAddrFormMsg');
+      const label = document.getElementById('custAddrLabelInput').value;
+      const addressNote = document.getElementById('custAddrNoteInput').value;
+      const extraPhone = document.getElementById('custAddrPhoneInput').value;
+      if (!label.trim()) {
+        msgEl.textContent = 'Manzil nomini kiriting (masalan: Uy, Ish).';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!formLoc.current && !addressNote.trim()) {
+        msgEl.textContent = 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/customer-address-save', {
+        initData, ownerId: customerState.ownerId,
+        addressId: existing ? existing.id : null,
+        label, addressNote, extraPhone,
+        location: formLoc.current
+      });
+      if (res.ok) {
+        customerState.addresses = res.addresses || [];
+        onDone && onDone();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
   }
 
   // 39-bosqich: bildirishnoma bandi ikonkasi va matni turiga qarab.
@@ -8206,6 +8386,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.ownerId = ownerId;
     customerState.restaurant = verifyRes.restaurant;
     customerState.favorites = verifyRes.customer.favorites || [];
+    customerState.addresses = verifyRes.customer.addresses || [];
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
