@@ -8053,7 +8053,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
             <div class="order-time">${timeAgo(o.createdAt)}</div>
           </div>
-          <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (o.status === 'tayyor' && o.customerReceivedAt ? 'Oldingiz' : (ORDER_STATUS_LABELS[o.status] || o.status))}</span>
+          <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (o.status === 'tayyor' && o.customerReceivedAt ? (o.customerReceivedAuto ? 'Avtomatik yopilgan' : 'Oldingiz') : (ORDER_STATUS_LABELS[o.status] || o.status))}</span>
         </div>
         ${customerOrderTrackHtml(o)}
         <div class="order-items">${itemsText}</div>
