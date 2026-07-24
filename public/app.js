@@ -8410,7 +8410,87 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  // ---- Kursor ortidan qoladigan "tutun" effekti (faqat mijoz ilovasida) ----
+  let __smokeEffectStarted = false;
+  function initCursorSmokeEffect() {
+    if (__smokeEffectStarted) return;
+    __smokeEffectStarted = true;
+
+    const canvas = document.createElement('canvas');
+    canvas.id = 'cursorSmokeCanvas';
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = '9999';
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    let particles = [];
+    let lastSpawn = 0;
+
+    function spawn(x, y) {
+      const now = Date.now();
+      if (now - lastSpawn < 16) return;
+      lastSpawn = now;
+      for (let i = 0; i < 2; i++) {
+        particles.push({
+          x: x + (Math.random() - 0.5) * 6,
+          y: y + (Math.random() - 0.5) * 6,
+          r: 5 + Math.random() * 6,
+          alpha: 0.32 + Math.random() * 0.16,
+          vx: (Math.random() - 0.5) * 0.4,
+          vy: -0.4 - Math.random() * 0.5,
+          grow: 0.22 + Math.random() * 0.18
+        });
+      }
+      if (particles.length > 160) particles.splice(0, particles.length - 160);
+    }
+
+    window.addEventListener('pointermove', (e) => spawn(e.clientX, e.clientY), { passive: true });
+    window.addEventListener('touchmove', (e) => {
+      const t = e.touches && e.touches[0];
+      if (t) spawn(t.clientX, t.clientY);
+    }, { passive: true });
+
+    function tick() {
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.r += p.grow;
+        p.alpha -= 0.012;
+        if (p.alpha > 0) {
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+          grad.addColorStop(0, `rgba(190,190,190,${p.alpha})`);
+          grad.addColorStop(1, 'rgba(190,190,190,0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+      particles = particles.filter(p => p.alpha > 0);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
   async function renderCustomerApp(ownerId) {
+    initCursorSmokeEffect();
     clearAppHeader();
     ekran(customerWelcomeLoadingHtml(null));
 
