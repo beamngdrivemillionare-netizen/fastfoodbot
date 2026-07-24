@@ -8446,18 +8446,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const now = Date.now();
       if (now - lastSpawn < 16) return;
       lastSpawn = now;
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < 3; i++) {
         particles.push({
           x: x + (Math.random() - 0.5) * 6,
           y: y + (Math.random() - 0.5) * 6,
-          r: 5 + Math.random() * 6,
-          alpha: 0.32 + Math.random() * 0.16,
+          r: 6 + Math.random() * 7,
+          alpha: 0.5 + Math.random() * 0.25,
           vx: (Math.random() - 0.5) * 0.4,
           vy: -0.4 - Math.random() * 0.5,
           grow: 0.14 + Math.random() * 0.12
         });
       }
-      if (particles.length > 160) particles.splice(0, particles.length - 160);
+      if (particles.length > 220) particles.splice(0, particles.length - 220);
     }
 
     window.addEventListener('pointermove', (e) => spawn(e.clientX, e.clientY), { passive: true });
@@ -8472,7 +8472,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         p.x += p.vx;
         p.y += p.vy;
         p.r += p.grow;
-        p.alpha -= 0.005;
+        p.alpha -= 0.0028;
         if (p.alpha > 0) {
           const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
           grad.addColorStop(0, `rgba(190,190,190,${p.alpha})`);
