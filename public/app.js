@@ -7670,6 +7670,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (!t || t === customerState.tab) return;
         customerState.tab = t;
         disconnectSectionedMenuObserver('customerCatRow');
+        if (t !== 'tarix') stopCustomerHistoryPolling();
         if (t === 'sevimli') renderCustomerFavoritesTab();
         else if (t === 'tarix') renderCustomerHistoryTab();
         else renderCustomerMenuTab();
@@ -7677,11 +7678,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     const bellBtn = document.getElementById('custNotifBellBtn');
     if (bellBtn) {
-      bellBtn.addEventListener('click', () => renderCustomerNotificationsScreen(() => {
-        if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
-        else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
-        else renderCustomerMenuTab();
-      }));
+      bellBtn.addEventListener('click', () => {
+        stopCustomerHistoryPolling();
+        renderCustomerNotificationsScreen(() => {
+          if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+          else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
+          else renderCustomerMenuTab();
+        });
+      });
     }
   }
 
@@ -7755,17 +7759,49 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCartFabHandler();
   }
 
+  // ---- 55-bosqich: buyurtma holatini real vaqtda kuzatish uchun bosqichli
+  // yo'l (stepper). Dostavka buyurtmalarida 4 bosqich (+ "Yetkazildi"),
+  // qolganlarida 3 bosqich. "Bekor qilindi" holatida stepper o'rniga hech
+  // narsa ko'rsatilmaydi — yuqoridagi status-badge yetarli.
+  function customerOrderTrackHtml(o) {
+    if (o.status === 'bekor_qilindi') return '';
+    const isDelivery = o.orderType === 'dostavka';
+    const steps = [
+      { key: 'yangi', label: 'Qabul qilindi' },
+      { key: 'tayyorlanmoqda', label: 'Tayyorlanmoqda' },
+      { key: 'tayyor', label: isDelivery ? "Tayyor bo'ldi" : 'Tayyor' }
+    ];
+    if (isDelivery) steps.push({ key: 'yetkazildi', label: 'Yetkazildi' });
+
+    // Joriy bosqich indeksi: status + (dostavka uchun) deliveredAt maydoniga qarab.
+    let activeIdx = 0;
+    if (o.status === 'tayyorlanmoqda') activeIdx = 1;
+    else if (o.status === 'tayyor') activeIdx = isDelivery ? (o.deliveredAt ? 3 : 2) : 2;
+
+    return `
+      <div class="order-track" data-order-track="${escapeHtml(o.id)}">
+        ${steps.map((s, i) => `
+          <div class="order-track-step ${i < activeIdx ? 'done' : ''} ${i === activeIdx ? 'active' : ''}">
+            <div class="order-track-dot"></div>
+            <div class="order-track-label">${escapeHtml(s.label)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
   function customerOrderHistoryCardHtml(o) {
     const itemsText = o.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
     return `
-      <div class="order-card">
+      <div class="order-card" data-order-card-id="${escapeHtml(o.id)}">
         <div class="order-top">
           <div>
             <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
             <div class="order-time">${timeAgo(o.createdAt)}</div>
           </div>
-          <span class="status-badge ${o.status}">${ORDER_STATUS_LABELS[o.status] || o.status}</span>
+          <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (ORDER_STATUS_LABELS[o.status] || o.status)}</span>
         </div>
+        ${customerOrderTrackHtml(o)}
         <div class="order-items">${itemsText}</div>
         <div class="order-bottom">
           <div class="order-total">${fmtNum(o.total)} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${fmtNum(o.discountAmount)})</span>` : ''}</div>
@@ -7776,24 +7812,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
-  async function renderCustomerHistoryTab() {
-    ekran(`
-      <div class="panel">
-        ${customerHeaderHtml()}
-        ${customerTabRowHtml()}
-        <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-    attachCustomerTabHandlers();
-    const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
-    const listEl = document.getElementById('customerHistoryList');
-    if (!listEl) return;
-    const orders = res.ok ? res.orders : [];
-    listEl.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
+  // ---- 55-bosqich: mijoz "Buyurtmalarim" ekrani real vaqtda (pollingda)
+  // yangilanadi — xuddi xodimlar taxtasidagi ordersPollTimer kabi, lekin
+  // alohida o'zgaruvchilar bilan (bir vaqtning o'zida ikkalasi ham
+  // ishlamaydi, lekin nom to'qnashmasligi uchun alohida saqlanadi).
+  let customerHistoryPollTimer = null;
+  let lastCustomerHistorySnapshot = null;
+  let knownCustomerOrderStates = null; // orderId -> "status|deliveredAt" — holat o'zgarishini payqash uchun
 
-    // 40-bosqich: tezkor takroriy buyurtma — bosilganda o'sha buyurtmadagi
-    // taomlarni (hozir ham menyuda mavjud bo'lganlarini) savatga solib,
-    // to'g'ridan-to'g'ri Menyu bo'limiga o'tkazadi.
+  function stopCustomerHistoryPolling() {
+    if (customerHistoryPollTimer) { clearInterval(customerHistoryPollTimer); customerHistoryPollTimer = null; }
+    lastCustomerHistorySnapshot = null;
+    knownCustomerOrderStates = null;
+  }
+
+  // 40-bosqich: tezkor takroriy buyurtma — bosilganda o'sha buyurtmadagi
+  // taomlarni (hozir ham menyuda mavjud bo'lganlarini) savatga solib,
+  // to'g'ridan-to'g'ri Menyu bo'limiga o'tkazadi. Ro'yxat har safar poll
+  // orqali yangilanganda ham qayta ulanishi kerak bo'lgani uchun alohida
+  // funksiyaga chiqarilgan.
+  function attachCustomerHistoryHandlers(listEl, orders) {
     listEl.querySelectorAll('[data-reorder-id]').forEach(btn => btn.addEventListener('click', () => {
       const orderId = btn.getAttribute('data-reorder-id');
       const order = orders.find(o => o.id === orderId);
@@ -7816,12 +7854,78 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.cart = newCart;
       customerState.tab = 'menyu';
       customerState.searchQuery = '';
+      stopCustomerHistoryPolling();
       renderCustomerMenuTab();
       if (skipped > 0) {
         const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
         alertFn(`Savatga qo'shildi. ${skipped} ta taom hozir mavjud emasligi sababli o'tkazib yuborildi.`);
       }
     }));
+  }
+
+  // Har 5 soniyada chaqiriladi: agar ekran hali "Buyurtmalarim"da bo'lsa
+  // va tarkib avvalgisidan farq qilsa, faqat o'zgargan qismini qayta chizadi
+  // (butun ekranni emas — foydalanuvchi scroll holatini yo'qotmasin uchun).
+  // Yangi holatga o'tgan buyurtma bo'lsa, o'sha kartochka bir lahza
+  // (.order-track-flash) yorqinroq ko'rinadi va yengil tebranish beriladi.
+  async function refreshCustomerHistoryList() {
+    const listEl = document.getElementById('customerHistoryList');
+    if (!listEl) { stopCustomerHistoryPolling(); return; }
+    const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
+    const listEl2 = document.getElementById('customerHistoryList');
+    if (!listEl2) return; // shu orada foydalanuvchi boshqa ekranga o'tgan bo'lishi mumkin
+    if (!res.ok) {
+      if (lastCustomerHistorySnapshot === null) {
+        listEl2.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`;
+      }
+      return; // vaqtinchalik uzilish — mavjud ro'yxatni saqlab qolamiz
+    }
+    const orders = res.orders || [];
+
+    const snapshot = JSON.stringify(orders);
+    if (snapshot === lastCustomerHistorySnapshot) return; // o'zgarish yo'q
+
+    const newStates = new Map(orders.map(o => [o.id, `${o.status}|${o.deliveredAt || ''}`]));
+    const changedIds = [];
+    if (knownCustomerOrderStates) {
+      newStates.forEach((state, id) => {
+        if (knownCustomerOrderStates.get(id) && knownCustomerOrderStates.get(id) !== state) changedIds.push(id);
+      });
+    }
+    lastCustomerHistorySnapshot = snapshot;
+    knownCustomerOrderStates = newStates;
+
+    listEl2.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
+    attachCustomerHistoryHandlers(listEl2, orders);
+
+    // Holati yangi o'zgargan buyurtmalarni ko'zga tashlanadigan qilib beramiz.
+    if (changedIds.length) {
+      if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
+        try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
+      }
+      changedIds.forEach(id => {
+        const card = listEl2.querySelector(`[data-order-card-id="${CSS && CSS.escape ? CSS.escape(id) : id}"]`);
+        if (card) card.classList.add('order-track-flash');
+      });
+    }
+  }
+
+  function startCustomerHistoryPolling() {
+    stopCustomerHistoryPolling();
+    refreshCustomerHistoryList();
+    customerHistoryPollTimer = setInterval(refreshCustomerHistoryList, 5000);
+  }
+
+  async function renderCustomerHistoryTab() {
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    attachCustomerTabHandlers();
+    startCustomerHistoryPolling();
   }
 
   async function sendCustomerOrder(overlay) {
