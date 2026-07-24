@@ -7622,7 +7622,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
         <div class="live-board-col-body">
           ${orders.length ? orders.map(o => `
-            <div class="live-board-chip${myOrderIds.includes(o.id) ? ' mine' : ''}" data-board-id="${escapeHtml(o.id)}">#${escapeHtml(o.id)}</div>
+            <div class="live-board-chip${myOrderIds.includes(o.id) ? ' mine' : ''}" data-board-id="${escapeHtml(o.id)}">#${escapeHtml(String(o.number || o.id))}</div>
           `).join('') : `<div class="live-board-empty">${escapeHtml(emptyText)}</div>`}
         </div>
       </div>
