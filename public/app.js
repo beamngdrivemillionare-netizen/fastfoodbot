@@ -1,7110 +1,7679 @@
-const tg = window.Telegram && window.Telegram.WebApp;
-  const appEl = document.getElementById('app');
-  // Login/parol orqali kirish (16-bosqich): Telegram initData bo'lmasa,
-  // localStorage'da saqlangan sessiya tokeni ("sess_<token>") bo'lishi mumkin —
-  // u xuddi Telegram initData o'rniga barcha /api/... so'rovlarida ishlatiladi.
-  const OWNER_SESSION_STORAGE_KEY = 'kitchenOsOwnerSession';
-  let initData = (tg && tg.initData) || localStorage.getItem(OWNER_SESSION_STORAGE_KEY) || null;
-  let usingOwnerSession = !tg && !!initData;
-  let ownerHasTelegramLogin = false;
+// Eng yengil Telegram Mini App backend — tashqi kutubxonalarsiz (faqat Node.js o'zi)
+// Ishga tushirish: BOT_TOKEN va ADMIN_ID ni sozlab, `node server.js`
 
-  function ekran(html) {
-    appEl.innerHTML = html;
+const http = require('http');
+const https = require('https');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+// ====== SOZLAMALAR (o'zingiznikiga almashtiring) ======
+const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN_BU_YERGA';
+const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA'; // masalan: 123456789
+const PORT = process.env.PORT || 3000;
+// BOT_USERNAME — taklif havolasini (t.me/BOT_USERNAME?start=...) yasash uchun kerak, @ belgisiz yozing
+const BOT_USERNAME = (process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA').replace(/^@/, '');
+// PUBLIC_URL — serveringizning ochiq (https) manzili, masalan: https://sizning-domeningiz.com
+// Agar shu sozlansa, server ishga tushganda Telegram webhook'ni avtomatik o'rnatadi.
+const PUBLIC_URL = process.env.PUBLIC_URL || '';
+// WEBHOOK_SECRET — ixtiyoriy, webhook so'rovlari haqiqatan Telegram'dan kelayotganini tekshirish uchun
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+// DATA_DIR — Railway'da Volume ulaganda shu yerga mount yo'lini yozing (masalan: /data)
+// Agar sozlanmasa, owners.json shu loyiha papkasida saqlanadi (Volume'siz, deploy'da o'chib ketishi mumkin)
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+// ANTHROPIC_API_KEY — ixtiyoriy. Sozlansa, "AI savol-javob" bo'limi haqiqiy AI (Claude) orqali javob beradi.
+// Sozlanmasa, shu bo'lim tayyor qoidalar asosida (foyda, top taom, pik vaqt, kam qolgan mahsulot) javob beradi.
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
+// 72-BOSQICH: Obuna trial/grace muddatlari — ENV orqali sozlanadi, sozlanmasa
+// hisob-kitob-bot'dagidek standart qiymatlar ishlatiladi (config.py:
+// SUBSCRIPTION_TRIAL_DAYS=14, SUBSCRIPTION_GRACE_DAYS=3).
+// - SUBSCRIPTION_TRIAL_DAYS: o'zi ro'yxatdan o'tgan yangi oshxona egasiga
+//   admin tasdiqlaganda taklif qilinadigan standart sinov kunlari soni
+//   (admin buni tasdiqlash paytida boshqa songa o'zgartirishi ham mumkin —
+//   qarang: kelgusi "trial tasdiqlash oqimi" bosqichi).
+// - SUBSCRIPTION_GRACE_DAYS: subscriptionUntil o'tgandan keyin ham kirish
+//   hali ochiq turadigan "muhlat" kunlari — shu muddat ichida owner
+//   bloklanmaydi, lekin ⏳ belgisi bilan ogohlantiriladi (qarang: kelgusi
+//   "grace period va o'chirishni bekor qilish" bosqichi).
+const SUBSCRIPTION_TRIAL_DAYS = parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS, 10) || 14;
+const SUBSCRIPTION_GRACE_DAYS = parseInt(process.env.SUBSCRIPTION_GRACE_DAYS, 10) || 3;
+const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
+// admins.json — 78-BOSQICH: bootstrap ADMIN_ID'dan tashqari qo'shimcha
+// adminlar ro'yxati (hisob-kitob-bot'dagi access_control.py'dagi
+// `_extra_admin_ids` kabi). Har bir yozuv: { id, addedAt, addedBy }.
+// Bootstrap ADMIN_ID bu faylda YO'Q — u doim ENV orqali, alohida ustuvor
+// tarzda tekshiriladi (qarang: isAdminId()). Server ishga tushganda
+// EXTRA_ADMIN_IDS xotiradagi Set'iga yuklanadi (qarang: reloadAdminsCache()),
+// shunda har bir so'rovda faylni qayta o'qishga hojat qolmaydi.
+const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
+const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
+const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
+// profiles.json — har bir bot foydalanuvchisining (mijoz, xodim, egasi — hammasi
+// uchun umumiy, oshxonaga bog'liq emas) ism/familiya/telefon ma'lumotlari.
+// Qarang: "Ro'yxatdan o'tish" bo'limi (handleTelegramUpdate ichida).
+const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
+// tariffs.json — admin belgilaydigan obuna tariflari katalogi (F-bo'lim,
+// 51-70-bosqich). Har bir do'kon egasiga shu ro'yxatdan bitta tarif
+// biriktiriladi (owner.tariffId — 55-bosqichda tarif o'chirishda tekshiriladi,
+// egaga biriktirish UI'si 57-bosqichda qo'shiladi).
+const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
+// payments.json — har bir "to'landi" deb belgilangan voqea alohida yozuv
+// sifatida shu yerga yoziladi (67-bosqich: admin dashboardida umumiy
+// daromadni FAQAT joriy holat snapshoti emas, balki haqiqiy tarix bo'yicha
+// hisoblash uchun). Bitta yozuv: { id, ownerId, amount, tariffId, at }.
+// owner.json'dagi paid/paidAt/price — joriy holatning "hozirgi surat"i,
+// bu fayl esa — vaqt bo'yicha to'liq jurnal (owner o'chirilsa ham saqlanadi,
+// 69-bosqich talabiga mos).
+const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
+// archived_orders.json — 69-bosqich: do'kon egasi (obunachi) admin tomonidan
+// o'chirilganda, egasi bilan birga owner.orders massivi ham yo'qolib
+// ketmasligi uchun, o'chirishdan OLDIN shu yerga arxivlanadi. Bitta yozuv —
+// bitta o'chirilgan egaga tegishli barcha buyurtmalar: { ownerId, ownerLabel,
+// removedAt, orders: [...] }. owners.json'dan o'chirilgandan keyin ham
+// buyurtmalar tarixi shu faylda saqlanib qoladi.
+const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
+// subscription_plans.json — 73-bosqich: TARIFFS_FILE'dan ATAYLAB ajratilgan.
+// tariffs.json (F-bo'lim) — "qaysi FUNKSIYALAR ochiq" katalogi (owner.tariffId
+// orqali biriktiriladi, admin qo'lda belgilaydi). subscription_plans.json esa —
+// "necha oyga qancha to'lash kerak" narxlar ro'yxati (hisob-kitob-bot'dagi
+// config.SUBSCRIPTION_PLANS bilan bir xil vazifa): owner "💳 Obuna" bo'limida
+// shu ro'yxatdan birini tanlab, TO'LOV qilib, subscriptionUntil'ni o'zi
+// uzaytiradi. Ikkalasi mustaqil: bitta owner istalgan funksiya-tarifda
+// bo'lishi mumkin, obuna reja narxi esa faqat muddatga ta'sir qiladi.
+const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
+// settings.json — 74-bosqich: obuna to'lovlari uchun rekvizitlar (karta,
+// Click, Payme raqamlari) — hisob-kitob-bot'dagi db.get_payment_requisites()
+// bilan bir xil vazifa. Owner "💳 Obuna" bo'limida tarif tanlaganda shu
+// rekvizitlar ko'rsatiladi. Admin panelidan o'zgartirilishi mumkin bo'ladi
+// (UI keyingi bosqichda qo'shiladi) — hozircha faqat standart qiymatlar bilan
+// avtomatik yaratiladi.
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
+// ========================================================
+
+// ==================== G-bo'lim: Obuna va oshxona egalari boshqaruvi ====================
+// (hisob-kitob-bot'dagi access_control.py + handlers/subscription.py bilan bir xil
+// mantiqqa o'tkazish uchun yangi reja, 71-bosqichdan boshlanadi — F-bo'lim (tarif/
+// funksiya tizimi, 51-70-bosqich) bilan almashtirilmaydi, ustiga qo'shiladi.)
+//
+// 71-BOSQICH: Obuna sxemasini kengaytirish.
+// Hozirgacha owner.expiresAt/paid/price orqali "muddat tugadimi" degan savolga
+// oddiy ha/yo'q javob berilardi va muddat tugashi bilan pruneExpiredOwners()
+// ownerni BUTUNLAY o'chirib yuborardi (menyu, xodimlar, buyurtmalar bilan birga).
+// Bu — hisob-kitob-bot'dagi yumshoq bloklash (grace period) mantig'iga zid.
+//
+// Shu bosqichda owner obyektiga quyidagi yangi maydonlar qo'shiladi (eski
+// expiresAt/paid/price maydonlari ORQAGA MOSLIK uchun saqlanadi, hozircha
+// o'chirilmaydi — ular hali boshqa joylarda ishlatilyapti):
+//   - subscriptionStatus: 'pending_trial' | 'active' | 'blocked'
+//   - subscriptionUntil: ISO sana yoki null (null = muddatsiz/doimiy ruxsat)
+//   - graceUntil: ISO sana yoki null (subscriptionUntil o'tgach ham
+//     shu sanagacha kirish hali ochiq turadi — SUBSCRIPTION_GRACE_DAYS)
+//   - trialGivenAt: ISO sana yoki null (birinchi marta sinov muddati
+//     tasdiqlangan payt, statistik/audit maqsadida)
+//
+// MUHIM: bu bosqichda hali hech qanday BLOKLASH mantig'i o'zgarmaydi —
+// isOwnerAccessValid/pruneExpiredOwners hozircha eski holicha ishlayveradi.
+// Yangi maydonlar faqat owners.json'ga "orqa fonda" qo'shib qo'yiladi va
+// keyingi bosqichlarda (grace period, obuna menyusi, to'lov oqimi) shular
+// asosida ishlatiladi. Shu tufayli bu o'zgarish TO'LIQ orqaga moslashuvchan —
+// eski kod ham, eski owners.json yozuvlari ham buzilmaydi.
+const SUBSCRIPTION_STATUS = {
+  PENDING_TRIAL: 'pending_trial',
+  ACTIVE: 'active',
+  BLOCKED: 'blocked'
+};
+
+// Bitta owner obyektida yangi obuna maydonlari yo'q bo'lsa (eski yozuv yoki
+// admin tomonidan qo'lda /api/add-owner orqali qo'shilgan yozuv), ularni
+// MAVJUD expiresAt/paid asosida "taxmin qilib" to'ldiradi — hech narsani
+// o'zgartirmaydi/saqlamaydi (faqat xotirada, o'qish paytida), shuning uchun
+// bu funksiyani xohlagancha marta chaqirish xavfsiz.
+//
+// Qoida: agar owner.expiresAt bo'lmasa (doimiy) yoki hali tugamagan bo'lsa —
+// 'active'; aks holda — 'blocked' (grace period hisobini keyingi bosqich
+// qo'shadi, hozircha faqat maydon mavjudligini ta'minlaydi).
+function ensureSubscriptionFields(owner) {
+  if (!owner) return owner;
+  if (owner.subscriptionStatus === undefined) {
+    const stillValid = !owner.expiresAt || new Date(owner.expiresAt).getTime() > Date.now();
+    owner.subscriptionStatus = stillValid ? SUBSCRIPTION_STATUS.ACTIVE : SUBSCRIPTION_STATUS.BLOCKED;
   }
+  if (owner.subscriptionUntil === undefined) {
+    owner.subscriptionUntil = owner.expiresAt || null;
+  }
+  if (owner.graceUntil === undefined) {
+    owner.graceUntil = null;
+  }
+  if (owner.trialGivenAt === undefined) {
+    owner.trialGivenAt = null;
+  }
+  // 76-bosqich: "bloklandi" xabari faqat bir marta yuborilishi uchun
+  // (checkOwnerExpirations() ishlatadi) — qarang shu funksiya izohi.
+  if (owner.blockedNotifiedAt === undefined) {
+    owner.blockedNotifiedAt = null;
+  }
+  return owner;
+}
 
-  // ---- Qo'ng'iroq qilish: mijoz/qo'shimcha telefon raqami bosilganda,
-  // "Telefondan" (oddiy tel: qo'ng'iroq) yoki "Telegramdan" (mijozning
-  // Telegram profili ochiladi, u yerdan qo'ng'iroq qilinadi) so'raladi.
-  // Telegram varianti faqat shu raqam mijozning o'z Telegram akkauntiga
-  // (customerId) tegishli bo'lsa ko'rsatiladi — qo'shimcha (extraPhone)
-  // raqamlar odatda alohida odamga tegishli bo'lishi mumkin va ularning
-  // Telegram ID'si bizda yo'q.
-  function promptCall(phone, tgUserId) {
-    if (!phone) return;
-    const callByPhone = () => { window.location.href = `tel:${phone}`; };
-    const callByTelegram = () => { openExternalLink(`tg://user?id=${tgUserId}`); };
+// 73-BOSQICH: Obuna rejalari (1/3/12 oylik narxlar).
+// hisob-kitob-bot'dagi config.SUBSCRIPTION_PLANS'ga o'xshab, kalit sifatida
+// barqaror id ('1m'/'3m'/'12m') ishlatiladi — kelgusi bosqichlarda owner
+// tanlagan reja shu id orqali eslab qolinadi (narx keyin o'zgarsa ham,
+// tanlangan paytdagi narxdan to'laydi, xuddi hisob-kitob'dagidek).
+// Narxlar so'mda, admin panelidan keyinchalik o'zgartirilishi mumkin bo'ladi
+// (hozircha faqat standart qiymatlar — sozlash UI'si keyingi bosqichda).
+const DEFAULT_SUBSCRIPTION_PLANS = {
+  '1m': { id: '1m', label: '1 oy', days: 30, price: 50000, discountNote: null, order: 0 },
+  '3m': { id: '3m', label: '3 oy', days: 90, price: 135000, discountNote: 'chegirmali', order: 1 },
+  '12m': { id: '12m', label: '12 oy', days: 365, price: 480000, discountNote: 'chegirmali', order: 2 }
+};
 
-    if (tg && typeof tg.showPopup === 'function') {
-      const buttons = [{ id: 'phone', type: 'default', text: '📞 Telefondan' }];
-      if (tgUserId) buttons.push({ id: 'telegram', type: 'default', text: '✈️ Telegramdan' });
-      buttons.push({ id: 'cancel', type: 'cancel', text: 'Bekor qilish' });
-      tg.showPopup({ title: 'Qo\'ng\'iroq qilish', message: phone, buttons }, (buttonId) => {
-        if (buttonId === 'phone') callByPhone();
-        else if (buttonId === 'telegram') callByTelegram();
-      });
-      return;
+// Fayl hali mavjud bo'lmasa (birinchi ishga tushirish) — standart rejalar
+// bilan avtomatik yaratadi, shunda admin hech narsa qo'lda sozlamasa ham
+// "💳 Obuna" bo'limi bo'sh qolib ketmaydi.
+function loadSubscriptionPlans() {
+  try {
+    if (!fs.existsSync(SUBSCRIPTION_PLANS_FILE)) {
+      saveSubscriptionPlans(DEFAULT_SUBSCRIPTION_PLANS);
+      return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
     }
-
-    // Telegram WebApp mavjud bo'lmasa (masalan, oddiy brauzerda ochilgan bo'lsa) — oddiy tanlov.
-    if (tgUserId && confirm(`${phone}\n\nTelegramdan qo'ng'iroq qilinsinmi? (Bekor qilinsa — telefondan qo'ng'iroq qilinadi)`)) {
-      callByTelegram();
-    } else {
-      callByPhone();
+    const raw = fs.readFileSync(SUBSCRIPTION_PLANS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+      return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
     }
+    return parsed;
+  } catch (e) {
+    console.error('subscription_plans.json o\'qishda xatolik:', e.message);
+    return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
   }
+}
 
-  document.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-call-phone]');
-    if (!btn) return;
-    e.preventDefault();
-    promptCall(btn.getAttribute('data-call-phone'), btn.getAttribute('data-call-tgid') || null);
-  });
+function saveSubscriptionPlans(plans) {
+  try {
+    fs.writeFileSync(SUBSCRIPTION_PLANS_FILE, JSON.stringify(plans, null, 2));
+  } catch (e) {
+    console.error('subscription_plans.json yozishda xatolik:', e.message);
+  }
+}
 
+// 74-BOSQICH: To'lov rekvizitlari (karta/Click/Payme).
+// Owner chek/skrinshot yubormasdan oldin shu ma'lumotlarni ko'radi. Admin
+// haqiqiy rekvizitlarni sozlagunga qadar "***" bilan boshlangan ko'rinishda
+// turadi — bu admin hali sozlamaganini bildiradi (tasodifan soxta/bo'sh
+// karta raqami ko'rsatilib qolmasligi uchun).
+const DEFAULT_PAYMENT_REQUISITES = {
+  cardNumber: '**** **** **** ****',
+  cardHolder: 'ADMIN ISM FAMILIYA',
+  clickNumber: '+998 90 000 00 00',
+  paymeNumber: '+998 90 000 00 00'
+};
 
-  // 16-bosqich: tarmoq xatosi holati. apiPost endi ikki turdagi muvaffaqiyatsizlikni
-  // ajratadi — (1) server javob berdi, lekin so'rov mantiqan rad etildi (masalan
-  // "ruxsat yo'q") — bu {ok:false, reason} bo'lib qoladi, chaqiruvchi joy o'zi
-  // matn ko'rsatadi; (2) so'rov umuman serverga yetib bormadi yoki javob
-  // o'qib bo'lmadi (internet yo'q / server ishlamayapti) — bu holda
-  // {ok:false, networkError:true, reason} qaytadi, shunda chaqiruvchi joy
-  // "Qayta urinish" tugmali maxsus holatni ko'rsatishi mumkin.
-  async function apiPost(url, body) {
-    let r;
-    try {
-      r = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-    } catch (e) {
-      return {
-        ok: false,
-        networkError: true,
-        reason: (typeof navigator !== 'undefined' && navigator.onLine === false)
-          ? "Internet aloqasi yo'q. Tarmoqni tekshirib, qayta urinib ko'ring."
-          : "Serverga ulanib bo'lmadi. Birozdan so'ng qayta urinib ko'ring."
-      };
+function loadPaymentRequisites() {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE)) {
+      const initial = { paymentRequisites: DEFAULT_PAYMENT_REQUISITES };
+      fs.writeFileSync(SETTINGS_FILE, JSON.stringify(initial, null, 2));
+      return Object.assign({}, DEFAULT_PAYMENT_REQUISITES);
     }
-    try {
-      return await r.json();
-    } catch (e) {
-      return {
-        ok: false,
-        networkError: true,
-        reason: "Server javob bermadi. Qayta urinib ko'ring."
-      };
+    const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Object.assign({}, DEFAULT_PAYMENT_REQUISITES, (parsed && parsed.paymentRequisites) || {});
+  } catch (e) {
+    console.error('settings.json (paymentRequisites) o\'qishda xatolik:', e.message);
+    return Object.assign({}, DEFAULT_PAYMENT_REQUISITES);
+  }
+}
+
+// MUHIM: settings.json kelgusida boshqa umumiy sozlamalarni ham saqlashi
+// mumkin bo'lgani uchun, bu funksiya butun faylni EMAS, faqat
+// paymentRequisites bo'limini almashtiradi — mavjud boshqa kalitlar (agar
+// bo'lsa) saqlanib qoladi.
+function savePaymentRequisites(requisites) {
+  let current = {};
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      current = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) || {};
     }
+  } catch (e) {
+    console.error('settings.json o\'qishda xatolik (saqlashdan oldin):', e.message);
+  }
+  current.paymentRequisites = Object.assign({}, DEFAULT_PAYMENT_REQUISITES, current.paymentRequisites || {}, requisites || {});
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(current, null, 2));
+  } catch (e) {
+    console.error('settings.json yozishda xatolik:', e.message);
+  }
+  return current.paymentRequisites;
+}
+
+// 75-BOSQICH: "hozir botga/Mini App'ga kirish mumkinmi" degan YAGONA tekshiruv
+// (hisob-kitob-bot'dagi access_control.check_subscription_access() bilan bir
+// xil vazifa). Bitta owner obyekti uchun holatni hisoblaydi:
+//   - pending_trial — admin hali trial muddatini tasdiqlamagan (kirish yo'q).
+//   - subscriptionUntil yo'q (null) — muddatsiz/doimiy ruxsat.
+//   - subscriptionUntil hali o'tmagan — faol, daysLeft bilan.
+//   - subscriptionUntil o'tgan, lekin graceUntil (yoki standart
+//     SUBSCRIPTION_GRACE_DAYS) ichida — hali ruxsat bor, lekin inGrace:true
+//     (⏳ ogohlantirish uchun, keyingi bosqichda ishlatiladi).
+//   - graceUntil ham o'tgan — bloklangan.
+// DIQQAT: bu funksiya hali hech qayerdan CHAQIRILMAYDI — faqat tayyorlab
+// qo'yilyapti. Haqiqiy bloklash (Mini App API va bot xabarlari darajasida)
+// keyingi ikkita bosqichda ulanadi.
+function getOwnerSubscriptionAccess(owner) {
+  if (!owner) return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
+
+  if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+    return { allowed: false, status: SUBSCRIPTION_STATUS.PENDING_TRIAL, daysLeft: null, inGrace: false };
   }
 
-  // Tarmoq xatosi holatining umumiy HTML qolipi — to'liq ekran va bitta
-  // konteyner ichida ishlatilishi uchun bir xil ko'rinishda.
-  function networkErrorMarkup(message) {
-    return `
-      <div class="network-error-state">
-        ${icon('wifi-off', 'network-error-icon')}
-        <div class="network-error-title">Aloqa yo'q</div>
-        <div class="network-error-desc">${escapeHtml(message || "Serverga ulanib bo'lmadi.")}</div>
-        <button type="button" class="btn network-error-retry-btn">${icon('refresh')}<span>Qayta urinish</span></button>
-      </div>
-    `;
+  if (!owner.subscriptionUntil) {
+    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: null, inGrace: false };
   }
 
-  // To'liq ekranni tarmoq xatosi holati bilan almashtiradi (masalan ilova
-  // ochilishida asosiy tekshiruv muvaffaqiyatsiz bo'lsa). retryFn — tugma
-  // bosilganda qayta chaqiriladigan funksiya (odatda o'sha yuklovchi funksiyaning o'zi).
-  function renderNetworkErrorScreen(message, retryFn) {
-    ekran(networkErrorMarkup(message));
-    const btn = appEl.querySelector('.network-error-retry-btn');
-    if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
+  const untilMs = new Date(owner.subscriptionUntil).getTime();
+  const now = Date.now();
+  if (Number.isFinite(untilMs) && untilMs > now) {
+    const daysLeft = Math.ceil((untilMs - now) / 86400000);
+    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft, inGrace: false };
   }
 
-  // Faqat bitta konteyner (masalan ro'yxat yoki taxta) ichida tarmoq xatosi
-  // holatini ko'rsatadi — qolgan ekran (sarlavha, boshqa tab'lar) tegilmaydi.
-  function renderNetworkErrorInline(container, message, retryFn) {
-    if (!container) return;
-    container.innerHTML = networkErrorMarkup(message);
-    const btn = container.querySelector('.network-error-retry-btn');
-    if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
+  // Muddat tugagan — graceUntil belgilangan bo'lsa shundan, bo'lmasa
+  // SUBSCRIPTION_GRACE_DAYS asosida standart muhlat hisoblanadi.
+  const graceMs = owner.graceUntil
+    ? new Date(owner.graceUntil).getTime()
+    : (Number.isFinite(untilMs) ? untilMs + SUBSCRIPTION_GRACE_DAYS * 86400000 : NaN);
+  if (Number.isFinite(graceMs) && graceMs > now) {
+    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: 0, inGrace: true };
   }
 
-  // ---- 60-bosqich: tarifda yo'q funksiyaga kirish bloklanganda ko'rsatiladigan
-  // aniq va tushunarli xabar. Server bunday holatda {ok:false, blockedFeature:true,
-  // reason, featureId} qaytaradi (qarang: server.js — ownerCanUseFeature/
-  // featureBlockedResult, 59-60-bosqich). Bu — oddiy "Xatolik yuz berdi" bilan
-  // aralashib ketmasligi uchun alohida, qulf ikonkali va ogohlantirish rangidagi
-  // ko'rinish: (1) butun bo'lim bloklanganda konteyner ichida (masalan AI tahlil),
-  // (2) bitta amal (masalan "aksiya qo'shish") rad etilganda — alohida modal.
-  function featureBlockedMarkup(message) {
-    return `
-      <div class="feature-blocked-state">
-        ${icon('lock', 'feature-blocked-icon')}
-        <div class="feature-blocked-title">Bu funksiya yopilgan</div>
-        <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
-      </div>
-    `;
+  return { allowed: false, status: SUBSCRIPTION_STATUS.BLOCKED, daysLeft: null, inGrace: false };
+}
+
+// Foydalanuvchi ID bo'yicha (admin/owner/xodim — kim bo'lishidan qat'iy
+// nazar) yagona tekshiruv. `owners` ixtiyoriy — chaqiruvchi allaqachon
+// loadOwners() qilgan bo'lsa, qayta o'qimaslik uchun uzatilishi mumkin.
+function checkSubscriptionAccess(userId, owners) {
+  if (isAdminId(userId)) {
+    return { allowed: true, status: 'admin', daysLeft: null, inGrace: false };
   }
 
-  function renderFeatureBlockedInline(container, message) {
-    if (!container) return;
-    container.innerHTML = featureBlockedMarkup(message);
+  const list = owners || loadOwners();
+
+  const owner = findOwner(list, userId);
+  if (owner) return getOwnerSubscriptionAccess(owner);
+
+  const staffInfo = findStaffInfo(list, userId);
+  if (staffInfo) {
+    const staffOwner = list.find(o => String(o.id) === String(staffInfo.ownerId));
+    return getOwnerSubscriptionAccess(staffOwner);
   }
 
-  // Bitta amal (tugma bosish) tarif tomonidan rad etilganda chaqiriladi —
-  // xuddi shu ekrandagi "xabar" matni bilan bir qatorda, ko'zga aniq
-  // tashlanadigan alohida oyna sifatida ham ko'rsatiladi.
-  function showFeatureBlockedModal(message) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal feature-blocked-modal" style="max-width:340px;">
-        <div class="feature-blocked-icon-wrap">${icon('lock')}</div>
-        <div class="feature-blocked-title">Bu funksiya yopilgan</div>
-        <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
-        <div class="btn-row"><button class="btn" id="featureBlockedOkBtn">Tushunarli</button></div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.getElementById('featureBlockedOkBtn').onclick = () => overlay.remove();
+  return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
+}
+
+// 77-BOSQICH: Mini App API darajasida bloklash. `resolveOwnerContext()` (va
+// bir nechta joyda to'g'ridan-to'g'ri `isOwnerAccessValid()`) allaqachon
+// muddati (grace period bilan) chindan tugagan egalar/xodimlarni "topilmadi"
+// (null / ruxsat yo'q) deb hisoblab, ularni amaldagi funksiyalarga
+// kiritmaydi — ya'ni HAQIQIY bloklash allaqachon ishlayapti.
+//
+// Lekin bu holatda frontend'ga qaytadigan xabar boshqa har qanday "ruxsat
+// yo'q" holati (masalan, umuman ro'yxatdan o'tmagan begona foydalanuvchi)
+// bilan bir xil edi — frontend ular orasidagi farqni bilolmasdi, shuning
+// uchun ✋ "obunani uzaytiring" ekranini emas, oddiy xato xabarini ko'rsatib
+// qo'yardi. Quyidagi ikkita funksiya shu farqni chiqaradi:
+//   - getBlockedOwnerAccess(): userId biror EGA yoki XODIM ekanini (hatto
+//     bloklangan bo'lsa ham) aniqlaydi va aynan SHU sabab (obuna) tufayli
+//     ruxsat yo'qligini alohida ko'rsatadi (aks holda null qaytaradi —
+//     ya'ni muammo obunada emas, masalan foydalanuvchi umuman egasi/xodim
+//     emas yoki roli mos kelmayapti).
+//   - subscriptionBlockedJSON(): endpoint javobini tayyorlaydi — agar sabab
+//     aynan obuna bo'lsa maxsus { reason:'subscription_blocked', access }
+//     shaklida, aks holda avvalgidek oddiy fallbackReason bilan.
+function getBlockedOwnerAccess(owners, userId) {
+  if (isAdminId(userId)) return null;
+
+  const owner = findOwner(owners, userId);
+  if (owner) {
+    const access = getOwnerSubscriptionAccess(owner);
+    return access.allowed ? null : access;
   }
 
-  // Umumiy yordamchi: apiPost natijasi tarif bloklashi bo'lsa modal ko'rsatadi
-  // va true qaytaradi (chaqiruvchi joy o'zining odatiy "xabar" matnini ham
-  // pastda qoldirishi mumkin); aks holda false qaytaradi.
-  function handleFeatureBlocked(res) {
-    if (res && res.blockedFeature) { showFeatureBlockedModal(res.reason); return true; }
+  const staffInfo = findStaffInfo(owners, userId);
+  if (staffInfo) {
+    const staffOwner = owners.find(o => String(o.id) === String(staffInfo.ownerId));
+    const access = getOwnerSubscriptionAccess(staffOwner);
+    return access.allowed ? null : access;
+  }
+
+  return null;
+}
+
+function subscriptionBlockedJSON(owners, userId, fallbackReason) {
+  const access = getBlockedOwnerAccess(owners, userId);
+  if (access) return { ok: false, reason: 'subscription_blocked', access };
+  return { ok: false, reason: fallbackReason };
+}
+
+// 79-BOSQICH: Telegram bot darajasida bloklash (8-bosqichdagi Mini App API
+// bloklashning bot tomonidagi jufti — hisob-kitob-bot'dagi
+// OwnerOnlyMiddleware._send_blocked_screen andozasida). Owner yoki uning
+// xodimi bot ichida biror amal (guruh biriktirish, buyurtmani "qabul
+// qilish"/"tayyor" deb belgilash, to'lovni tasdiqlash va h.k.) bajarmoqchi
+// bo'lganda, lekin obunasi (grace period bilan birga) chindan tugagan
+// bo'lsa — shu ekran chiqadi. `/start` va kelgusi "Ro'yxatdan o'tish"
+// (10-bosqich) bu tekshiruvdan MUSTASNO — ular har doim ishlaydi, chunki
+// ular handleStartCommand() ichida, bu funksiyani chaqirmasdan alohida
+// ishlaydi.
+async function sendSubscriptionBlockedScreen(chatId, access) {
+  // 10-bosqich: o'zi ro'yxatdan o'tgan, lekin admin hali tasdiqlamagan
+  // ("pending_trial") holat — "obunangiz TUGAGAN" degan matn noto'g'ri
+  // bo'lardi (u hali boshlanmagan ham), shuning uchun alohida xabar.
+  if (access.status === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+    await sendMessage(chatId,
+      "🕓 <b>So'rovingiz hali ko'rib chiqilmoqda</b>\n" +
+      "Administrator tasdiqlagach, sizga xabar boradi va Mini App ochiladi.");
+    return;
+  }
+  const graceNote = access.inGrace ? '\n(Muhlat davri ham tugadi.)' : '';
+  await sendMessage(chatId,
+    `⛔ <b>Obunangiz tugagan</b>\nBotdagi va Mini App'dagi amallar vaqtincha bloklandi.${graceNote}\n` +
+    `Ma'lumotlaringiz (menyu, xodimlar, buyurtmalar tarixi) saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.`,
+    { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
+}
+
+// Berilgan ownerId (callback_data'dagi) egasi obuna sababli bloklanganmi —
+// tekshiradi, bloklangan bo'lsa callback'ga qisqa javob + shaxsiy chatga
+// to'liq bloklash ekranini yuboradi va true qaytaradi (chaqiruvchi shu
+// holda darhol `return` qilishi kerak). Bloklanmagan bo'lsa false qaytadi.
+async function guardCallbackSubscription(cq, owners, ownerId) {
+  const owner = findOwner(owners, ownerId);
+  const access = getOwnerSubscriptionAccess(owner);
+  if (access.allowed) return false;
+  await answerCallbackQuery(cq.id, '⛔ Obuna muddati tugagan.', true);
+  await sendSubscriptionBlockedScreen(cq.from.id, access);
+  return true;
+}
+
+// ---- 50-bosqich: admin uchun "System status" paneli uchun kichik metrikalar ----
+// Faqat xotirada saqlanadi (server qayta ishga tushsa — 0'dan boshlanadi),
+// bazaga yozilmaydi — shunchaki joriy server holatini ko'rsatish uchun.
+const SERVER_STARTED_AT = new Date().toISOString();
+const webhookStats = { received: 0, errors: 0, lastAt: null };
+
+function verifyTelegramInitData(initData, botToken) {
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  if (!hash) return { ok: false, reason: 'hash yo\'q' };
+  params.delete('hash');
+
+  const pairs = [];
+  for (const [key, value] of params.entries()) {
+    pairs.push(`${key}=${value}`);
+  }
+  pairs.sort();
+  const dataCheckString = pairs.join('\n');
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+  if (computedHash !== hash) {
+    return { ok: false, reason: 'imzo mos emas (soxta so\'rov)' };
+  }
+
+  // auth_date freshness tekshiruvi (24 soatdan eski bo'lsa rad etamiz)
+  const authDate = parseInt(params.get('auth_date') || '0', 10);
+  const now = Math.floor(Date.now() / 1000);
+  if (now - authDate > 86400) {
+    return { ok: false, reason: 'sessiya eskirgan' };
+  }
+
+  const userRaw = params.get('user');
+  let user = null;
+  try { user = userRaw ? JSON.parse(userRaw) : null; } catch (e) {}
+
+  return { ok: true, user };
+}
+
+// ====== Login/parol orqali kirish (oshxona egasi uchun, Telegram tashqarisidan ham) ======
+// Admin har bir oshxona egasiga login+parol biriktirib qo'yishi mumkin (owner.login,
+// owner.passwordHash — "tuz:hash" ko'rinishida, scrypt bilan). Owner shu login/parol
+// bilan /api/owner-login orqali kirsa, unga "sess_<token>" ko'rinishidagi sessiya
+// beriladi — frontend buni xuddi Telegram initData o'rniga ishlatadi. Shu sababli
+// pastdagi verifyAuth() BARCHA endpoint'larda verifyTelegramInitData o'rniga
+// chaqiriladi va ikkala usulni ham (Telegram initData YOKI sess_ token) tushunadi —
+// shu bilan minglab qatordagi endpoint kodini o'zgartirmasdan ikkala kirish usuli ham ishlaydi.
+const SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 kun
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  if (!stored || typeof stored !== 'string' || !stored.includes(':')) return false;
+  const [salt, hash] = stored.split(':');
+  try {
+    const computed = crypto.scryptSync(String(password), salt, 64).toString('hex');
+    const a = Buffer.from(hash, 'hex');
+    const b = Buffer.from(computed, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) {
     return false;
   }
+}
 
-  // Ikonografiya (9-bosqich): #icon-sprite ichidagi <symbol>ga ishora qiluvchi
-  // <svg><use> yasovchi yagona yordamchi. name — sprite'dagi "icon-" dan keyingi
-  // qism (masalan 'box' → #icon-box). extraClass ixtiyoriy (masalan 'icon-lg icon-danger').
-  function icon(name, extraClass) {
-    return `<svg class="icon${extraClass ? ' ' + extraClass : ''}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
-  }
+function normalizeLogin(login) {
+  return String(login || '').trim().toLowerCase();
+}
 
-  // App shell (10-bosqich): #appHeader #app'dan tashqarida bo'lgani uchun
-  // ekran() uni tozalamaydi — bir marta o'rnatilsa, ichki navigatsiyalar davomida
-  // (tab almashish, ekranlar orasida o'tish) o'zgarmay tepada turadi.
-  const appHeaderEl = document.getElementById('appHeader');
-  // 11-bosqich: roleLabel — ixtiyoriy uchinchi parametr. Berilsa, header'ning
-  // o'ng chetida doimiy rol-belgisi (masalan "Kassir", "Egasi") ko'rsatiladi,
-  // shu bilan foydalanuvchi ilova ichida qayerda bo'lishidan qat'iy nazar
-  // o'zining rolini har doim ko'rib turadi.
-  // onRoleSwitch — ixtiyoriy to'rtinchi parametr: berilsa (bir nechta
-  // vakolatli xodim uchun), rol belgisi yonida "🔁" tugmasi chiqadi, bosilsa
-  // shu funksiya chaqiriladi (qarang: staffRoleSwitchHandler).
-  function setAppHeader(logoUrl, name, roleLabel, onRoleSwitch) {
-    if (!name) { clearAppHeader(); return; }
-    appHeaderEl.innerHTML = `
-      ${logoUrl
-        ? `<img class="app-header-logo" src="${escapeHtml(logoUrl)}" onerror="this.outerHTML='<div class=&quot;app-header-logo-fallback&quot;>${icon('restaurant', 'icon-xs').replace(/"/g, '&quot;')}</div>'">`
-        : `<div class="app-header-logo-fallback">${icon('restaurant', 'icon-xs')}</div>`}
-      <div class="app-header-name">${escapeHtml(name)}</div>
-      ${roleLabel ? `<span class="app-header-role-badge">${escapeHtml(roleLabel)}</span>` : ''}
-      ${onRoleSwitch ? `<button type="button" class="app-header-role-switch-btn" id="appHeaderRoleSwitchBtn" title="Rol almashtirish">${icon('refresh', 'icon-xs')}</button>` : ''}
-    `;
-    appHeaderEl.classList.remove('hidden');
-    if (onRoleSwitch) {
-      const btn = document.getElementById('appHeaderRoleSwitchBtn');
-      if (btn) btn.addEventListener('click', onRoleSwitch);
+// initData ham Telegram'dan (imzolangan), ham login/parol orqali olingan
+// "sess_<token>" bo'lishi mumkin — shu yerda ikkalasi ham tekshiriladi va
+// natija har doim bir xil shaklda ({ok, user:{id,...}} yoki {ok:false, reason})
+// qaytariladi, shunda pastdagi barcha /api/... endpoint'lar o'zgarishsiz ishlayveradi.
+function verifyAuth(initData) {
+  if (typeof initData === 'string' && initData.startsWith('sess_')) {
+    const token = initData.slice('sess_'.length);
+    const owners = loadOwners();
+    const owner = owners.find(o => o.sessionToken === token);
+    if (!owner) return { ok: false, reason: 'Sessiya topilmadi. Iltimos, qaytadan login/parol bilan kiring.' };
+    if (!owner.sessionExpiresAt || new Date(owner.sessionExpiresAt).getTime() < Date.now()) {
+      return { ok: false, reason: 'Sessiya muddati tugagan. Iltimos, qaytadan login/parol bilan kiring.' };
     }
-  }
-  function clearAppHeader() {
-    appHeaderEl.classList.add('hidden');
-    appHeaderEl.innerHTML = '';
-  }
-
-  function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, c => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
-  }
-
-  // =========================================================================
-  // BREND RANGI (25-27-bosqich): tanlangan bitta asosiy rangdan barcha
-  // bog'liq tokenlar (to'q soya, och foniy, ustidagi matn rangi) avtomatik
-  // hisoblanadi — shu bilan har bir oshxona egasi faqat bitta rang tanlasa
-  // kifoya, qolgani WCAG kontrast formulasi asosida o'zi to'g'irlanadi.
-  // =========================================================================
-  const BRAND_COLOR_PRESETS = ['#E4232A', '#E67E22', '#1E8A55', '#12897E', '#1E6FD9', '#7B3FE4', '#D63384', '#2B2E33'];
-  const DEFAULT_BRAND_COLOR = '#E4232A';
-
-  function isValidHexColor(hex) {
-    return typeof hex === 'string' && /^#[0-9A-Fa-f]{6}$/.test(hex);
-  }
-  function hexToRgb(hex) {
-    const h = hex.replace('#', '');
-    const num = parseInt(h, 16);
-    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
-  }
-  function rgbToHex({ r, g, b }) {
-    const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
-    return '#' + [r, g, b].map(v => clamp(v).toString(16).padStart(2, '0')).join('');
-  }
-  function relativeLuminance({ r, g, b }) {
-    const chan = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
-  }
-  function contrastRatio(hexA, hexB) {
-    const lA = relativeLuminance(hexToRgb(hexA));
-    const lB = relativeLuminance(hexToRgb(hexB));
-    const [lighter, darker] = lA > lB ? [lA, lB] : [lB, lA];
-    return (lighter + 0.05) / (darker + 0.05);
-  }
-  // Berilgan fon rangi ustiga oq yoki qora matn qo'yilsa qaysi biri o'qilishi
-  // osonroq bo'lishini WCAG kontrast nisbati bo'yicha tanlaydi.
-  // 30-bosqich QA: taqqoslash #111111 (yumshoq qora) bilan emas, aynan
-  // #000000 bilan qilinadi — chunki ba'zi o'rta-to'qlikdagi asosiy ranglar
-  // (masalan yashil/farrux ko'k preset) #111111'ga nisbatan ham, oq rangga
-  // nisbatan ham WCAG AA (4.5:1) chegarasidan sal past qolar edi.
-  function pickOnColor(hex) {
-    return contrastRatio(hex, '#FFFFFF') >= contrastRatio(hex, '#000000') ? '#FFFFFF' : '#000000';
-  }
-  function mixColor(hex, towardHex, amount) {
-    const a = hexToRgb(hex), b = hexToRgb(towardHex);
-    return rgbToHex({ r: a.r + (b.r - a.r) * amount, g: a.g + (b.g - a.g) * amount, b: a.b + (b.b - a.b) * amount });
-  }
-  // 30-bosqich QA: 18%/90% qat'iy foizlar ba'zi ranglar uchun (masalan
-  // to'q sariq preset, och sariq/oq maxsus tanlov) yorug' fon + to'q matn
-  // juftligini 4.5:1 chegarasidan pastda qoldirardi. Shu sababli ajratish
-  // darajasi moslashuvchan: kontrast yetarli bo'lguncha asta oshiriladi.
-  function deriveBrandShades(base) {
-    let darkAmt = 0.18, lightAmt = 0.90;
-    let dark = mixColor(base, '#000000', darkAmt);
-    let light = mixColor(base, '#FFFFFF', lightAmt);
-    let guard = 0;
-    while (contrastRatio(light, dark) < 4.5 && guard < 60) {
-      if (darkAmt < 0.85) darkAmt += 0.025;
-      if (lightAmt < 0.97) lightAmt += 0.01;
-      dark = mixColor(base, '#000000', darkAmt);
-      light = mixColor(base, '#FFFFFF', lightAmt);
-      guard++;
-    }
-    return { dark, light };
-  }
-  // 26-bosqich: hisoblangan kontrastni foydalanuvchiga ko'rsatish (matn/tugma
-  // rangi ustidagi rang bilan WCAG AA me'yoriga [>=4.5:1] mosligini tekshiradi).
-  function brandContrastInfoHtml(hex) {
-    const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
-    const onColor = pickOnColor(base);
-    const ratio = contrastRatio(base, onColor);
-    const ok = ratio >= 4.5;
-    return `
-      <div class="brand-preview-contrast ${ok ? 'ok' : 'warn'}">
-        ${icon(ok ? 'check' : 'warning', 'icon-xs')}
-        Kontrast nisbati: ${ratio.toFixed(1)}:1 — ${ok ? "matn yaxshi o'qiladi (WCAG AA)" : "past, matn qiyin o'qilishi mumkin"}
-      </div>
-    `;
-  }
-
-  // Bitta asosiy rangdan --brand-primary-dark / --brand-primary-light /
-  // --brand-on-primary'ni hisoblab, :root ustiga qo'yadi (jonli ko'rish —
-  // 29-bosqich: saqlashdan oldin ham darhol ko'rinadi).
-  function applyBrandColor(hex) {
-    const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
-    const { dark, light } = deriveBrandShades(base);
-    const root = document.documentElement.style;
-    root.setProperty('--brand-primary', base);
-    root.setProperty('--brand-primary-dark', dark);
-    root.setProperty('--brand-primary-light', light);
-    root.setProperty('--brand-on-primary', pickOnColor(base));
-  }
-  // 27-bosqich: qo'llanish doirasi qoidasi — admin paneli yoki hali hech
-  // qaysi oshxonaga bog'lanmagan ekranlar uchun standart rangga qaytaradi.
-  function resetBrandColor() {
-    const root = document.documentElement.style;
-    root.removeProperty('--brand-primary');
-    root.removeProperty('--brand-primary-dark');
-    root.removeProperty('--brand-primary-light');
-    root.removeProperty('--brand-on-primary');
-  }
-
-  function brandSwatchesHtml(current, shopName) {
-    const cur = isValidHexColor(current) ? current.toUpperCase() : DEFAULT_BRAND_COLOR;
-    const isPreset = BRAND_COLOR_PRESETS.map(c => c.toUpperCase()).includes(cur);
-    const name = shopName ? escapeHtml(shopName) : "Sizning oshxonangiz";
-    return `
-      <div class="brand-color-swatches" id="brandSwatches">
-        ${BRAND_COLOR_PRESETS.map(c => `
-          <button type="button" class="brand-swatch ${cur === c.toUpperCase() ? 'selected' : ''}" data-brand-color="${c}" style="background:${c};" aria-label="${c}">
-            ${cur === c.toUpperCase() ? icon('check', 'icon-xs') : ''}
-          </button>
-        `).join('')}
-        <label class="brand-swatch brand-swatch-custom ${!isPreset ? 'selected' : ''}" style="${!isPreset ? `background:${cur};` : ''}" title="Boshqa rang">
-          <input type="color" id="brandColorCustom" value="${cur}">
-          ${!isPreset ? icon('check', 'icon-xs') : ''}
-        </label>
-      </div>
-      <div class="brand-color-preview" id="brandColorPreview">
-        <span class="brand-preview-label">Namuna ko'rinish — o'zgarishlar darhol, saqlashdan oldin ham ko'rinadi:</span>
-        <div class="brand-preview-header">
-          <span class="brand-preview-logo">${icon('restaurant', 'icon-xs')}</span>
-          <span class="brand-preview-shop-name">${name}</span>
-          <span class="role-badge">Egasi</span>
-        </div>
-        <div class="brand-preview-row">
-          <button type="button" class="btn">Buyurtma berish</button>
-          <button type="button" class="btn ikkinchi">Bekor qilish</button>
-        </div>
-        <div class="brand-preview-row">
-          <span class="badge paid">Bonus: 120 ball</span>
-          <span class="badge warning">Kutilmoqda</span>
-        </div>
-        <div id="brandPreviewContrast">${brandContrastInfoHtml(cur)}</div>
-      </div>
-    `;
-  }
-  // Palitra/moslashtirilgan rang tanlagichini formaga ulaydi. onChange(hex)
-  // har bir tanlashda chaqiriladi (jonli ko'rish uchun darhol qo'llash).
-  function attachBrandSwatchHandlers(onChange) {
-    const wrap = document.getElementById('brandSwatches');
-    if (!wrap) return;
-    const updateContrast = (hex) => {
-      const el = document.getElementById('brandPreviewContrast');
-      if (el) el.innerHTML = brandContrastInfoHtml(hex);
-    };
-    wrap.querySelectorAll('[data-brand-color]').forEach(btn => btn.addEventListener('click', () => {
-      wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
-      btn.classList.add('selected');
-      btn.innerHTML = icon('check', 'icon-xs');
-      const hex = btn.getAttribute('data-brand-color');
-      onChange(hex);
-      updateContrast(hex);
-    }));
-    const customInput = document.getElementById('brandColorCustom');
-    if (customInput) customInput.addEventListener('input', (e) => {
-      const hex = e.target.value;
-      wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
-      const label = customInput.closest('.brand-swatch-custom');
-      label.classList.add('selected');
-      label.style.background = hex;
-      onChange(hex);
-      updateContrast(hex);
-    });
-  }
-
-  // Galereyadan tanlangan rasm faylini o'qib, hajmini kichraytirib (max 800px),
-  // JPEG base64 data URL shaklida qaytaradi — server hajmi cheklangan bo'lgani uchun kerak.
-  function readImageFileAsCompressedDataUrl(file, maxSize = 800, quality = 0.72) {
-    return new Promise((resolve, reject) => {
-      if (!file) return resolve(null);
-      if (!file.type || !file.type.startsWith('image/')) {
-        return reject(new Error('Fayl rasm emas.'));
-      }
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Faylni o\'qib bo\'lmadi.'));
-      reader.onload = () => {
-        const img = new Image();
-        img.onerror = () => reject(new Error('Rasmni ochib bo\'lmadi.'));
-        img.onload = () => {
-          let { width, height } = img;
-          if (width > height && width > maxSize) {
-            height = Math.round(height * (maxSize / width));
-            width = maxSize;
-          } else if (height > maxSize) {
-            width = Math.round(width * (maxSize / height));
-            height = maxSize;
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', quality));
-        };
-        img.src = reader.result;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
-  // ---- Admin panelini chizish ----
-  function expiryText(o) {
-    if (!o.expiresAt) return 'Doimiy ruxsat';
-    const ms = new Date(o.expiresAt).getTime() - Date.now();
-    if (ms <= 0) return 'Muddati tugagan';
-    const days = Math.ceil(ms / 86400000);
-    return `${days} kun qoldi`;
-  }
-
-  // 17-bosqich: muddatli obunalar uchun vizual progress-bar — necha foiz
-  // muddat o'tganini (addedAt'dan expiresAt'gacha bo'lgan davr ichida)
-  // ko'rsatadi. Doimiy ruxsat (expiresAt=null) uchun hech narsa chizmaydi.
-  function subscriptionProgressHtml(o) {
-    if (!o.expiresAt) return '';
-    const expiresMs = new Date(o.expiresAt).getTime();
-    const startedMs = o.addedAt ? new Date(o.addedAt).getTime() : NaN;
-    const nowMs = Date.now();
-    const totalMs = Number.isFinite(startedMs) ? expiresMs - startedMs : NaN;
-    // addedAt bo'lmasa yoki noto'g'ri bo'lsa (masalan eski yozuv), faqat
-    // "qolgan vaqt"ni umumiy 30 kunlik oyga nisbatan taxminiy ko'rsatamiz.
-    const remainingMs = expiresMs - nowMs;
-    const remainingPercent = Number.isFinite(totalMs) && totalMs > 0
-      ? Math.max(0, Math.min(100, Math.round((remainingMs / totalMs) * 100)))
-      : Math.max(0, Math.min(100, Math.round((remainingMs / (30 * 86400000)) * 100)));
-    let statusClass = 'ok';
-    if (remainingMs <= 0) statusClass = 'danger';
-    else if (remainingPercent <= 20) statusClass = 'danger';
-    else if (remainingPercent <= 50) statusClass = 'warn';
-    return `
-      <div class="subscription-progress ${statusClass}" role="progressbar" aria-valuenow="${remainingPercent}" aria-valuemin="0" aria-valuemax="100" aria-label="Obuna muddati">
-        <div class="subscription-progress-track">
-          <div class="subscription-progress-fill" style="width:${remainingPercent}%;"></div>
-        </div>
-      </div>
-    `;
-  }
-
-  function ownerSearchKey(o) {
-    return [(o.profile && o.profile.name) || '', o.username || '', o.id]
-      .join(' ')
-      .toLowerCase();
-  }
-
-  // 57-bosqich: do'kon egasiga biriktirilgan tarifni ko'rsatish/tanlash
-  // uchun oxirgi yuklangan tariflar ro'yxati shu yerda keshlanadi (owner
-  // qatoridagi select shundan to'ldiriladi).
-  let tariffCacheForOwners = [];
-  function ownerTariffLabel(tariffId) {
-    if (!tariffId) return 'Tarif belgilanmagan';
-    const t = tariffCacheForOwners.find(x => x.id === tariffId);
-    return t ? t.name : 'Tarif belgilanmagan';
-  }
-
-  function ownerItemHtml(o) {
-    return `
-      <div class="owner-item owner-item-detailed" data-search-key="${escapeHtml(ownerSearchKey(o))}">
-        <div class="owner-item-head">
-          <div class="owner-avatar">${escapeHtml((((o.profile && o.profile.name) || o.username || String(o.id) || '#').trim().charAt(0) || '#').toUpperCase())}</div>
-          <div class="owner-item-heading">
-            <div class="owner-item-top">
-              <span class="owner-id">${escapeHtml(o.id)}</span>
-              <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}">
-                ${o.paid ? icon('check', 'icon-xs') + " To'langan" : icon('x', 'icon-xs') + ' Qarzdor'}
-              </span>
-            </div>
-            ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
-            ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
-          </div>
-          <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
-        </div>
-
-        <div class="owner-field-list">
-          <div class="owner-field" data-edit-expiry="${escapeHtml(o.id)}" data-expiry-current="${o.expiresAt ? escapeHtml(o.expiresAt) : ''}">
-            <span class="owner-field-icon">${icon('clock', 'icon-xs')}</span>
-            <span class="owner-field-value">${escapeHtml(expiryText(o))}</span>
-            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
-          </div>
-          ${subscriptionProgressHtml(o)}
-          <div class="owner-field" data-edit-price="${escapeHtml(o.id)}">
-            <span class="owner-field-icon">${icon('card', 'icon-xs')}</span>
-            <span class="owner-field-value">${o.price ? escapeHtml(String(o.price)) + " so'm/oy" : 'Narx kiritilmagan'}</span>
-            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
-          </div>
-          <div class="owner-field" data-edit-credentials="${escapeHtml(o.id)}">
-            <span class="owner-field-icon">${icon('user', 'icon-xs')}</span>
-            <span class="owner-field-value">${o.hasLogin ? `Login: ${escapeHtml(o.login)}` : 'Login/parol o\'rnatilmagan'}</span>
-            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
-          </div>
-          <div class="owner-field" data-edit-tariff="${escapeHtml(o.id)}">
-            <span class="owner-field-icon">${icon('star', 'icon-xs')}</span>
-            <span class="owner-field-value">${escapeHtml(ownerTariffLabel(o.tariffId))}</span>
-            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  async function renderAdminPanel(owners, revenue) {
-    setAppHeader(null, 'KitchenOS', 'Admin');
-    const nowMs = Date.now();
-    const totalCount = owners.length;
-    const activeCount = owners.filter(o => !o.expiresAt || new Date(o.expiresAt).getTime() > nowMs).length;
-    const expiringSoonCount = owners.filter(o => {
-      if (!o.expiresAt) return false;
-      const ms = new Date(o.expiresAt).getTime() - nowMs;
-      return ms > 0 && ms <= 3 * 86400000;
-    }).length;
-    const unpaidCount = owners.filter(o => !o.paid).length;
-    // 67-bosqich: admin dashboardida umumiy daromad — payments.json (to'liq
-    // to'lovlar tarixi) asosida hisoblanadi (server, /api/owners), shu bilan
-    // "Bu oy" va "Jami" haqiqiy tarixiy summalar (owner o'chirilgan/tarifi
-    // o'zgargan taqdirda ham to'g'ri qoladi). "Kutilmoqda" — hozirgi
-    // qarzdorlarning obuna narxlari yig'indisi (kelgusi kutilayotgan tushum).
-    const thisMonthRevenue = revenue ? revenue.thisMonth : 0;
-    const lifetimeRevenue = revenue ? revenue.totalLifetime : 0;
-    const pendingRevenue = owners.filter(o => !o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
-
-    const statsHtml = `
-      <div class="ko-kpi-grid admin-stats-grid">
-        ${koKpiCardHtml('users', 'Jami egalar', String(totalCount), null)}
-        ${koKpiCardHtml('check-circle', 'Faol', String(activeCount), null)}
-        ${koKpiCardHtml('clock', 'Muddati yaqin', String(expiringSoonCount), null)}
-        ${koKpiCardHtml('wallet', "Qarzdor", String(unpaidCount), null)}
-        ${koKpiCardHtml('card', "Bu oy daromad", cfFormatSum(thisMonthRevenue), null)}
-        ${koKpiCardHtml('trending-up', "Jami daromad", cfFormatSum(lifetimeRevenue), null)}
-        ${koKpiCardHtml('warning', "Kutilmoqda (qarzdor)", cfFormatSum(pendingRevenue), null)}
-      </div>
-    `;
-
-    // Admin panel endi bo'limlarga bo'lingan: bosh ekranda faqat umumiy
-    // statistika va bo'limlarga o'tish menyusi, har bir bo'lim (egalar
-    // ro'yxati, yangi ega qo'shish, tariflar, tizim holati) o'z alohida
-    // ekraniga ega — avvalgi bitta uzun sahifa o'rniga.
-    ekran(`
-      <div class="panel has-ko-bottom-nav">
-        <div class="salom">Salom, admin</div>
-        <div class="bosh admin-subtitle">Quyidagi bo'limlardan birini tanlang.</div>
-
-        ${statsHtml}
-
-        <div class="ko-menu-grid admin-menu-grid">
-          ${adminMenuItemHtml({ key: 'egalar', icon: 'users', label: "Do'kon egalari" })}
-          ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
-          ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
-          ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
-        </div>
-      </div>
-      ${adminBottomNavHtml('bosh')}
-    `);
-
-    const goBack = () => loadOwnersAndRender();
-    document.querySelectorAll('.admin-menu-grid [data-admin-menu-key]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const key = btn.getAttribute('data-admin-menu-key');
-        if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
-        if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
-        if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
-        if (key === 'tizim') { loadAndShowSystemStatus(); return; }
-      });
-    });
-    wireAdminBottomNav(owners, goBack);
-  }
-
-  // Admin panelning pastki navigatsiyasi — Bosh sahifadagi katakchalar bilan
-  // bir xil 4 bo'limga o'tadi (egalar, yangi ega, tariflar, tizim), lekin
-  // do'kon egasi ekranidagi (ko-bottom-nav) kabi doimiy, katta iconli va
-  // markazda FAB'li panel ko'rinishida — bir xil CSS klasslar qayta
-  // ishlatiladi, shu sababli icon o'lchamlari bir xil "katta" bo'ladi.
-  function adminBottomNavHtml(activeKey) {
-    return `
-      <div class="ko-bottom-nav" id="adminBottomNav">
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'bosh' ? 'active' : ''}" data-admin-nav="bosh">
-          ${icon('home')}
-          <span>Bosh sahifa</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'egalar' ? 'active' : ''}" data-admin-nav="egalar">
-          ${icon('users')}
-          <span>Egalar</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ko-bottom-nav-fab-item" data-admin-nav="yangiEga">
-          <span class="ko-bottom-nav-fab">${icon('plus')}</span>
-          <span>Yangi ega</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'tariflar' ? 'active' : ''}" data-admin-nav="tariflar">
-          ${icon('star')}
-          <span>Tariflar</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'tizim' ? 'active' : ''}" data-admin-nav="tizim">
-          ${icon('settings')}
-          <span>Tizim</span>
-        </button>
-      </div>
-    `;
-  }
-
-  function wireAdminBottomNav(owners, goBack) {
-    const nav = document.getElementById('adminBottomNav');
-    if (!nav) return;
-    nav.querySelectorAll('[data-admin-nav]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const key = btn.getAttribute('data-admin-nav');
-        if (key === 'bosh') return;
-        if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
-        if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
-        if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
-        if (key === 'tizim') { loadAndShowSystemStatus(); return; }
-      });
-    });
-  }
-
-  function adminMenuItemHtml(item) {
-    return `
-      <button type="button" class="ko-menu-item" data-admin-menu-key="${item.key}">
-        <span class="ko-menu-item-icon">${icon(item.icon)}</span>
-        <span class="ko-menu-item-label">${escapeHtml(item.label)}</span>
-      </button>
-    `;
-  }
-
-  // =========================================================================
-  // Admin bo'limi: "Do'kon egalari" — ro'yxat, qidiruv va har bir ega
-  // ustidagi tahrirlash amallari (to'lov holati, muddat, narx, login/parol,
-  // tarif, o'chirish). Har qanday amaldan keyin shu ekranning o'zi qayta
-  // yuklanadi (bosh sahifaga qaytarilmaydi) — shu bilan bir nechta amalni
-  // ketma-ket bajarish qulayroq.
-  // =========================================================================
-  async function reloadAdminOwnersScreen(goBack) {
-    const res = await apiPost('/api/owners', { initData });
-    if (res.networkError) { renderNetworkErrorScreen(res.reason, () => reloadAdminOwnersScreen(goBack)); return; }
-    renderAdminOwnersScreen(res.ok ? res.owners : [], goBack);
-  }
-
-  async function renderAdminOwnersScreen(owners, goBack) {
-    setAppHeader(null, 'KitchenOS', 'Admin');
-    // 57-bosqich: owner qatorlarida tarif nomini ko'rsatish uchun tariflar
-    // ro'yxatini oldindan yuklab olamiz (bo'sh bo'lsa ham davom etadi).
-    const tariffRes = await apiPost('/api/tariff-list', { initData });
-    if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
-    const totalCount = owners.length;
-
-    const ownersHtml = owners.length
-      ? owners.map(ownerItemHtml).join('')
-      : `
-        <div class="admin-empty-state">
-          ${icon('users', 'icon-lg icon-muted')}
-          <div class="bosh">Hozircha do'kon egalari yo'q.</div>
-        </div>
-      `;
-
-    ekran(`
-      <div class="panel">
-        <button class="btn ikkinchi" id="adminOwnersBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="kartochka">
-          <div class="admin-list-header">
-            <h2>${icon('users', 'icon-xs')} Ruxsat berilgan do'kon egalari</h2>
-            <span class="admin-list-count">${totalCount}</span>
-          </div>
-          ${owners.length > 3 ? `
-            <div class="admin-search-wrap">
-              ${icon('search', 'icon-xs icon-muted admin-search-icon')}
-              <input type="text" id="ownerSearchInput" placeholder="ID, username yoki nom bo'yicha qidirish" autocomplete="off">
-            </div>
-          ` : ''}
-          <div class="owner-list" id="ownerList">${ownersHtml}</div>
-          <div class="bosh admin-no-results hidden" id="ownerNoResults">Hech narsa topilmadi.</div>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('adminOwnersBackBtn').addEventListener('click', goBack);
-
-    const searchInput = document.getElementById('ownerSearchInput');
-    if (searchInput) {
-      searchInput.addEventListener('input', () => {
-        const q = searchInput.value.trim().toLowerCase();
-        const items = document.querySelectorAll('#ownerList .owner-item');
-        let visibleCount = 0;
-        items.forEach(item => {
-          const match = !q || (item.getAttribute('data-search-key') || '').includes(q);
-          item.classList.toggle('hidden', !match);
-          if (match) visibleCount++;
-        });
-        const noResults = document.getElementById('ownerNoResults');
-        if (noResults) noResults.classList.toggle('hidden', !(q && visibleCount === 0));
-      });
-    }
-
-    document.getElementById('ownerList').addEventListener('click', async (e) => {
-      const removeBtn = e.target.closest('[data-remove-id]');
-      if (removeBtn) {
-        removeBtn.disabled = true;
-        await apiPost('/api/remove-owner', { initData, id: removeBtn.getAttribute('data-remove-id') });
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-
-      const toggleEl = e.target.closest('[data-toggle-paid]');
-      if (toggleEl) {
-        const current = toggleEl.getAttribute('data-paid') === '1';
-        await apiPost('/api/update-owner-billing', { initData, id: toggleEl.getAttribute('data-toggle-paid'), paid: !current });
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-
-      const editEl = e.target.closest('[data-edit-price]');
-      if (editEl && !editEl.querySelector('input')) {
-        const editId = editEl.getAttribute('data-edit-price');
-        editEl.innerHTML = `
-          <input type="text" inputmode="numeric" placeholder="Yangi narx" style="margin:0; padding:6px 8px; font-size:13px;" data-price-field="${escapeHtml(editId)}">
-          <button data-save-price="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
-        `;
-      }
-
-      const credEl = e.target.closest('[data-edit-credentials]');
-      if (credEl && !credEl.querySelector('input')) {
-        const editId = credEl.getAttribute('data-edit-credentials');
-        const hasLoginNow = credEl.textContent.includes('Login:');
-        credEl.innerHTML = `
-          <input type="text" placeholder="Login" style="margin:0; padding:6px 8px; font-size:13px;" data-login-field="${escapeHtml(editId)}" autocomplete="off">
-          <input type="text" placeholder="Yangi parol" style="margin:0; padding:6px 8px; font-size:13px;" data-password-field="${escapeHtml(editId)}" autocomplete="off">
-          <button data-save-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
-          ${hasLoginNow ? `<button data-remove-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">O'chirish</button>` : ''}
-        `;
-      }
-
-      const tariffEl = e.target.closest('[data-edit-tariff]');
-      if (tariffEl && !tariffEl.querySelector('select')) {
-        const editId = tariffEl.getAttribute('data-edit-tariff');
-        const owner = owners.find(o => String(o.id) === String(editId));
-        const currentTariffId = owner ? owner.tariffId : null;
-        const optionsHtml = [`<option value="">Tarif belgilanmagan</option>`]
-          .concat(tariffCacheForOwners.map(t => `<option value="${escapeHtml(t.id)}" ${t.id === currentTariffId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`))
-          .join('');
-        tariffEl.innerHTML = `
-          <select data-tariff-field="${escapeHtml(editId)}" style="margin:0; padding:6px 8px; font-size:13px;">${optionsHtml}</select>
-          <button data-save-tariff="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
-        `;
-      }
-
-      // 63/64-bosqich: obuna muddatini uzaytirish/qisqartirish/bekor qilish —
-      // amal turiga qarab kerakli maydon (kun soni yoki aniq sana) ko'rsatiladi
-      // (qarang: pastdagi 'change' tinglovchisi va 'data-save-expiry' saqlash).
-      const expiryEl = e.target.closest('[data-edit-expiry]');
-      if (expiryEl && !expiryEl.querySelector('select')) {
-        const editId = expiryEl.getAttribute('data-edit-expiry');
-        expiryEl.innerHTML = `
-          <select data-expiry-action="${escapeHtml(editId)}" style="margin:0; padding:6px 8px; font-size:13px;">
-            <option value="extend">+ kun qo'shish</option>
-            <option value="setDate">Aniq sanani belgilash</option>
-            <option value="unlimited">Doimiy qilish</option>
-            <option value="cancelNow">Hoziroq bekor qilish</option>
-          </select>
-          <input type="text" inputmode="numeric" placeholder="Necha kun" style="margin:0; padding:6px 8px; font-size:13px; width:80px;" data-expiry-days="${escapeHtml(editId)}">
-          <input type="date" style="margin:0; padding:6px 8px; font-size:13px; display:none;" data-expiry-date="${escapeHtml(editId)}">
-          <button data-save-expiry="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
-        `;
-      }
-    });
-
-    // Amal turi almashtirilganda faqat shu amalga tegishli maydonni (kun
-    // soni yoki sana) ko'rsatadi — qolganini yashiradi.
-    document.getElementById('ownerList').addEventListener('change', (e) => {
-      const sel = e.target.closest('[data-expiry-action]');
-      if (!sel) return;
-      const editId = sel.getAttribute('data-expiry-action');
-      const daysInput = document.querySelector(`input[data-expiry-days="${editId}"]`);
-      const dateInput = document.querySelector(`input[data-expiry-date="${editId}"]`);
-      if (daysInput) daysInput.style.display = sel.value === 'extend' ? '' : 'none';
-      if (dateInput) dateInput.style.display = sel.value === 'setDate' ? '' : 'none';
-    });
-
-    document.getElementById('ownerList').addEventListener('click', async (e) => {
-      const saveId = e.target.getAttribute('data-save-price');
-      if (saveId) {
-        const input = document.querySelector(`input[data-price-field="${saveId}"]`);
-        const val = input ? input.value.trim() : '';
-        if (val && (!/^\d+$/.test(val) || parseInt(val, 10) < 0)) {
-          alert('Narx musbat son bo\'lishi kerak.');
-          return;
-        }
-        await apiPost('/api/update-owner-billing', { initData, id: saveId, price: val || 0 });
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-
-      const saveCredId = e.target.getAttribute('data-save-credentials');
-      if (saveCredId) {
-        const loginInput = document.querySelector(`input[data-login-field="${saveCredId}"]`);
-        const passwordInput = document.querySelector(`input[data-password-field="${saveCredId}"]`);
-        const loginVal = loginInput ? loginInput.value.trim() : '';
-        const passwordVal = passwordInput ? passwordInput.value : '';
-        const res = await apiPost('/api/set-owner-credentials', { initData, id: saveCredId, login: loginVal, password: passwordVal });
-        if (!res.ok) {
-          alert(res.reason || 'Xatolik yuz berdi.');
-          return;
-        }
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-
-      const removeCredId = e.target.getAttribute('data-remove-credentials');
-      if (removeCredId) {
-        await apiPost('/api/remove-owner-credentials', { initData, id: removeCredId });
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-
-      const saveTariffId = e.target.getAttribute('data-save-tariff');
-      if (saveTariffId) {
-        const select = document.querySelector(`select[data-tariff-field="${saveTariffId}"]`);
-        const val = select ? select.value : '';
-        const res = await apiPost('/api/owner-set-tariff', { initData, id: saveTariffId, tariffId: val || null });
-        if (!res.ok) {
-          alert(res.reason || 'Xatolik yuz berdi.');
-          return;
-        }
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-
-      const saveExpiryId = e.target.getAttribute('data-save-expiry');
-      if (saveExpiryId) {
-        const actionSelect = document.querySelector(`select[data-expiry-action="${saveExpiryId}"]`);
-        const action = actionSelect ? actionSelect.value : '';
-        const body = { initData, id: saveExpiryId, action };
-        if (action === 'extend') {
-          const daysInput = document.querySelector(`input[data-expiry-days="${saveExpiryId}"]`);
-          const days = daysInput ? daysInput.value.trim() : '';
-          if (!days || !/^\d+$/.test(days) || parseInt(days, 10) <= 0) {
-            alert('Kun sonini musbat butun son sifatida kiriting.');
-            return;
-          }
-          body.days = days;
-        } else if (action === 'setDate') {
-          const dateInput = document.querySelector(`input[data-expiry-date="${saveExpiryId}"]`);
-          const date = dateInput ? dateInput.value : '';
-          if (!date) {
-            alert('Sanani tanlang.');
-            return;
-          }
-          body.date = date;
-        } else if (action === 'cancelNow') {
-          if (!confirm("Obunani hoziroq bekor qilasizmi? Do'kon egasining Mini App'ga kirishi darhol yopiladi.")) return;
-        }
-        const res = await apiPost('/api/owner-set-expiry', body);
-        if (!res.ok) {
-          alert(res.reason || 'Xatolik yuz berdi.');
-          return;
-        }
-        reloadAdminOwnersScreen(goBack);
-        return;
-      }
-    });
-  }
-
-  // =========================================================================
-  // Admin bo'limi: "Yangi ega qo'shish" — bir martalik taklif havolasi
-  // yaratish va ID/username orqali qo'lda qo'shish, ikkalasi shu bitta
-  // ekranda. Muvaffaqiyatli qo'shilgandan so'ng ekranning o'zida qoladi
-  // (bosh sahifaga qaytarilmaydi) — shu bilan ketma-ket bir nechta ega
-  // qo'shish qulayroq.
-  // =========================================================================
-  function renderAdminAddOwnerScreen(goBack) {
-    setAppHeader(null, 'KitchenOS', 'Admin');
-    ekran(`
-      <div class="panel">
-        <button class="btn ikkinchi" id="adminAddBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-
-        <div class="kartochka">
-          <h2>${icon('link', 'icon-xs')} Bir martalik taklif havolasi</h2>
-          <div class="bosh">Havolani do'kon egasiga yuboring. U botni ochganda so'rovi sizga keladi — Telegramda tugma bosib, necha kunga ruxsat berishni tanlaysiz.</div>
-          <button class="btn" id="createInviteBtn" style="margin-top:10px;">${icon('plus', 'icon-xs')}<span>Havola yaratish</span></button>
-          <div id="inviteBoxWrap"></div>
-          <div class="xabar" id="inviteMsg"></div>
-        </div>
-
-        <div class="kartochka">
-          <h2>${icon('user', 'icon-xs')} Do'kon egasini ID orqali qo'shish</h2>
-          <label class="field-label">Telegram ID, @username yoki havola</label>
-          <input type="text" id="ownerInput" placeholder="Masalan: 123456789 yoki @username">
-          <label class="field-label">Muddat (kun)</label>
-          <input type="text" id="ownerDaysInput" placeholder="Bo'sh qoldirsangiz — doimiy" inputmode="numeric">
-          <label class="field-label">Obuna narxi</label>
-          <input type="text" id="ownerPriceInput" placeholder="So'm/oy (ixtiyoriy)" inputmode="numeric">
-          <label class="check-label" for="ownerPaidInput">
-            <input type="checkbox" id="ownerPaidInput"> To'lov qabul qilindi
-          </label>
-          <button class="btn" id="addOwnerBtn">${icon('plus', 'icon-xs')}<span>Do'kon egasi qo'shish</span></button>
-          <div class="xabar" id="addMsg"></div>
-        </div>
-      </div>
-      <div class="overlay hidden" id="confirmOverlay">
-        <div class="modal">
-          <h3>Tasdiqlaysizmi?</h3>
-          <p id="confirmText"></p>
-          <div class="btn-row">
-            <button class="btn ikkinchi" id="confirmCancel">Yo'q</button>
-            <button class="btn" id="confirmOk">Ha, qo'shish</button>
-          </div>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('adminAddBackBtn').addEventListener('click', goBack);
-
-    document.getElementById('createInviteBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('inviteMsg');
-      const wrap = document.getElementById('inviteBoxWrap');
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/create-invite', { initData });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        wrap.innerHTML = '';
-        return;
-      }
-      msgEl.textContent = '';
-      wrap.innerHTML = `
-        <div class="link-box">
-          <span id="inviteLinkText">${escapeHtml(res.link)}</span>
-          <button id="copyInviteBtn">${icon('link', 'icon-xs')}<span>Nusxalash</span></button>
-        </div>
-      `;
-      document.getElementById('copyInviteBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
-        }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
-        });
-      });
-    });
-
-    document.getElementById('addOwnerBtn').addEventListener('click', () => {
-      const val = document.getElementById('ownerInput').value.trim();
-      const daysVal = document.getElementById('ownerDaysInput').value.trim();
-      const priceVal = document.getElementById('ownerPriceInput').value.trim();
-      const paidVal = document.getElementById('ownerPaidInput').checked;
-      const msgEl = document.getElementById('addMsg');
-      msgEl.textContent = '';
-      msgEl.className = 'xabar';
-      if (!val) {
-        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (daysVal && (!/^\d+$/.test(daysVal) || parseInt(daysVal, 10) <= 0)) {
-        msgEl.textContent = 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (priceVal && (!/^\d+$/.test(priceVal) || parseInt(priceVal, 10) < 0)) {
-        msgEl.textContent = 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
-      const narxMatn = priceVal ? `, obuna narxi ${priceVal} so'm/oy` : '';
-      document.getElementById('confirmText').textContent =
-        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi${narxMatn}?`;
-      document.getElementById('confirmOverlay').classList.remove('hidden');
-
-      document.getElementById('confirmCancel').onclick = () => {
-        document.getElementById('confirmOverlay').classList.add('hidden');
-      };
-      document.getElementById('confirmOk').onclick = async () => {
-        document.getElementById('confirmOverlay').classList.add('hidden');
-        msgEl.textContent = 'Qo\'shilmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/add-owner', {
-          initData, input: val, days: daysVal || null,
-          price: priceVal || null, paid: paidVal
-        });
-        if (res.ok) {
-          msgEl.textContent = 'Muvaffaqiyatli qo\'shildi.';
-          msgEl.className = 'xabar ok';
-          document.getElementById('ownerInput').value = '';
-          document.getElementById('ownerDaysInput').value = '';
-          document.getElementById('ownerPriceInput').value = '';
-          document.getElementById('ownerPaidInput').checked = false;
-        } else {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
-        }
-      };
-    });
-  }
-
-  // Galereyadan logotip tanlash uchun umumiy blok — rasm oldindan ko'rinadi,
-  // fayl tanlanganda avtomatik kichraytirilib (400px) base64 data URL'ga
-  // aylantiriladi. idPrefix — shu ekrandagi elementlarning id old qo'shimchasi,
-  // currentValue — hozirgi logotip (URL yoki data URL) bo'lishi mumkin.
-  function logoPickerHtml(idPrefix, currentValue) {
-    return `
-      <label class="field-label">Logotip</label>
-      <div class="logo-picker">
-        <div class="logo-picker-preview-wrap">
-          ${currentValue
-            ? `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${escapeHtml(currentValue)}" onerror="this.style.display='none'">`
-            : `<div id="${idPrefix}Preview" class="logo-picker-preview logo-picker-preview-empty">${icon('restaurant', 'icon-md')}</div>`}
-        </div>
-        <div class="logo-picker-actions">
-          <label class="logo-picker-btn" for="${idPrefix}FileInput">${icon('link', 'icon-xs')} Galereyadan tanlash</label>
-          <input type="file" id="${idPrefix}FileInput" accept="image/*" class="logo-picker-file-input">
-          ${currentValue ? `<button type="button" class="logo-picker-remove" id="${idPrefix}RemoveBtn">O'chirish</button>` : ''}
-        </div>
-      </div>
-      <div class="xabar" id="${idPrefix}Err"></div>
-    `;
-  }
-
-  // logoPickerHtml bilan chizilgan blokka hodisalarni ulaydi. setValue orqali
-  // chaqiruvchi joy o'zining state'ini (masalan onboarding qadam ma'lumoti
-  // yoki oddiy o'zgaruvchi) yangilab turadi.
-  function attachLogoPickerHandlers(idPrefix, setValue) {
-    const fileInput = document.getElementById(`${idPrefix}FileInput`);
-    const errEl = document.getElementById(`${idPrefix}Err`);
-    if (fileInput) {
-      fileInput.addEventListener('change', async () => {
-        const file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        errEl.textContent = '';
-        errEl.className = 'xabar';
-        try {
-          const dataUrl = await readImageFileAsCompressedDataUrl(file, 400, 0.75);
-          setValue(dataUrl || '');
-          const preview = document.getElementById(`${idPrefix}Preview`);
-          if (preview && preview.tagName === 'IMG') {
-            preview.src = dataUrl;
-          } else if (preview) {
-            preview.outerHTML = `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${dataUrl}">`;
-          }
-        } catch (e) {
-          errEl.textContent = e.message || "Rasmni yuklab bo'lmadi.";
-          errEl.className = 'xabar err';
-        }
-        fileInput.value = '';
-      });
-    }
-    const removeBtn = document.getElementById(`${idPrefix}RemoveBtn`);
-    if (removeBtn) {
-      removeBtn.addEventListener('click', () => {
-        setValue('');
-        const preview = document.getElementById(`${idPrefix}Preview`);
-        if (preview) preview.outerHTML = `<div id="${idPrefix}Preview" class="logo-picker-preview logo-picker-preview-empty">${icon('restaurant', 'icon-md')}</div>`;
-        removeBtn.remove();
-      });
-    }
-  }
-
-  // ---- Admin: kichik "System status" paneli (50-bosqich) ----
-  // Serverning umumiy holatini (ishlash vaqti, xotira, ma'lumotlar hajmi,
-  // webhook statistikasi) bitta oynada ko'rsatadi. /api/system-status'dan
-  // olinadi, faqat admin ko'ra oladi.
-  function formatUptime(sec) {
-    const d = Math.floor(sec / 86400);
-    const h = Math.floor((sec % 86400) / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const parts = [];
-    if (d) parts.push(`${d} kun`);
-    if (h) parts.push(`${h} soat`);
-    parts.push(`${m} daqiqa`);
-    return parts.join(' ');
-  }
-
-  function systemStatusModalHtml(s) {
-    const row = (label, value) => `
-      <div class="profile-row"><b>${escapeHtml(label)}:</b> ${value}</div>
-    `;
-    return `
-      <div class="modal" style="max-width:380px; text-align:left;">
-        <h3>${icon('settings', 'icon-xs')} System status</h3>
-        ${row('Server ishlayapti', formatUptime(s.uptimeSeconds))}
-        ${row('Node versiyasi', escapeHtml(s.nodeVersion))}
-        ${row('Xotira (RSS)', `${s.memoryRssMb} MB`)}
-        ${row('Bot tokeni', s.botConfigured ? '✅ sozlangan' : '⚠️ sozlanmagan')}
-        ${row('PUBLIC_URL', s.publicUrlConfigured ? '✅ sozlangan' : '⚠️ sozlanmagan')}
-        <div class="kartochka" style="margin-top:10px;">
-          <h2 style="font-size:14px;">Do'kon egalari</h2>
-          ${row('Jami', String(s.owners.total))}
-          ${row('Faol', String(s.owners.active))}
-          ${row('Muddati o\'tgan', String(s.owners.expired))}
-        </div>
-        <div class="kartochka">
-          <h2 style="font-size:14px;">Faoliyat</h2>
-          ${row('Jami xodimlar', String(s.totalStaff))}
-          ${row('Jami buyurtmalar', String(s.totalOrders))}
-          ${row('Bugungi buyurtmalar', String(s.todayOrders))}
-          ${row('Bildirishnoma xatolari', String(s.notificationErrors))}
-        </div>
-        <div class="kartochka">
-          <h2 style="font-size:14px;">Webhook</h2>
-          ${row('Qabul qilingan', String(s.webhook.received))}
-          ${row('Xatoliklar', String(s.webhook.errors))}
-          ${row('Oxirgisi', s.webhook.lastAt ? timeAgo(s.webhook.lastAt) : '—')}
-        </div>
-        <div class="kartochka">
-          <h2 style="font-size:14px;">Ma'lumot fayllari</h2>
-          ${row('owners.json', `${s.dataFiles.owners.sizeKb} KB`)}
-          ${row('invites.json', `${s.dataFiles.invites.sizeKb} KB`)}
-          ${row('requests.json', `${s.dataFiles.requests.sizeKb} KB`)}
-          ${row('profiles.json', `${s.dataFiles.profiles.sizeKb} KB`)}
-        </div>
-        <div class="btn-row">
-          <button class="btn" id="systemStatusOkBtn">Yopish</button>
-        </div>
-      </div>
-    `;
-  }
-
-  async function loadAndShowSystemStatus() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `<div class="modal" style="max-width:380px;"><div class="bosh">Yuklanmoqda...</div></div>`;
-    document.body.appendChild(overlay);
-    const res = await apiPost('/api/system-status', { initData });
-    if (!res.ok) {
-      overlay.innerHTML = `
-        <div class="modal" style="max-width:380px;">
-          <div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>
-          <div class="btn-row"><button class="btn" id="systemStatusOkBtn">Yopish</button></div>
-        </div>
-      `;
-      document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
-      return;
-    }
-    overlay.innerHTML = systemStatusModalHtml(res.status);
-    document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
-  }
-
-  // ---- Admin: obuna tariflari — soni va nomlari (51-bosqich) ----
-  // 52-bosqich: narx ham shu ro'yxatda. 54-bosqich: har bir tarifga qaysi
-  // funksiyalar (53-bosqichdagi katalogdan) kirishini ✅/❌ belgilash —
-  // "Funksiyalar" tugmasi orqali alohida modalda.
-  function tariffItemHtml(t) {
-    const enabledCount = t.features ? Object.values(t.features).filter(Boolean).length : 0;
-    return `
-      <div class="owner-item" data-tariff-id="${escapeHtml(t.id)}">
-        <div>
-          <div class="owner-id">${escapeHtml(t.name)}</div>
-          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan · Eslatma: ${t.reminderDays || 1} kun oldin</div>
-          <div class="owner-username">${icon('users', 'icon-xs icon-muted')} ${t.ownerCount || 0} ta do'kon</div>
-        </div>
-        <div class="btn-row" style="margin-top:0;">
-          <button class="btn ikkinchi" data-tariff-features="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('check-circle', 'icon-xs')}</button>
-          <button class="btn ikkinchi" data-tariff-edit="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
-          <button class="btn xavfli" data-tariff-remove="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
-        </div>
-      </div>
-    `;
-  }
-
-  async function renderTariffsScreen(onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Obuna tariflari</div>
-        <button class="btn ikkinchi" id="tariffsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="kartochka">
-          <h2>${icon('plus', 'icon-xs')} Yangi tarif qo'shish</h2>
-          <label class="field-label">Tarif nomi</label>
-          <input type="text" id="tariffNameInput" placeholder="Masalan: Standart">
-          <label class="field-label">Narx (so'm/oy)</label>
-          <input type="text" id="tariffPriceInput" placeholder="Masalan: 150000" inputmode="numeric">
-          <button class="btn" id="tariffAddBtn" style="margin-top:10px;">Qo'shish</button>
-          <div class="xabar" id="tariffAddMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>${icon('star', 'icon-xs')} Mavjud tariflar</h2>
-          <div id="tariffList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>${icon('clipboard', 'icon-xs')} Tizim funksiyalari</h2>
-          <div class="owner-username" style="margin-bottom:8px;">Har bir tarifga qaysi funksiyalar kirishini belgilash keyingi bosqichda shu ro'yxat asosida qo'shiladi.</div>
-          <div id="featureCatalogList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-      </div>
-    `);
-    document.getElementById('tariffsBackBtn').addEventListener('click', () => onBack());
-    document.getElementById('tariffAddBtn').addEventListener('click', async () => {
-      const input = document.getElementById('tariffNameInput');
-      const priceInput = document.getElementById('tariffPriceInput');
-      const msgEl = document.getElementById('tariffAddMsg');
-      const name = input.value.trim();
-      const priceStr = priceInput.value.trim();
-      if (!name) {
-        msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (priceStr && (!/^\d+$/.test(priceStr))) {
-        msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = '';
-      const res = await apiPost('/api/tariff-add', { initData, name, price: priceStr || 0 });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      input.value = '';
-      priceInput.value = '';
-      loadTariffList();
-    });
-    await loadTariffList();
-    await loadFeatureCatalog();
-  }
-
-  // ---- Admin: tizim funksiyalari katalogi (53-bosqich) ----
-  // Guruhlangan ro'yxatni bir marta yuklab keshlaydi — 54-bosqichdagi
-  // har-tarif "Funksiyalar" modali ham shu keshdan foydalanadi (qayta
-  // so'rov yubormaslik uchun).
-  let featureCatalogCache = null;
-  async function loadFeatureCatalog() {
-    const el = document.getElementById('featureCatalogList');
-    if (!el) return;
-    const res = await apiPost('/api/feature-list', { initData });
-    if (!res.ok) {
-      el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    featureCatalogCache = res.groups;
-    el.innerHTML = res.groups.map(g => `
-      <div style="margin-bottom:10px;">
-        <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
-        <div>${g.features.map(f => `<span class="badge neutral" style="margin:2px 4px 2px 0;">${escapeHtml(f.name)}</span>`).join('')}</div>
-      </div>
-    `).join('');
-  }
-
-  async function loadTariffList() {
-    const el = document.getElementById('tariffList');
-    if (!el) return;
-    const res = await apiPost('/api/tariff-list', { initData });
-    if (!res.ok) {
-      el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    if (!res.tariffs.length) {
-      el.innerHTML = `<div class="bosh">Hozircha tarif qo'shilmagan.</div>`;
-      return;
-    }
-    el.innerHTML = res.tariffs.map(tariffItemHtml).join('');
-    el.querySelectorAll('[data-tariff-edit]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-tariff-edit');
-        const current = res.tariffs.find(t => t.id === id);
-        if (current) showTariffEditModal(current);
-      });
-    });
-    el.querySelectorAll('[data-tariff-features]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const id = btn.getAttribute('data-tariff-features');
-        const current = res.tariffs.find(t => t.id === id);
-        if (current) await showTariffFeaturesModal(current);
-      });
-    });
-    el.querySelectorAll('[data-tariff-remove]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const id = btn.getAttribute('data-tariff-remove');
-        const current = res.tariffs.find(t => t.id === id);
-        if (!confirm(`"${current ? current.name : ''}" tarifini o'chirasizmi?`)) return;
-        const r = await apiPost('/api/tariff-remove', { initData, id });
-        if (!r.ok) {
-          // 55-bosqich: agar tarifga do'kon egalari biriktirilgan bo'lsa,
-          // admin buni bilib, xohlasa tasdiqlab (force) baribir o'chirishi mumkin.
-          if (r.blockedCount) {
-            const forceConfirm = confirm(`${r.reason}\n\nBaribir o'chirilsinmi? (${r.blockedCount} ta do'kon egasi tarifsiz qoladi)`);
-            if (!forceConfirm) return;
-            const r2 = await apiPost('/api/tariff-remove', { initData, id, force: true });
-            if (!r2.ok) { alert(r2.reason || 'Xatolik yuz berdi.'); return; }
-            loadTariffList();
-            return;
-          }
-          alert(r.reason || 'Xatolik yuz berdi.');
-          return;
-        }
-        loadTariffList();
-      });
-    });
-  }
-
-  // 52-bosqich: tarif nomi va narxini birgalikda tahrirlash oynasi.
-  // 56-bosqich: shu oynadan to'g'ridan-to'g'ri "Ruxsatlar" (funksiyalar)
-  // modaliga o'tish tugmasi ham qo'shildi — ikkalasi bir yaxlit
-  // "tarifni tahrirlash" oqimi sifatida ishlaydi.
-  function showTariffEditModal(tariff) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:340px;">
-        <h3>Tarifni tahrirlash</h3>
-        <label class="field-label">Tarif nomi</label>
-        <input type="text" id="tariffEditNameInput" value="${escapeHtml(tariff.name)}">
-        <label class="field-label">Narx (so'm/oy)</label>
-        <input type="text" id="tariffEditPriceInput" value="${tariff.price || 0}" inputmode="numeric">
-        <label class="field-label">Muddat tugashi eslatmasi (necha kun oldin)</label>
-        <input type="text" id="tariffEditReminderInput" value="${tariff.reminderDays || 1}" inputmode="numeric">
-        <div class="xabar" id="tariffEditMsg"></div>
-        <button type="button" class="btn ikkinchi" id="tariffEditPermsBtn" style="margin-top:4px;">${icon('check-circle', 'icon-xs')}<span>Ruxsatlar (funksiyalar)</span></button>
-        <div class="btn-row">
-          <button class="btn ikkinchi" id="tariffEditCancelBtn">Bekor qilish</button>
-          <button class="btn" id="tariffEditSaveBtn">Saqlash</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.getElementById('tariffEditCancelBtn').onclick = () => overlay.remove();
-    document.getElementById('tariffEditPermsBtn').onclick = async () => {
-      overlay.remove();
-      await showTariffFeaturesModal(tariff);
-    };
-    document.getElementById('tariffEditSaveBtn').onclick = async () => {
-      const nameVal = document.getElementById('tariffEditNameInput').value.trim();
-      const priceVal = document.getElementById('tariffEditPriceInput').value.trim();
-      const reminderVal = document.getElementById('tariffEditReminderInput').value.trim();
-      const msgEl = document.getElementById('tariffEditMsg');
-      if (!nameVal) {
-        msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (priceVal && !/^\d+$/.test(priceVal)) {
-        msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (reminderVal && (!/^\d+$/.test(reminderVal) || parseInt(reminderVal, 10) <= 0)) {
-        msgEl.textContent = 'Eslatma kunlari musbat butun son bo\'lishi kerak.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      const res = await apiPost('/api/tariff-rename', { initData, id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1 });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      overlay.remove();
-      loadTariffList();
-    };
-  }
-
-  // 54-bosqich: bitta tarif uchun "Funksiya × Tarif" jadvali — har bir
-  // funksiya guruhlangan holda checkbox bilan ko'rsatiladi, admin
-  // ✅/❌ belgilaydi. Saqlashda BUTUN xarita bir yo'la /api/tariff-set-features
-  // ga yuboriladi (checkbox'lar shu modalda birga saqlanadi).
-  async function showTariffFeaturesModal(tariff) {
-    let groups = featureCatalogCache;
-    if (!groups) {
-      const res = await apiPost('/api/feature-list', { initData });
-      if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); return; }
-      groups = res.groups;
-      featureCatalogCache = groups;
-    }
-    const current = tariff.features || {};
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
-        <h3>"${escapeHtml(tariff.name)}" — funksiyalar</h3>
-        <div class="owner-username" style="margin-bottom:10px;">Ushbu tarifga qaysi funksiyalar kirishini belgilang.</div>
-        ${groups.map(g => `
-          <div style="margin-bottom:12px;">
-            <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
-            ${g.features.map(f => `
-              <label style="display:flex; align-items:center; gap:8px; padding:6px 0; cursor:pointer;">
-                <input type="checkbox" data-feature-id="${escapeHtml(f.id)}" ${current[f.id] ? 'checked' : ''} style="width:18px; height:18px; flex-shrink:0;">
-                <span>${escapeHtml(f.name)}</span>
-              </label>
-            `).join('')}
-          </div>
-        `).join('')}
-        <div class="xabar" id="tariffFeaturesMsg"></div>
-        <div class="btn-row">
-          <button class="btn ikkinchi" id="tariffFeaturesCancelBtn">Bekor qilish</button>
-          <button class="btn" id="tariffFeaturesSaveBtn">Saqlash</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.getElementById('tariffFeaturesCancelBtn').onclick = () => overlay.remove();
-    document.getElementById('tariffFeaturesSaveBtn').onclick = async () => {
-      const msgEl = document.getElementById('tariffFeaturesMsg');
-      const features = {};
-      overlay.querySelectorAll('[data-feature-id]').forEach(cb => {
-        features[cb.getAttribute('data-feature-id')] = cb.checked;
-      });
-      const res = await apiPost('/api/tariff-set-features', { initData, id: tariff.id, features });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      overlay.remove();
-      loadTariffList();
-    };
-  }
-  // =========================================================================
-  // Bosiladigan (accordion) bo'lim komponenti — renderProfileForm() ichida
-  // kamdan-kam o'zgartiriladigan bo'limlarni (kategoriyalar, aksiyalar,
-  // bonus, dostavka/oshxona guruhlari, xavfsizlik) yig'ib turadi. Har bir
-  // bo'lim boshida yopiq holda keladi, bosilganda ochiladi/yopiladi —
-  // shu bilan sahifa cheksiz uzun bo'lib ko'rinmaydi.
-  // =========================================================================
-  function accSectionHtml(section) {
-    return `
-      <div class="acc-item" data-acc-key="${section.key}">
-        <button type="button" class="acc-header" data-acc-toggle="${section.key}">
-          <span class="acc-header-icon">${icon(section.icon)}</span>
-          <span class="acc-header-text">
-            <span class="acc-header-title">${escapeHtml(section.title)}</span>
-            ${section.hint ? `<span class="acc-header-hint">${escapeHtml(section.hint)}</span>` : ''}
-          </span>
-          <span class="acc-chevron">${icon('chevron-down')}</span>
-        </button>
-        <div class="acc-body">${section.body}</div>
-      </div>
-    `;
-  }
-
-  function wireAccSections() {
-    document.querySelectorAll('[data-acc-toggle]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const item = btn.closest('.acc-item');
-        if (item) item.classList.toggle('open');
-      });
-    });
-  }
-
-  function renderProfileForm(existing) {
-    if (!existing) { renderProfileOnboarding(); return; }
-    const p = existing;
-    let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
-    let pendingLogo = p.logoUrl || '';
-    setAppHeader(existing.logoUrl, existing.name, 'Egasi');
-    const accSections = [
-      {
-        key: 'categories', icon: 'restaurant', title: "Menyu bo'limlari",
-        hint: 'Kategoriyalar tartibi',
-        body: `
-          <div class="kartochka">
-            <div class="bosh">Menyuga taom qo'shish va mavjud taomlarni boshqarish endi <b>"Ombor"</b> bo'limiga ko'chirildi (chunki taomni sklad mahsulotiga bog'lash shu yerda qulayroq).</div>
-          </div>
-          <div class="kartochka">
-            <h2>Bo'limlar (kategoriyalar)</h2>
-            <div class="bosh">Taomlarni bo'limlarga ajratish uchun ro'yxat. Shu yerdagi tartib mijozlar va kassir menyusida ko'rinadigan tartibni belgilaydi.</div>
-            <input type="text" id="categoryNameInput" placeholder="Bo'lim nomi (masalan: Issiq taomlar)" style="margin-top:10px;">
-            <button class="btn" id="addCategoryBtn" style="margin-top:8px;">Bo'lim qo'shish</button>
-            <div class="xabar" id="categoryMsg"></div>
-            <div class="owner-list" id="categoryList" style="margin-top:12px;"><div class="bosh">Yuklanmoqda...</div></div>
-          </div>
-        `
-      },
-      {
-        key: 'promos', icon: 'star', title: 'Aksiyalar va chegirmalar',
-        hint: "Yangi aksiya qo'shish, ro'yxat",
-        body: `
-          <div class="kartochka">
-            <h2>Aksiya/chegirma qo'shish</h2>
-            <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
-            <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
-            <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
-            <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
-            <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
-            <div class="xabar" id="promoMsg"></div>
-          </div>
-          <div class="kartochka">
-            <h2>Aksiyalar ro'yxati</h2>
-            <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
-          </div>
-        `
-      },
-      {
-        key: 'bonus', icon: 'trophy', title: 'Bonus tizimi',
-        hint: "Mijozlarni rag'batlantirish",
-        body: `
-          <div class="kartochka">
-            <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
-            <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
-              <input type="checkbox" id="bonusEnabledInput">
-              Bonus tizimini yoqish
-            </label>
-            <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
-            <button class="btn" id="saveBonusBtn">Saqlash</button>
-            <div class="xabar" id="bonusMsg"></div>
-          </div>
-        `
-      },
-      {
-        key: 'delivery', icon: 'scooter', title: 'Dostavka guruhi',
-        hint: 'Kuryerlar guruhini biriktirish',
-        body: `
-          <div class="kartochka">
-            <h2>Dostavka admin guruhi</h2>
-            <div class="bosh">Mijoz istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
-            <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
-            <div class="customer-link-hint">
-              Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
-              Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
-            </div>
-            <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
-            <div class="xabar" id="deliveryGroupMsg"></div>
-          </div>
-        `
-      },
-      {
-        key: 'kitchen', icon: 'chef-hat', title: 'Oshpazlar guruhi',
-        hint: 'Oshxona buyurtma xabarlari',
-        body: `
-          <div class="kartochka">
-            <h2>Oshpazlar guruhi</h2>
-            <div class="bosh">Har bir yangi buyurtma haqida "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga ham boradi — oshpazlar shaxsiy chatni ochmagan yoki bloklagan bo'lsa ham, buyurtma guruhda ko'rinadi. Dostavka admin guruhidan mustaqil — ikkalasini bir vaqtda biriktirish mumkin.</div>
-            <div id="kitchenGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
-            <div class="customer-link-hint">
-              Ulash uchun: 1) Botni oshpazlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/oshpaz_biriktir</b> buyrug'ini yuboring.<br>
-              Bekor qilish uchun guruhda <b>/oshpaz_bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
-            </div>
-            <button class="btn ikkinchi xavfli hidden" id="removeKitchenGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
-            <div class="xabar" id="kitchenGroupMsg"></div>
-          </div>
-        `
-      },
-      (usingOwnerSession || ownerHasTelegramLogin) ? {
-        key: 'account', icon: 'lock', title: 'Hisob va xavfsizlik',
-        hint: 'Parol, chiqish',
-        body: `
-          <div class="kartochka">
-            <div class="bosh">${usingOwnerSession ? 'Siz login/parol orqali kirgansiz.' : 'Bu qurilmada parol eslab qolingan.'}</div>
-            <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
-
-            <h2 style="margin-top:18px;">Xavfsizlik</h2>
-            <button class="btn ikkinchi" id="togglePwChangeBtn">Parolni almashtirish</button>
-            <div id="pwChangeForm" class="hidden" style="margin-top:10px;">
-              <label class="field-label">Joriy parol</label>
-              <input type="password" id="pwCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
-              <label class="field-label">Yangi parol</label>
-              <input type="password" id="pwNewInput" autocomplete="new-password" placeholder="Kamida 6 belgi">
-              <label class="field-label">Yangi parolni takrorlang</label>
-              <input type="password" id="pwNewRepeatInput" autocomplete="new-password" placeholder="Yangi parolni qayta kiriting">
-              <div class="btn-row">
-                <button class="btn ikkinchi" id="pwChangeCancelBtn">Bekor qilish</button>
-                <button class="btn" id="pwChangeSaveBtn">Saqlash</button>
-              </div>
-              <div class="xabar" id="pwChangeMsg"></div>
-            </div>
-
-            ${tg ? `
-            <button class="btn ikkinchi xavfli" id="togglePwRemoveBtn" style="margin-top:14px;">Parolni o'chirish</button>
-            <div id="pwRemoveForm" class="hidden" style="margin-top:10px;">
-              <div class="bosh">Parol o'chirilsa, bundan buyon faqat Telegram orqali kirish imkoni qoladi. Tasdiqlash uchun joriy parolingizni kiriting.</div>
-              <label class="field-label">Joriy parol</label>
-              <input type="password" id="pwRemoveCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
-              <div class="btn-row">
-                <button class="btn ikkinchi" id="pwRemoveCancelBtn">Bekor qilish</button>
-                <button class="btn xavfli" id="pwRemoveConfirmBtn">Parolni o'chirish</button>
-              </div>
-              <div class="xabar" id="pwRemoveMsg"></div>
-            </div>
-            ` : ''}
-          </div>
-        `
-      } : null
-    ].filter(Boolean);
-
-    ekran(`
-      <div class="panel">
-        <div class="salom">Profilni tahrirlash</div>
-        <div class="bosh">Ma'lumotlaringizni yangilang.</div>
-
-        <div class="profile-hero">
-          <div class="profile-hero-avatar">${p.logoUrl ? `<img src="${escapeHtml(p.logoUrl)}" alt="">` : icon('restaurant')}</div>
-          <div>
-            <div class="profile-hero-title">${escapeHtml(p.name || "Oshxona nomi ko'rsatilmagan")}</div>
-            <div class="profile-hero-subtitle">${escapeHtml(p.address || 'Manzil kiritilmagan')}</div>
-          </div>
-        </div>
-
-        <div class="kartochka">
-          <h2>${icon('star', 'icon-xs')} Joriy tarif</h2>
-          <div id="profileTariffInfo" class="owner-username">Yuklanmoqda...</div>
-        </div>
-        <div class="kartochka">
-          <label class="field-label">Oshxona nomi *</label>
-          <input type="text" id="pName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(p.name || '')}">
-          <label class="field-label">Manzil *</label>
-          <input type="text" id="pAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(p.address || '')}">
-          <label class="field-label">Telefon *</label>
-          <input type="text" id="pPhone" placeholder="+998901234567" value="${escapeHtml(p.phone || '')}">
-          <label class="field-label">Ish vaqti</label>
-          <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
-          ${logoPickerHtml('pLogo', pendingLogo)}
-          <label class="field-label">Brend rangi (mijozlar menyusi va ilova shu rangda ko'rinadi)</label>
-          ${brandSwatchesHtml(pendingBrandColor, p.name)}
-          <div class="btn-row" style="margin-top:14px;">
-            <button class="btn ikkinchi" id="cancelProfileBtn">← Bekor qilish</button>
-            <button class="btn" id="saveProfileBtn">Saqlash</button>
-          </div>
-          <div class="xabar" id="profileMsg"></div>
-        </div>
-
-        <div class="section-label">${icon('settings', 'icon-xs')} Qo'shimcha sozlamalar</div>
-        <div class="acc-list">
-          ${accSections.map(s => accSectionHtml(s)).join('')}
-        </div>
-      </div>
-    `);
-
-    wireAccSections();
-
-    if (usingOwnerSession) {
-      const logoutBtn = document.getElementById('ownerLogoutBtn');
-      if (logoutBtn) logoutBtn.addEventListener('click', ownerLogout);
-    } else if (ownerHasTelegramLogin) {
-      const logoutBtn = document.getElementById('ownerLogoutBtn');
-      if (logoutBtn) logoutBtn.addEventListener('click', ownerTelegramGateLogout);
-    }
-
-    if (usingOwnerSession || ownerHasTelegramLogin) {
-      attachOwnerPasswordSecurityHandlers();
-    }
-
-    attachBrandSwatchHandlers((hex) => {
-      pendingBrandColor = hex;
-      applyBrandColor(hex);
-    });
-    attachLogoPickerHandlers('pLogo', (val) => { pendingLogo = val; });
-
-    // Jonli ko'rish saqlashdan oldingi taxminiy holat — shu sababli bekor
-    // qilinganda haqiqiy saqlangan rangga qaytarib, o'zgarishlarni tashlab
-    // yuboradi (29-bosqich: preview har doim rad etib bo'lishi kerak).
-    document.getElementById('cancelProfileBtn').addEventListener('click', () => {
-      applyBrandColor(p.brandColor);
-      renderOwnerHomeScreen(p);
-    });
-
-    document.getElementById('saveProfileBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('profileMsg');
-      const body = {
-        initData,
-        name: document.getElementById('pName').value.trim(),
-        address: document.getElementById('pAddress').value.trim(),
-        phone: document.getElementById('pPhone').value.trim(),
-        workHours: document.getElementById('pWorkHours').value.trim(),
-        logoUrl: pendingLogo,
-        brandColor: pendingBrandColor
-      };
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/save-profile', body);
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        applyBrandColor(p.brandColor);
-        return;
-      }
-      renderOwnerHomeScreen(res.profile);
-    });
-
-    document.getElementById('addCategoryBtn').addEventListener('click', async () => {
-      const name = document.getElementById('categoryNameInput').value.trim();
-      const msgEl = document.getElementById('categoryMsg');
-      if (!name) {
-        msgEl.textContent = 'Bo\'lim nomini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/category-add', { initData, name });
-      if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('categoryNameInput').value = '';
-        loadCategoriesAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('addPromoBtn').addEventListener('click', async () => {
-      const title = document.getElementById('promoTitleInput').value.trim();
-      const description = document.getElementById('promoDescInput').value.trim();
-      const discountPercent = document.getElementById('promoPercentInput').value.trim();
-      const minTotal = document.getElementById('promoMinInput').value.trim();
-      const msgEl = document.getElementById('promoMsg');
-      if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
-        msgEl.textContent = 'Aksiya nomi va chegirma foizini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/promo-add', { initData, title, description, discountPercent, minTotal });
-      if (res.ok) {
-        msgEl.textContent = 'Aksiya qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('promoTitleInput').value = '';
-        document.getElementById('promoDescInput').value = '';
-        document.getElementById('promoPercentInput').value = '';
-        document.getElementById('promoMinInput').value = '';
-        loadPromoAndRender();
-      } else {
-        handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('promoList').addEventListener('click', async (e) => {
-      const toggleId = e.target.getAttribute('data-toggle-promo-id');
-      const removeId = e.target.getAttribute('data-remove-promo-id');
-      if (toggleId) {
-        e.target.disabled = true;
-        await apiPost('/api/promo-toggle', { initData, id: toggleId });
-        loadPromoAndRender();
-      } else if (removeId) {
-        e.target.disabled = true;
-        await apiPost('/api/promo-remove', { initData, id: removeId });
-        loadPromoAndRender();
-      }
-    });
-
-    document.getElementById('saveBonusBtn').addEventListener('click', async () => {
-      const enabled = document.getElementById('bonusEnabledInput').checked;
-      const earnPercent = document.getElementById('bonusPercentInput').value.trim();
-      const msgEl = document.getElementById('bonusMsg');
-      if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
-        msgEl.textContent = 'Bonus foizini kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/bonus-settings-save', { initData, enabled, earnPercent: earnPercent || 0 });
-      if (res.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('deliveryGroupMsg');
-      msgEl.textContent = 'Bekor qilinmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/delivery-group-remove', { initData });
-      if (res.ok) {
-        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
-        msgEl.className = 'xabar ok';
-        loadDeliveryGroupStatus();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('removeKitchenGroupBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('kitchenGroupMsg');
-      msgEl.textContent = 'Bekor qilinmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/kitchen-group-remove', { initData });
-      if (res.ok) {
-        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
-        msgEl.className = 'xabar ok';
-        loadKitchenGroupStatus();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    loadCategoriesAndRender();
-    loadPromoAndRender();
-    loadBonusSettingsAndRender();
-    loadDeliveryGroupStatus();
-    loadKitchenGroupStatus();
-    loadOwnerTariffInfo();
-  }
-
-  // 58-bosqich: do'kon egasi o'z profilida joriy tarifini ko'rishi.
-  async function loadOwnerTariffInfo() {
-    const el = document.getElementById('profileTariffInfo');
-    if (!el) return;
-    const res = await apiPost('/api/my-profile', { initData });
-    if (!res.ok) {
-      el.textContent = 'Yuklab bo\'lmadi.';
-      return;
-    }
-    el.textContent = res.tariff ? res.tariff.name : 'Tarif belgilanmagan';
-  }
-
-  // ---- Do'kon egasi: birinchi marta profil to'ldirish — bosqichma-bosqich
-  // "onboarding" ustasi (18-bosqich). Tahrirlashdan farqli, bu yerda
-  // ma'lumot 3 ta qadamga bo'lingan: (1) asosiy ma'lumot, (2) qo'shimcha
-  // ma'lumot, (3) hammasini tekshirib chiqish va saqlash. Har bir qadamda
-  // yuqorida progress-chiziq joriy holatni ko'rsatadi.
-  const ONBOARDING_STEPS = [
-    { title: "Asosiy ma'lumot" },
-    { title: "Qo'shimcha ma'lumot" },
-    { title: 'Tekshirib chiqish' }
-  ];
-  let onboardingState = null;
-
-  function onboardingStepBodyHtml(s) {
-    const d = s.data;
-    if (s.step === 1) {
-      return `
-        <label class="field-label">Oshxona nomi *</label>
-        <input type="text" id="obName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(d.name)}">
-        <label class="field-label">Manzil *</label>
-        <input type="text" id="obAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(d.address)}">
-        <label class="field-label">Telefon *</label>
-        <input type="text" id="obPhone" placeholder="+998901234567" value="${escapeHtml(d.phone)}">
-      `;
-    }
-    if (s.step === 2) {
-      return `
-        <label class="field-label">Ish vaqti</label>
-        <input type="text" id="obWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(d.workHours)}">
-        ${logoPickerHtml('obLogo', d.logoUrl)}
-      `;
-    }
-    const reviewRow = (label, value, stepNum) => `
-      <div class="onboarding-review-row">
-        <div>
-          <div class="review-label">${escapeHtml(label)}</div>
-          <div class="review-value">${value ? escapeHtml(value) : '— kiritilmagan'}</div>
-        </div>
-        <span class="review-edit-link" data-onboard-edit-step="${stepNum}">O'zgartirish</span>
-      </div>
-    `;
-    return `
-      ${reviewRow('Oshxona nomi', d.name, 1)}
-      ${reviewRow('Manzil', d.address, 1)}
-      ${reviewRow('Telefon', d.phone, 1)}
-      ${reviewRow('Ish vaqti', d.workHours, 2)}
-      <div class="onboarding-review-row">
-        <div>
-          <div class="review-label">Logotip</div>
-          ${d.logoUrl
-            ? `<img class="logo-picker-preview logo-picker-preview-sm" src="${escapeHtml(d.logoUrl)}" onerror="this.style.display='none'">`
-            : `<div class="review-value">— tanlanmagan</div>`}
-        </div>
-        <span class="review-edit-link" data-onboard-edit-step="2">O'zgartirish</span>
-      </div>
-    `;
-  }
-
-  function collectOnboardingStepInputs(s) {
-    if (s.step === 1) {
-      s.data.name = document.getElementById('obName').value.trim();
-      s.data.address = document.getElementById('obAddress').value.trim();
-      s.data.phone = document.getElementById('obPhone').value.trim();
-    } else if (s.step === 2) {
-      s.data.workHours = document.getElementById('obWorkHours').value.trim();
-    }
-  }
-
-  function renderProfileOnboarding() {
-    if (!onboardingState) {
-      onboardingState = { step: 1, data: { name: '', address: '', phone: '', workHours: '', logoUrl: '' } };
-    }
-    clearAppHeader();
-    const s = onboardingState;
-    const total = ONBOARDING_STEPS.length;
-    ekran(`
-      <div class="panel">
-        <div class="salom">Profilni to'ldiring</div>
-        <div class="bosh">${s.step}-qadam / ${total} — ${escapeHtml(ONBOARDING_STEPS[s.step - 1].title)}</div>
-        <div class="onboarding-steps">
-          ${ONBOARDING_STEPS.map((_, i) => `<div class="step-seg ${i + 1 < s.step ? 'done' : ''} ${i + 1 === s.step ? 'active' : ''}"></div>`).join('')}
-        </div>
-        <div class="kartochka">
-          ${onboardingStepBodyHtml(s)}
-          <div class="xabar" id="onboardMsg"></div>
-          <div class="btn-row" style="margin-top:10px;">
-            ${s.step > 1 ? `<button class="btn ikkinchi" id="onboardBackBtn">← Orqaga</button>` : ''}
-            <button class="btn" id="onboardNextBtn">${s.step < total ? 'Keyingi →' : 'Saqlash'}</button>
-          </div>
-        </div>
-      </div>
-    `);
-
-    if (s.step > 1) {
-      document.getElementById('onboardBackBtn').addEventListener('click', () => {
-        collectOnboardingStepInputs(s);
-        s.step -= 1;
-        renderProfileOnboarding();
-      });
-    }
-
-    if (s.step === 2) {
-      attachLogoPickerHandlers('obLogo', (val) => { s.data.logoUrl = val; });
-    }
-
-    document.querySelectorAll('[data-onboard-edit-step]').forEach(el => {
-      el.addEventListener('click', () => {
-        s.step = parseInt(el.getAttribute('data-onboard-edit-step'), 10);
-        renderProfileOnboarding();
-      });
-    });
-
-    document.getElementById('onboardNextBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('onboardMsg');
-      if (s.step === 1) {
-        const name = document.getElementById('obName').value.trim();
-        const address = document.getElementById('obAddress').value.trim();
-        const phone = document.getElementById('obPhone').value.trim();
-        if (!name || !address || !phone) {
-          msgEl.textContent = "Yulduzcha (*) bilan belgilangan maydonlarni to'ldiring.";
-          msgEl.className = 'xabar err';
-          return;
-        }
-        s.data.name = name; s.data.address = address; s.data.phone = phone;
-        s.step = 2;
-        renderProfileOnboarding();
-        return;
-      }
-      if (s.step === 2) {
-        s.data.workHours = document.getElementById('obWorkHours').value.trim();
-        s.step = 3;
-        renderProfileOnboarding();
-        return;
-      }
-      // 3-qadam — yakuniy saqlash
-      const btn = document.getElementById('onboardNextBtn');
-      btn.disabled = true;
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/save-profile', { initData, ...s.data });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        btn.disabled = false;
-        return;
-      }
-      onboardingState = null;
-      renderOwnerHomeScreen(res.profile);
-    });
-  }
-
-  // ---- Do'kon egasi: to'ldirilgan profilni ko'rsatish ----
-  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer' };
-  function rolesLabelClient(roles) {
-    return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
-  }
-  // Bir nechta vakolatli xodim uchun rol tanlash tugmalarida ishlatiladi (qarang: renderStaffRolePicker)
-  const ROLE_ICONS = { kassir: 'wallet', oshpaz: 'chef-hat', sklad: 'box', dostavka: 'scooter' };
-
-  function staffRoles(s) {
-    if (Array.isArray(s.roles) && s.roles.length) return s.roles;
-    return s.role ? [s.role] : [];
-  }
-
-  // Bir nechta vakolatli xodim TANLAGAN rol shu qurilmada (localStorage) eslab
-  // qolinadi — Mini App qayta ochilganda har safar so'ralmaydi, faqat xodim
-  // header'dagi "🔁 Rol almashtirish" tugmasini bossa (yoki admin uning
-  // vakolatlaridan birini olib tashlasa) qayta so'raladi.
-  function staffChosenRoleKey() {
-    const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
-    return tgUserId ? `kitchenOsStaffRole:${tgUserId}` : null;
-  }
-
-  function staffListHtml(staff) {
-    if (!staff || !staff.length) return `<div class="bosh">Hozircha xodimlar yo'q.</div>`;
-    return staff.map(s => {
-      const branch = branchState.branches.find(b => b.id === s.branchId);
-      const roles = staffRoles(s);
-      const roleBadges = roles.map(r => `<span class="role-badge">${escapeHtml(ROLE_LABELS[r] || r)}</span>`).join(' ');
-      const roleCheckboxes = Object.entries(ROLE_LABELS).map(([key, label]) => `
-        <label class="check-label" style="font-size:var(--fs-xs);">
-          <input type="checkbox" data-staff-role-checkbox="${escapeHtml(s.id)}" value="${key}" ${roles.includes(key) ? 'checked' : ''}>
-          ${escapeHtml(label)}
-        </label>
-      `).join('');
-      return `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${escapeHtml(s.id)}</div>
-          ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
-          <div class="owner-expiry">${roleBadges} · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
-          <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:8px;">${branchOptionsHtml(s.branchId)}</select>
-          <div class="staff-role-grid">${roleCheckboxes}</div>
-        </div>
-        <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
-      </div>
-    `;
-    }).join('');
-  }
-
-  function branchListHtml(branches) {
-    if (!branches || !branches.length) return `<div class="bosh">Hozircha filiallar yo'q.</div>`;
-    return branches.map(b => `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${escapeHtml(b.name)}</div>
-          <div class="owner-username">${escapeHtml(b.address)}</div>
-          ${b.phone ? `<div class="owner-expiry">${escapeHtml(b.phone)}</div>` : ''}
-        </div>
-        <button data-remove-branch-id="${escapeHtml(b.id)}">O'chirish</button>
-      </div>
-    `).join('');
-  }
-
-  let branchState = { branches: [] };
-
-  function branchOptionsHtml(selectedId) {
-    const opts = [`<option value="">— Markaziy (filialsiz) —</option>`];
-    for (const b of branchState.branches) {
-      opts.push(`<option value="${escapeHtml(b.id)}" ${selectedId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
-    }
-    return opts.join('');
-  }
-
-  async function loadBranchAndRender() {
-    const listEl = document.getElementById('branchList');
-    const res = await apiPost('/api/branch-list', { initData });
-    if (res.networkError) { if (listEl) renderNetworkErrorInline(listEl, res.reason, loadBranchAndRender); return; }
-    branchState.branches = res.ok ? res.branches : [];
-    if (listEl) listEl.innerHTML = branchListHtml(branchState.branches);
-    const staffBranchSelect = document.getElementById('staffBranchInput');
-    if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
-  }
-
-  // 3-bosqich: KitchenOS bosh sahifa header'i — hamburger, logotip,
-  // nom/taglayn, sana va bildirishnoma qo'ng'irog'i (badge bilan).
-  // Hozircha faqat "Bosh" tabida sinov uchun ulangan — bildirishnomalar
-  // sonini serverdan olish (18-bosqich) va hamburger menyusi (14-bosqich)
-  // keyinroq ulanadi; hozircha ular placeholder ishlov beruvchiga ega.
-  const KO_MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
-    'Iyul', 'Avgust', 'Sentyabr', 'Oktyabr', 'Noyabr', 'Dekabr'];
-
-  function koTodayLabel() {
-    const d = new Date();
-    return `${d.getDate()} ${KO_MONTH_NAMES[d.getMonth()]}`;
-  }
-
-  function koHomeHeaderHtml(unreadCount, restaurantName) {
-    const count = unreadCount || 0;
-    return `
-      <div class="ko-home-header">
-        <div class="ko-home-header-left">
-          <button type="button" class="ko-home-header-menu-btn" id="koHeaderMenuBtn" aria-label="Menyu">
-            ${icon('menu', 'icon-lg')}
-          </button>
-          <div class="ko-home-header-logo">${icon('chef-hat', 'icon-md')}</div>
-          <div class="ko-home-header-titles">
-            <div class="ko-home-header-title">${escapeHtml(restaurantName || '')}</div>
-            <div class="ko-home-header-subtitle">Oshxona Menejeri</div>
-          </div>
-        </div>
-        <div class="ko-home-header-right">
-          <div class="ko-home-header-date">${icon('calendar', 'icon-xs')}<span>${koTodayLabel()}</span></div>
-          <button type="button" class="ko-home-header-bell-btn" id="koHeaderBellBtn" aria-label="Bildirishnomalar">
-            ${icon('bell', 'icon-sm')}
-            ${count > 0 ? `<span class="ko-home-header-bell-badge">${count}</span>` : ''}
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  function wireKoHomeHeader(profile) {
-    const menuBtn = document.getElementById('koHeaderMenuBtn');
-    const bellBtn = document.getElementById('koHeaderBellBtn');
-    if (menuBtn) menuBtn.addEventListener('click', () => openKoSidebar(profile));
-    if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderOwnerHomeScreen(profile)));
-  }
-
-  // =========================================================================
-  // Bosh sahifa PASTKI navigatsiyasi — 5 band: Bosh sahifa, Savdo,
-  // Yangi buyurtma (markazda FAB), Ombor, Profil. Bildirishnomalar bandi
-  // olib tashlandi (header'dagi qo'ng'iroqcha bilan dublikat edi), o'rniga
-  // Ombor ekrani (renderStockScreen) qo'yildi. Eski 4-tabli tab-bar
-  // o'rnini shu egallaydi.
-  //
-  // 20-bosqich: "Menyu" (taom qo'shish / aksiya) paneli — rasmda unga aniq
-  // joy yo'q edi, shu sababli Sozlamalar ekraniga (renderProfileForm)
-  // ko'chirildi: do'kon egasi uchun eng yaqin mos joy shu, chunki menyu
-  // tarkibi ham do'kon sozlamasi hisoblanadi.
-  // =========================================================================
-  function koBottomNavHtml(activeKey) {
-    return `
-      <div class="ko-bottom-nav" id="koBottomNav">
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'bosh' ? 'active' : ''}" data-ko-nav="bosh">
-          ${icon('home')}
-          <span>Bosh sahifa</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'savdo' ? 'active' : ''}" data-ko-nav="savdo">
-          ${icon('bar-chart')}
-          <span>Savdo</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ko-bottom-nav-fab-item" data-ko-nav="yangiBuyurtma">
-          <span class="ko-bottom-nav-fab">${icon('plus')}</span>
-          <span>Yangi buyurtma</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'ombor' ? 'active' : ''}" data-ko-nav="ombor">
-          ${icon('box')}
-          <span>Ombor</span>
-        </button>
-        <button type="button" class="ko-bottom-nav-item ${activeKey === 'profil' ? 'active' : ''}" data-ko-nav="profil">
-          ${icon('user')}
-          <span>Profil</span>
-        </button>
-      </div>
-    `;
-  }
-
-  // Barcha beshtasi ulangan: Bosh sahifa (joriy ekranning o'zi), Savdo
-  // (renderCashflowScreen), Ombor (renderStockScreen) va Profil (15-bosqichda
-  // qurilgan ekranlar), va Yangi buyurtma — egasi uchun ham server
-  // (/api/create-order) 'egasi' rolini qabul qiladi, shu sababli kassir
-  // uchun tayyor bo'lgan renderCashierScreen shu yerda qayta ishlatiladi,
-  // faqat "← Orqaga" tugmasi bilan (kassirning o'z ekranida bu tugma yo'q,
-  // chunki u uning doimiy bosh sahifasi).
-  function wireKoBottomNav(profile) {
-    const nav = document.getElementById('koBottomNav');
-    if (!nav) return;
-    const goBack = () => renderOwnerHomeScreen(profile);
-    nav.querySelectorAll('[data-ko-nav]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const key = btn.getAttribute('data-ko-nav');
-        if (key === 'bosh') return;
-        if (key === 'savdo') { renderCashflowScreen(profile, goBack); return; }
-        if (key === 'yangiBuyurtma') {
-          cashierState.tab = 'yaratish';
-          renderCashierScreen(profile.name, goBack);
-          return;
-        }
-        if (key === 'ombor') { renderStockScreen(profile.name, 'egasi', goBack); return; }
-        if (key === 'profil') { renderOwnerProfileScreen(profile, goBack); return; }
-        console.log(`KitchenOS: pastki nav "${key}" (hali ulanmagan)`);
-      });
-    });
-  }
-
-  // =========================================================================
-  // 18-bosqich: bell-badge (header'da) va "Bildirishnomalar" band-badge
-  // (pastki navda) sonini serverdan dinamik yangilaydi. Alohida
-  // bildirishnoma-ma'lumotlar bazasi hali yo'q (15-bosqichdagi izohga
-  // qarang), shu sababli /api/dashboard-alerts natijasining uzunligi
-  // (alerts.length) badge soni sifatida ishlatiladi — bu manba
-  // loadKoAlertsList() orqali baribir har safar bosh sahifa ochilganda
-  // yuklanadi, shuning uchun bu yerda alohida so'rov yubormay, o'sha
-  // natijadan foydalanamiz (pastga qarang). Butun header/nav qayta render
-  // qilinmaydi — faqat badge <span> qo'shiladi/yangilanadi/olib tashlanadi,
-  // shu bilan allaqachon ulangan click-handler'lar (wireKoHomeHeader,
-  // wireKoBottomNav) buzilmaydi.
-  // =========================================================================
-  function updateKoNotifBadges(count) {
-    const bellBtn = document.getElementById('koHeaderBellBtn');
-    if (bellBtn) {
-      const existing = bellBtn.querySelector('.ko-home-header-bell-badge');
-      if (count > 0) {
-        if (existing) existing.textContent = String(count);
-        else bellBtn.insertAdjacentHTML('beforeend', `<span class="ko-home-header-bell-badge">${count}</span>`);
-      } else if (existing) {
-        existing.remove();
-      }
-    }
-    // Pastki navda "Bildirishnomalar" bandi "Ombor"ga almashtirilgani sababli,
-    // bu yerda endi faqat header'dagi bell-badge yangilanadi.
-  }
-
-  // =========================================================================
-  // 7-bosqich: KitchenOS bosh sahifa KPI-kartochkasi (icon + katta raqam +
-  // foiz-delta). Bu yerda faqat komponentning o'zi va uning skeleton holati
-  // bor — 4 tasini 2x2 grid'ga joylashtirib /api/dashboard-summary'ga ulash
-  // 8-bosqichda qilinadi.
-  // =========================================================================
-
-  // Katta summalarni mockupdagi kabi qisqa ko'rinishga o'tkazadi: 12 450 000
-  // -> "12.45M", 35 000 -> "35K". Million/ming chegarasidan pastdagi
-  // qiymatlar (masalan buyurtmalar soni "356") xom son sifatida qaytadi.
-  function koFormatCompact(n) {
-    const num = Number(n || 0);
-    const abs = Math.abs(num);
-    if (abs >= 1000000) return (num / 1000000).toFixed(2).replace(/\.?0+$/, '') + 'M';
-    if (abs >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-    return String(Math.round(num));
-  }
-
-  // Bugungi va kechagi qiymatdan foiz-delta hisoblaydi. Kecha 0 bo'lsa (va
-  // bugun ham 0 bo'lsa) taqqoslash mantiqiy emas — shu holatda null qaytadi
-  // va chaqiruvchi joy delta'ni umuman ko'rsatmaydi.
-  function koFormatDelta(todayVal, yesterdayVal) {
-    const y = Number(yesterdayVal || 0);
-    const t = Number(todayVal || 0);
-    if (y === 0) {
-      if (t === 0) return null;
-      return { tone: 'up', text: '+100%' };
-    }
-    const pct = ((t - y) / Math.abs(y)) * 100;
-    const tone = pct >= 0 ? 'up' : 'down';
-    const rounded = Math.abs(pct) >= 10 ? Math.round(pct) : Math.round(pct * 10) / 10;
-    return { tone, text: (pct >= 0 ? '+' : '') + rounded + '%' };
-  }
-
-  // iconName — icon-sprite'dagi nom, label — kichik sarlavha (masalan
-  // "BUGUNGI SAVDO"), value — allaqachon formatlangan matn (masalan "12.45M"),
-  // delta — koFormatDelta() natijasi (yoki null, agar ko'rsatilmasa).
-  // 3-bosqich: cardId berilsa, kartochka bosiladigan (clickable) qilib
-  // belgilanadi — chaqiruvchi tomon shu id orqali click listener ulaydi.
-  function koKpiCardHtml(iconName, label, value, delta, cardId) {
-    return `
-      <div class="ko-kpi-card${cardId ? ' ko-kpi-clickable' : ''}"${cardId ? ` id="${cardId}"` : ''}>
-        <div class="ko-kpi-label">${escapeHtml(label)}</div>
-        <div class="ko-kpi-icon">${icon(iconName)}</div>
-        <div class="ko-kpi-value">${escapeHtml(value)}</div>
-        ${delta ? `
-          <div class="ko-kpi-delta ${delta.tone}">
-            ${delta.tone === 'up' ? icon('trending-up', 'icon-xs') : ''}
-            <span>${escapeHtml(delta.text)}</span>
-          </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  function koKpiSkeletonCardHtml(label) {
-    return `
-      <div class="ko-kpi-card skeleton-tile">
-        <div class="ko-kpi-label">${escapeHtml(label)}</div>
-        <div class="ko-kpi-icon">${icon('wallet')}</div>
-        <div class="ko-kpi-value skeleton"></div>
-        <div class="ko-kpi-delta skeleton"></div>
-      </div>
-    `;
-  }
-
-  // 4 ta skeleton-kartochkani 2x2 grid ichida qaytaradi — sahifa birinchi
-  // chizilganda shu ko'rinadi, keyin loadKoKpiGrid() natija bilan almashtiradi.
-  // 2-bosqich: "O'rtacha chek" kartochkasi olib tashlandi — 3-bosqichda
-  // o'rniga "Kuryer hisoboti" kartochkasi qo'shiladi.
-  function koKpiGridSkeletonHtml() {
-    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', 'Kuryer hisoboti'];
-    return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
-  }
-
-  // Buyurtmalar soni uchun delta foizda emas, xom sondagi farq sifatida
-  // ko'rsatiladi (mockupda "+18 ta"), chunki kichik sonlarda foiz
-  // o'qilishi qiyin va real ma'no bermaydi.
-  function koFormatCountDelta(todayVal, yesterdayVal) {
-    const t = Number(todayVal || 0);
-    const y = Number(yesterdayVal || 0);
-    const diff = t - y;
-    if (diff === 0) return null;
-    const tone = diff > 0 ? 'up' : 'down';
-    return { tone, text: (diff > 0 ? '+' : '') + diff + ' ta' };
-  }
-
-  // 8-bosqich: 4 ta KPI-kartochkani /api/dashboard-summary natijasidan
-  // yasab, 2x2 grid ichida qaytaradi.
-  // 3-bosqich: "O'rtacha chek" o'rniga "Kuryer hisoboti" — bugun kuryerlar
-  // yetkazib bergan buyurtmalar soni. Bosilsa (loadKoKpiGrid'da ulanadi)
-  // to'liq kuryer hisoboti ekraniga (har bir kuryer bo'yicha qator, tarix) o'tadi.
-  function koKpiGridHtml(summary) {
-    const cards = [
-      koKpiCardHtml('wallet', 'Bugungi savdo',
-        koFormatCompact(summary.todaySales),
-        koFormatDelta(summary.todaySales, summary.yesterdaySales)),
-      koKpiCardHtml('trending-up', 'Sof foyda',
-        koFormatCompact(summary.todayNetProfit),
-        koFormatDelta(summary.todayNetProfit, summary.yesterdayNetProfit)),
-      koKpiCardHtml('clipboard', 'Buyurtmalar',
-        koFormatCompact(summary.todayOrderCount),
-        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount)),
-      koKpiCardHtml('scooter', 'Kuryer hisoboti',
-        koFormatCompact(summary.todayCourierDeliveries),
-        koFormatCountDelta(summary.todayCourierDeliveries, summary.yesterdayCourierDeliveries),
-        'koCourierCard')
-    ];
-    return `<div class="ko-kpi-grid" id="koKpiGrid">${cards.join('')}</div>`;
-  }
-
-  async function loadKoKpiGrid(profile) {
-    const el = document.getElementById('koKpiGrid');
-    if (!el) return;
-    const res = await apiPost('/api/dashboard-summary', { initData });
-    const el2 = document.getElementById('koKpiGrid');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
-    if (res.networkError) {
-      // koKpiGrid CSS grid (2 ustunli) ekanligi sababli xatolik holatini
-      // to'g'ridan-to'g'ri shu konteyner ichiga qo'ymaymiz (grid katakchasiga
-      // siqilib, noto'g'ri ko'rinardi) — avval oddiy kartochkaga almashtirib,
-      // keyin renderNetworkErrorInline() shu yangi elementga ulanadi.
-      el2.outerHTML = `<div class="kartochka" id="koKpiGrid"></div>`;
-      renderNetworkErrorInline(document.getElementById('koKpiGrid'), res.reason, () => loadKoKpiGrid(profile));
-      return;
-    }
-    if (!res.ok) {
-      el2.outerHTML = `<div class="ko-kpi-grid" id="koKpiGrid"><div class="bosh">KPI ma'lumotlari yuklanmadi.</div></div>`;
-      return;
-    }
-    el2.outerHTML = koKpiGridHtml(res.summary);
-
-    // 5-bosqich: "Kuryer hisoboti" kartochkasiga bosilganda batafsil oyna —
-    // har bir kuryer bo'yicha alohida qator va kassaga qaytarish tarixini
-    // ko'rsatadigan mavjud ekran (renderCourierReportScreen, ilgari faqat
-    // Moliya ichidan ochilar edi).
-    const courierCard = document.getElementById('koCourierCard');
-    if (courierCard) {
-      courierCard.addEventListener('click', () => {
-        renderCourierReportScreen(profile, () => renderOwnerHomeScreen(profile));
-      });
-    }
-  }
-
-  // =========================================================================
-  // 9-bosqich: KitchenOS bosh sahifa "Bugungi holat" banneri — qizil
-  // sarlavha ("BUGUNGI HOLAT" + "Barchasi" havolasi) va pastida 4 ustun
-  // (icon + katta son + label): Yangi / Tayyorlanmoqda / Tayyor /
-  // Kechikayotgan. Bu yerda faqat komponentning o'zi va skeleton holati —
-  // /api/order-status-counts'ga ulash 10-bosqichda qilinadi.
-  // =========================================================================
-  const KO_STATUS_COLUMNS = [
-    { key: 'yangi', icon: 'file-plus', label: 'Yangi' },
-    { key: 'tayyorlanmoqda', icon: 'chef-hat', label: 'Tayyorlanmoqda' },
-    { key: 'tayyor', icon: 'cloche', label: 'Tayyor' },
-    { key: 'kechikayotgan', icon: 'clock', label: 'Kechikayotgan' }
-  ];
-
-  function koStatusColumnHtml(col, count) {
-    return `
-      <div class="ko-status-col" data-status-key="${col.key}">
-        <div class="ko-status-col-label">${escapeHtml(col.label)}</div>
-        <div class="ko-status-col-icon">${icon(col.icon)}</div>
-        <div class="ko-status-col-value${count === null ? ' skeleton' : ''}">${count === null ? '' : escapeHtml(String(count))}</div>
-      </div>
-    `;
-  }
-
-  function koStatusBannerHtml(counts) {
-    return `
-      <div class="ko-status-banner kartochka" id="koStatusBanner">
-        <div class="ko-status-banner-header">
-          <span>BUGUNGI HOLAT</span>
-          <button type="button" class="ko-status-banner-all" id="koStatusAllBtn">Barchasi <span class="ko-status-banner-all-chevron">›</span></button>
-        </div>
-        <div class="ko-status-banner-body">
-          ${KO_STATUS_COLUMNS.map(col => koStatusColumnHtml(col, counts[col.key])).join('')}
-        </div>
-      </div>
-    `;
-  }
-
-  function koStatusBannerSkeletonHtml() {
-    return koStatusBannerHtml({ yangi: null, tayyorlanmoqda: null, tayyor: null, kechikayotgan: null })
-      .replace('id="koStatusBanner"', 'id="koStatusBanner" data-loading="1"');
-  }
-
-  // "Barchasi" tugmasini buyurtmalar ekraniga ulaydi. Skeleton va real
-  // holatning ikkalasida ham chaqiriladi (data hali kelmagan bo'lsa ham
-  // "Barchasi" ishlashi kerak), shuning uchun renderni har safar (ham
-  // skeleton, ham real HTML bilan almashtirilgach) alohida chaqiramiz.
-  function wireKoStatusBanner(profile) {
-    const btn = document.getElementById('koStatusAllBtn');
-    if (btn) btn.addEventListener('click', () => renderKitchenScreen(profile.name, () => renderOwnerHomeScreen(profile)));
-  }
-
-  // 10-bosqich: "Bugungi holat" bannerini /api/order-status-counts
-  // natijasiga ulaydi — skeletonni real sonlar bilan almashtiradi.
-  async function loadKoStatusBanner(profile) {
-    const el = document.getElementById('koStatusBanner');
-    if (!el) return;
-    const res = await apiPost('/api/order-status-counts', { initData });
-    const el2 = document.getElementById('koStatusBanner');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
-    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoStatusBanner(profile)); return; }
-    if (!res.ok) {
-      el2.outerHTML = `<div class="ko-status-banner kartochka" id="koStatusBanner"><div class="bosh">Bugungi holat yuklanmadi.</div></div>`;
-      return;
-    }
-    el2.outerHTML = koStatusBannerHtml(res.counts);
-    wireKoStatusBanner(profile);
-  }
-
-  // =========================================================================
-  // 11-bosqich: KitchenOS bosh sahifa asosiy menyu-grid — 2 qator x 5 ustun,
-  // 10 ta icon+label tugma. Bu yerda faqat komponentning o'zi: har bir
-  // tugma data-menu-key bilan belgilanadi, lekin ularni mavjud ekranlarga
-  // ulash (bosilganda nima ochilishi) 12-bosqichda qilinadi.
-  // =========================================================================
-  const KO_MENU_ITEMS = [
-    { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
-    { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
-    { key: 'ombor', icon: 'box', label: 'Ombor' },
-    { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
-    { key: 'moliya', icon: 'wallet', label: 'Moliya' },
-    { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
-    { key: 'filiallar', icon: 'store', label: 'Filiallar' },
-    { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
-    { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
-    { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
-  ];
-
-  function koMenuItemHtml(item) {
-    return `
-      <button type="button" class="ko-menu-item" data-menu-key="${item.key}">
-        <span class="ko-menu-item-icon">${icon(item.icon)}</span>
-        <span class="ko-menu-item-label">${escapeHtml(item.label)}</span>
-      </button>
-    `;
-  }
-
-  function koMenuGridHtml() {
-    return `<div class="ko-menu-grid">${KO_MENU_ITEMS.map(koMenuItemHtml).join('')}</div>`;
-  }
-
-  // 12-bosqich (14-bosqichda kengaytirildi): har bir grid tugmasi va hamburger
-  // yon-menyusi bandi bir xil manzillarga borishi kerak, shu sababli
-  // navigatsiya funksiyalari shu yerda BIR MARTA belgilanadi va ikkalasi
-  // ham shu obyektni qayta ishlatadi.
-  // Aniq mos ekrani bor bandlar rejadagidek ulanadi: Oshxona, Ombor,
-  // Xodimlar (nazorat ekrani), Moliya, Yetkazib berish, AI Tavsiyalar,
-  // Bildirishnomalar, Profil, Yangi buyurtma (kassir ekrani, "← Orqaga" bilan).
-  // Qolganlar uchun qaror:
-  //  - Savdo: alohida "savdo" ekrani yo'q — eng yaqin mos ekran Moliya bilan
-  //    bir xil (renderCashflowScreen), chunki savdo dinamikasi grafigi va
-  //    davr tanlash (Bugun/Hafta/Oy) allaqachon o'sha yerda.
-  //  - Hisobotlar: kunlik yakuniy Z-hisobot ekrani (renderZReportScreen)
-  //    "hisobot" ma'nosiga to'g'ridan-to'g'ri mos keladi.
-  //  - Filiallar: alohida ekran kerak emas — "Bosh" tabining o'zida
-  //    Filiallar bo'limi allaqachon bor, shu sababli faqat o'sha bo'limga
-  //    scroll qilinadi (yangi ekran ochilmaydi).
-  //  - Sozlamalar: do'kon profilini tahrirlash formasi (renderProfileForm)
-  //    — mavjud "Profilni tahrirlash" tugmasi bilan bir xil maqsad.
-  function koNavHandlers(profile) {
-    const goBack = () => renderOwnerHomeScreen(profile);
     return {
-      savdo: () => renderCashflowScreen(profile, goBack),
-      yangiBuyurtma: () => {
-        cashierState.tab = 'yaratish';
-        renderCashierScreen(profile.name, goBack);
-      },
-      oshxona: () => renderKitchenScreen(profile.name, goBack),
-      ombor: () => renderStockScreen(profile.name, 'egasi', goBack),
-      xodimlar: () => renderStaffControlScreen(profile, goBack),
-      moliya: () => renderCashflowScreen(profile, goBack),
-      yetkazibBerish: () => renderDeliveryScreen(profile.name, goBack),
-      filiallar: () => {
-        const target = document.getElementById('koBranchesSectionLabel');
-        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      },
-      hisobotlar: () => renderZReportScreen(profile, goBack),
-      aiTavsiyalar: () => renderAiScreen(profile, goBack),
-      bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
-      profil: () => renderOwnerProfileScreen(profile, goBack),
-      sozlamalar: () => renderProfileForm(profile)
+      ok: true,
+      user: {
+        id: owner.id,
+        username: owner.username || owner.login || null,
+        first_name: (owner.profile && owner.profile.name) || owner.login || 'Egasi'
+      }
     };
   }
+  return verifyTelegramInitData(initData, BOT_TOKEN);
+}
 
-  function wireKoMenuGrid(profile) {
-    const grid = document.querySelector('.ko-menu-grid');
-    if (!grid) return;
-    const handlers = koNavHandlers(profile);
-    grid.querySelectorAll('[data-menu-key]').forEach(btn => {
-      const fn = handlers[btn.getAttribute('data-menu-key')];
-      if (fn) btn.addEventListener('click', fn);
+// ====== Do'kon egalari (owners) — oddiy JSON fayl orqali saqlanadi ======
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
+
+function loadJSONArray(file) {
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveJSONArray(file, arr) {
+  fs.writeFileSync(file, JSON.stringify(arr, null, 2), 'utf8');
+}
+
+// 71-bosqich: har bir o'qishda owner obyektlariga yangi obuna maydonlarini
+// (mavjud bo'lmasa) to'ldirib beradi — shu bilan owners.json faylini qo'lda
+// migratsiya qilmasdan turib ham, kod ichida hamma joyda yangi maydonlar
+// (subscriptionStatus/subscriptionUntil/graceUntil/trialGivenAt) doim mavjud
+// bo'lishi kafolatlanadi.
+function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
+function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
+
+function loadInvites() { return loadJSONArray(INVITES_FILE); }
+function saveInvites(invites) { saveJSONArray(INVITES_FILE, invites); }
+
+function loadRequests() { return loadJSONArray(REQUESTS_FILE); }
+function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
+
+// ====== To'lovlar tarixi (67-bosqich) — har bir "to'landi" voqeasi alohida
+// yozuv sifatida saqlanadi, shunda admin dashboardida haqiqiy (joriy holat
+// emas, balki vaqt bo'yicha) daromad hisoblanadi. Owner o'chirilsa/muddati
+// tugasa ham bu yozuvlar saqlanib qoladi (69-bosqich).
+function loadPayments() { return loadJSONArray(PAYMENTS_FILE); }
+function savePayments(list) { saveJSONArray(PAYMENTS_FILE, list); }
+function recordPayment(owner, amount) {
+  const amountVal = Number(amount) || 0;
+  if (amountVal <= 0) return; // 0 so'mlik "to'lov"ni jurnalga yozmaymiz
+  const payments = loadPayments();
+  payments.push({
+    id: crypto.randomBytes(6).toString('hex'),
+    ownerId: owner.id,
+    ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
+    amount: amountVal,
+    tariffId: owner.tariffId || null,
+    at: new Date().toISOString()
+  });
+  savePayments(payments);
+}
+
+// ====== Buyurtmalar arxivi (69-bosqich) — obunachi (do'kon egasi) o'chirilganda
+// owner.orders shu yerga ko'chiriladi, shunda buyurtmalar tarixi yo'qolmaydi ======
+function loadArchivedOrders() { return loadJSONArray(ARCHIVED_ORDERS_FILE); }
+function saveArchivedOrders(list) { saveJSONArray(ARCHIVED_ORDERS_FILE, list); }
+function archiveOwnerOrders(owner) {
+  const orders = owner && owner.orders;
+  if (!orders || !orders.length) return; // buyurtmasi bo'lmagan egani arxivlashning hojati yo'q
+  const archive = loadArchivedOrders();
+  archive.push({
+    ownerId: owner.id,
+    ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
+    removedAt: new Date().toISOString(),
+    orders
+  });
+  saveArchivedOrders(archive);
+}
+
+// ====== Shaxsiy profil (ism, familiya, telefon) — har bir bot foydalanuvchisi
+// (mijoz, xodim, egasi) uchun umumiy, bitta martalik ro'yxatdan o'tish ======
+function loadProfiles() { return loadJSONArray(PROFILES_FILE); }
+function saveProfiles(list) { saveJSONArray(PROFILES_FILE, list); }
+function findProfile(userId) { return loadProfiles().find(p => String(p.id) === String(userId)); }
+function isRegisteredUser(userId) {
+  const p = findProfile(userId);
+  return !!(p && p.registeredAt);
+}
+
+// ====== Obuna tariflari (F-bo'lim, 51-70-bosqich) — admin belgilaydigan katalog ======
+function loadTariffs() { return loadJSONArray(TARIFFS_FILE); }
+function saveTariffs(list) { saveJSONArray(TARIFFS_FILE, list); }
+
+// ====== 53-bosqich: tizimdagi barcha funksiyalar ro'yxati ======
+// Bu — kod ichida qattiq belgilangan (hardcoded) katalog, chunki bular
+// tizimning haqiqiy imkoniyatlari (kod bo'limlari), admin ularni
+// qo'shmaydi/o'chirmaydi — faqat har bir tarifga qaysi funksiyalar
+// kirishini (54-bosqich, ✅/❌ jadval) belgilaydi. Har bir yozuv:
+//  - id: barqaror kalit — tariff.features{} ichida shu kalit bilan
+//        ✅/❌ saqlanadi (54-bosqich), va bloklash tekshiruvida (59-60)
+//        shu id orqali ruxsat so'raladi.
+//  - name: admin panelida ko'rinadigan o'zbekcha nom.
+//  - group: 54-bosqichdagi jadvalni guruhlab ko'rsatish uchun.
+const FEATURE_GROUPS = [
+  { id: 'boshqaruv', name: "Boshqaruv va xodimlar" },
+  { id: 'menyu', name: "Menyu va mahsulotlar" },
+  { id: 'buyurtma', name: "Buyurtmalar va yetkazish" },
+  { id: 'ombor_moliya', name: "Ombor va moliya" },
+  { id: 'statistika', name: "Statistika va AI" },
+  { id: 'mijoz', name: "Mijozlar (mini-ilova)" },
+  { id: 'tizim', name: "Tizim va xavfsizlik" }
+];
+const FEATURE_CATALOG = [
+  // Boshqaruv va xodimlar
+  { id: 'cashier-panel', name: "Kassir paneli", group: 'boshqaruv' },
+  { id: 'courier-panel', name: "Kuryer paneli", group: 'boshqaruv' },
+  { id: 'kitchen-panel', name: "Oshpaz paneli", group: 'boshqaruv' },
+  { id: 'staff-invite', name: "Xodim taklifnomalari", group: 'boshqaruv' },
+  { id: 'staff-roles', name: "Xodim rollari va huquqlari", group: 'boshqaruv' },
+  { id: 'branch-manage', name: "Filiallar boshqaruvi", group: 'boshqaruv' },
+  { id: 'shift-toggle', name: "Smena boshlash/tugatish", group: 'boshqaruv' },
+  // Menyu va mahsulotlar
+  { id: 'menu-manage', name: "Menyu boshqaruvi", group: 'menyu' },
+  { id: 'category-manage', name: "Kategoriyalar boshqaruvi", group: 'menyu' },
+  { id: 'combo-manage', name: "Combo boshqaruvi", group: 'menyu' },
+  { id: 'promo-manage', name: "Aksiya/promo boshqaruvi", group: 'menyu' },
+  // Buyurtmalar va yetkazish
+  { id: 'orders-manage', name: "Buyurtmalarni boshqarish", group: 'buyurtma' },
+  { id: 'delivery-group', name: "Dostavka guruh xabarnomasi", group: 'buyurtma' },
+  { id: 'kitchen-group', name: "Oshxona guruh xabarnomasi", group: 'buyurtma' },
+  { id: 'courier-report', name: "Kuryer hisoboti", group: 'buyurtma' },
+  // Ombor va moliya
+  { id: 'stock-manage', name: "Ombor boshqaruvi", group: 'ombor_moliya' },
+  { id: 'expense-manage', name: "Xarajatlar", group: 'ombor_moliya' },
+  { id: 'cashflow', name: "Kassa oqimi", group: 'ombor_moliya' },
+  { id: 'z-report', name: "Z-hisobot", group: 'ombor_moliya' },
+  { id: 'bonus-settings', name: "Bonus sozlamalari", group: 'ombor_moliya' },
+  // Statistika va AI
+  { id: 'dashboard', name: "Boshqaruv paneli (Dashboard)", group: 'statistika' },
+  { id: 'staff-performance', name: "Xodimlar statistikasi", group: 'statistika' },
+  { id: 'ai-analytics', name: "AI tahlil", group: 'statistika' },
+  { id: 'ai-director', name: "AI Direktor", group: 'statistika' },
+  { id: 'audit', name: "Auditlar", group: 'statistika' },
+  // Mijozlar (mini-ilova)
+  { id: 'customer-menu', name: "Mijoz uchun menyu va buyurtma", group: 'mijoz' },
+  { id: 'customer-account', name: "Mijoz profili va tarixi", group: 'mijoz' },
+  // Tizim va xavfsizlik
+  { id: 'restaurant-brand', name: "Restoran brendi (logo, nom)", group: 'tizim' },
+  { id: 'system-status', name: "Tizim holati paneli", group: 'tizim' },
+  { id: 'notification-log', name: "Xatolik jurnali", group: 'tizim' }
+];
+function getFeatureCatalogGrouped() {
+  return FEATURE_GROUPS.map(g => ({
+    id: g.id,
+    name: g.name,
+    features: FEATURE_CATALOG.filter(f => f.group === g.id).map(f => ({ id: f.id, name: f.name }))
+  }));
+}
+
+// ====== 59-bosqich: tarifda yo'q funksiyaga kirishni bloklash ======
+// Muhim: owner.tariffId belgilanmagan (yoki tarif o'chirilgan) bo'lsa —
+// CHEKLOVSIZ. Bu — eski, tarif tizimidan oldingi do'kon egalari (57-bosqich
+// hali ularga tarif biriktirmagan) ishlashda davom etishi uchun muhim.
+// Faqat admin ongli ravishda bir tarifni biriktirganda, o'sha tarifning
+// features{} xaritasi amal qila boshlaydi.
+function ownerCanUseFeature(owner, featureId) {
+  if (!owner || !owner.tariffId) return true;
+  const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+  if (!tariff) return true;
+  return !!(tariff.features && tariff.features[featureId] === true);
+}
+
+// 60-bosqich: bloklangan joyda aniq va tushunarli xabar — qaysi funksiya
+// va nima uchun yopilganini bildiradi (admin bilan bog'lanishni so'raydi).
+function featureBlockedResult(featureId) {
+  const feature = FEATURE_CATALOG.find(f => f.id === featureId);
+  const label = feature ? feature.name : 'Bu funksiya';
+  return {
+    ok: false,
+    reason: `"${label}" joriy tarifingizga kiritilmagan. Kengaytirish uchun administrator bilan bog'laning.`,
+    blockedFeature: true,
+    featureId
+  };
+}
+
+// 78-BOSQICH: Ko'p adminli tizim.
+// admins.json'ni o'qiydi/yozadi. Har bir yozuv: { id, addedAt, addedBy }.
+function loadAdmins() { return loadJSONArray(ADMINS_FILE); }
+function saveAdmins(admins) {
+  saveJSONArray(ADMINS_FILE, admins);
+  reloadAdminsCache(admins);
+}
+
+// Xotiradagi Set — har bir so'rovda faylni qayta o'qimaslik uchun. Server
+// ishga tushganda (server.listen ichida) va admins.json har safar
+// o'zgartirilganda (saveAdmins() orqali) yangilanadi.
+let EXTRA_ADMIN_IDS = new Set();
+function reloadAdminsCache(admins) {
+  const list = admins || loadAdmins();
+  EXTRA_ADMIN_IDS = new Set(list.map(a => String(a.id)));
+}
+
+// Qo'shimcha admin qo'shish/o'chirish (keyingi bosqichda admin panelidagi
+// "Adminlar" bo'limi shu funksiyalarni chaqiradi). Bootstrap ADMIN_ID bu
+// yerga hech qachon qo'shilmaydi — u alohida, ENV orqali ustuvor tekshiriladi.
+function addExtraAdmin(id, addedBy) {
+  const idStr = String(id);
+  if (idStr === String(ADMIN_ID)) return loadAdmins(); // bootstrap allaqachon admin — qo'shishning hojati yo'q
+  const admins = loadAdmins();
+  if (admins.some(a => String(a.id) === idStr)) return admins; // allaqachon bor
+  admins.push({ id: idStr, addedAt: new Date().toISOString(), addedBy: addedBy ? String(addedBy) : null });
+  saveAdmins(admins);
+  return admins;
+}
+function removeExtraAdmin(id) {
+  const idStr = String(id);
+  const admins = loadAdmins().filter(a => String(a.id) !== idStr);
+  saveAdmins(admins);
+  return admins;
+}
+
+// Bootstrap ADMIN_ID (ENV) YOKI admins.json'dagi (xotiraga yuklangan)
+// qo'shimcha adminlardan biri bo'lsa — admin hisoblanadi.
+function isAdminId(userId) {
+  const idStr = String(userId);
+  return idStr === String(ADMIN_ID) || EXTRA_ADMIN_IDS.has(idStr);
+}
+
+// 10-bosqich: o'zi ro'yxatdan o'tgan yangi oshxona egasi haqidagi xabar
+// BARCHA adminlarga (bootstrap ADMIN_ID + admins.json'dagi qo'shimchalar)
+// yuborilishi kerak — faqat bittasiga emas (78-bosqichdagi ko'p adminli
+// tizimga mos).
+function allAdminIds() {
+  return Array.from(new Set([String(ADMIN_ID), ...EXTRA_ADMIN_IDS]));
+}
+
+function findOwner(owners, userId) {
+  return owners.find(o => String(o.id) === String(userId));
+}
+
+// 76-BOSQICH: MUHIM TUZATISH. Ilgari bu funksiya faqat owner.expiresAt'ga
+// qarab ha/yo'q javob berardi — grace period (muhlat) tushunchasi umuman
+// yo'q edi. Endi 75-bosqichda tayyorlangan getOwnerSubscriptionAccess()'ga
+// ishlaydi: muddat tugagan bo'lsa ham, SUBSCRIPTION_GRACE_DAYS ichida hali
+// kirish ruxsat etiladi (hisob-kitob-bot'dagi trial+grace mantig'i bilan bir
+// xil). owner.expiresAt endi to'g'ridan-to'g'ri ishlatilmaydi — buning
+// o'rniga owner.subscriptionUntil/subscriptionStatus (71-bosqichda
+// ensureSubscriptionFields orqali expiresAt'dan hosil qilingan) ishlatiladi.
+function isOwnerAccessValid(owner) {
+  return getOwnerSubscriptionAccess(owner).allowed;
+}
+
+// 76-BOSQICH: MUHIM TUZATISH. Ilgari bu funksiya nomiga mos ravishda
+// muddati tugagan (isOwnerAccessValid()===false) egalarni owners.json'dan
+// BUTUNLAY O'CHIRIB YUBORARDI — menyu, xodimlar, buyurtmalar tarixi bilan
+// birga. Bu hisob-kitob-bot'dagi yumshoq bloklash (grace period, ma'lumot
+// hech qachon o'chmasligi) mantig'iga ZID edi va eng jiddiy farq shu edi.
+//
+// ENDI BU FUNKSIYA HECH KIMNI O'CHIRMAYDI. Vazifasi: muddati (grace period
+// bilan birga) chindan tugagan egalarning subscriptionStatus maydonini
+// 'blocked' deb belgilab qo'yish (va aksincha — to'lov/uzaytirish natijasida
+// yana faol bo'lib qolganlarni 'active'ga qaytarish), so'ng owners.json'ga
+// saqlash va TO'LIQ ro'yxatni (bloklanganlar ham ichida) qaytarish.
+//
+// Funksiya nomi ATAYLAB eskicha qoldirilgan (pruneExpiredOwners) — bu nom
+// kod bo'ylab 40dan ortiq joyda "joriy owners ro'yxatini olib kelish"
+// ma'nosida chaqirilgan; ularning barchasini qayta yozib, xato qilib
+// qo'yish xavfi o'rniga, xulq shu YAGONA joyda xavfsiz tarzda o'zgartirildi.
+// pending_trial holatidagi egalarga tegilmaydi — ular hali obuna
+// boshlamagan, ularning statusini admin trial tasdiqlash oqimi o'zgartiradi.
+function pruneExpiredOwners() {
+  const owners = loadOwners();
+  let changed = false;
+  owners.forEach(owner => {
+    if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) return;
+    const nextStatus = getOwnerSubscriptionAccess(owner).allowed
+      ? SUBSCRIPTION_STATUS.ACTIVE
+      : SUBSCRIPTION_STATUS.BLOCKED;
+    if (owner.subscriptionStatus !== nextStatus) {
+      owner.subscriptionStatus = nextStatus;
+      changed = true;
+    }
+  });
+  if (changed) saveOwners(owners);
+  return owners;
+}
+
+// ====== Xodimlar (kassir, oshpaz, sklad, dostavka) — har bir egasining o'z ro'yxati ichida saqlanadi ======
+const STAFF_ROLES = {
+  kassir: 'Kassir',
+  oshpaz: 'Oshpaz',
+  sklad: 'Sklad mas\'uli',
+  dostavka: 'Kuryer'
+};
+
+// 2-4-bosqich: har bir xodim roliga mos "panel" funksiyasi (tarif orqali
+// yopilishi mumkin bo'lgan FEATURE_CATALOG id'si). `sklad` bu yerda yo'q —
+// uning kirishi allaqachon 'stock-manage' funksiyasi orqali cheklanadi.
+const ROLE_PANEL_FEATURE = {
+  kassir: 'cashier-panel',
+  oshpaz: 'kitchen-panel',
+  dostavka: 'courier-panel'
+};
+
+// Xodimning barcha rollaridan FAQAT egasining joriy tarifida ochiq bo'lganlarini
+// qaytaradi. Tarifda mos panel funksiyasi ❌ qilingan bo'lsa — o'sha rol
+// ro'yxatdan olib tashlanadi (xodim o'sha panelga umuman kira olmaydi).
+function allowedStaffRoles(owner, roles) {
+  return (roles || []).filter(r => {
+    const featureId = ROLE_PANEL_FEATURE[r];
+    if (!featureId) return true; // bu rol uchun alohida panel-funksiyasi yo'q (masalan sklad) — cheklanmaydi
+    return ownerCanUseFeature(owner, featureId);
+  });
+}
+
+// ====== Filiallar (G. Filiallar tizimi) — har bir egasi bir nechta filial ocha oladi ======
+function findBranch(owner, branchId) {
+  return (owner.branches || []).find(b => String(b.id) === String(branchId));
+}
+
+function generateBranchId() {
+  return crypto.randomBytes(6).toString('hex');
+}
+
+// Berilgan branchId bo'yicha sklad "pool"ini aniqlaydi: branchId bo'lmasa — markaziy sklad (owner o'zi),
+// branchId bo'lsa — o'sha filialning o'z sklad massivi (kerak bo'lsa lazy yaratiladi)
+function resolveStockPool(owner, branchId) {
+  if (!branchId) return owner; // markaziy sklad — owner.stock / owner.stockMovements
+  const branch = findBranch(owner, branchId);
+  if (!branch) return null;
+  if (!branch.stock) branch.stock = [];
+  if (!branch.stockMovements) branch.stockMovements = [];
+  return branch;
+}
+
+// ====== Xarajat kategoriyalari (F. Moliya bo'limi uchun) ======
+const EXPENSE_CATEGORIES = {
+  ijara: 'Ijara',
+  maosh: 'Maosh',
+  kommunal: 'Kommunal',
+  mahsulot: 'Mahsulot xaridi',
+  // 7-10-bosqich: sklad-add orqali AVTOMATIK yoziladigan xarajatlar shu
+  // kategoriyada — "Mahsulot xaridi"dan ataylab alohida, chunki u qo'lda
+  // (/api/expense-add) kiritilgan xarajatlar uchun, buni esa foydalanuvchi
+  // qo'lda tanlamaydi, faqat /api/stock-add o'zi yozadi.
+  sklad_xarid: 'Sklad xaridlari',
+  boshqa: 'Boshqa'
+};
+
+// ====== Menyu bo'limlari / kategoriyalari — F-bo'lim (36-40-bosqich) ======
+// Har bir egasi endi o'zining tuzilmali bo'limlar ro'yxatiga ega:
+// owner.categories = [{id, name, order}, ...]. Taom (`menu` item)ning
+// `category` maydoni hamon oddiy matn (nom) sifatida saqlanadi — shu bilan
+// eski kod (menyuni ko'rsatish, guruhlash) o'zgarishsiz ishlayveradi, faqat
+// endi bu nomlar "erkin matn" emas, shu ro'yxatdan tanlanadi.
+//
+// Eski ma'lumotlarda (birinchi marta shu funksiyaga murojaat qilinganda)
+// owner.categories hali yo'q — shu holda owner.menu ichidagi mavjud
+// category qiymatlaridan (takrorlanmas holda, birinchi uchragan tartibda)
+// avtomatik ro'yxat yasaladi (migratsiya). Shundan keyin owner.categories
+// doim massiv deb hisoblanishi mumkin.
+function ensureOwnerCategories(owner) {
+  if (!Array.isArray(owner.categories)) {
+    const seen = new Set();
+    const migrated = [];
+    (owner.menu || []).forEach(item => {
+      const name = String(item.category || '').trim();
+      const key = name.toLowerCase();
+      if (name && !seen.has(key)) {
+        seen.add(key);
+        migrated.push({ id: crypto.randomBytes(4).toString('hex'), name, order: migrated.length });
+      }
     });
+    owner.categories = migrated;
   }
+  return owner.categories;
+}
 
-  // =========================================================================
-  // 14-bosqich: hamburger yon-menyu (sidebar). koMenuGridHtml() bilan bir xil
-  // manzillarga o'tadi (koNavHandlers orqali), ustiga "Bosh sahifa" va
-  // "Yangi buyurtma" bandlari qo'shilgan — chunki sidebar istalgan ekrandan
-  // ochilishi mumkin bo'lgan to'liq navigatsiya deb mo'ljallangan, faqat
-  // Bosh sahifadagi katakchalar ro'yxati emas.
-  //
-  // #app'ning O'ZIDAN TASHQARIDA (document.body farzandi sifatida)
-  // qo'shiladi — shu sababli ekran(html) #app ichini qayta chizsa ham
-  // (masalan foydalanuvchi biror bandni bosib boshqa ekranga o'tsa) sidebar
-  // avval closeKoSidebar() bilan olib tashlanadi, keyin navigatsiya sodir
-  // bo'ladi — osilib qolgan overlay bo'lmaydi.
-  // =========================================================================
-  const KO_SIDEBAR_ITEMS = [
-    { key: 'bosh', icon: 'home', label: 'Bosh sahifa' },
-    { key: 'yangiBuyurtma', icon: 'plus', label: 'Yangi buyurtma' },
-    { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
-    { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
-    { key: 'ombor', icon: 'box', label: 'Ombor' },
-    { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
-    { key: 'moliya', icon: 'wallet', label: 'Moliya' },
-    { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
-    { key: 'filiallar', icon: 'store', label: 'Filiallar' },
-    { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
-    { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
-    { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
-    { key: 'profil', icon: 'user', label: 'Profil' },
-    { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
-  ];
+// Tartib (order) bo'yicha saralangan holda qaytaradi — ro'yxatni ko'rsatish/
+// yuborishdan oldin har doim shu orqali o'qish kerak.
+function sortedOwnerCategories(owner) {
+  return ensureOwnerCategories(owner).slice().sort((a, b) => a.order - b.order);
+}
 
-  function koSidebarItemHtml(item) {
-    return `
-      <button type="button" class="ko-sidebar-item" data-sidebar-key="${item.key}">
-        <span class="ko-sidebar-item-icon">${icon(item.icon)}</span>
-        <span>${escapeHtml(item.label)}</span>
-      </button>
-    `;
+// ====== D-bo'lim (28-31-bosqich): Combo — bir nechta taomni birlashtirib,
+// mijozga alohida bo'lim sifatida ko'rinadigan, o'z narxiga ega "to'plam"
+// sifatida sotish. Combo o'zi sklad bilan BEVOSITA bog'lanmaydi — u faqat
+// mavjud menyu taomlarining (owner.menu) qaysi biri va necha donadan
+// tarkibga kirishini saqlaydi (itemIds: [{menuItemId, qty}]). Buyurtma
+// qilinganda combo tarkibidagi HAR BIR taomning o'z retsepti (yoki
+// to'g'ridan-sklad turi) bo'yicha sklad kamayadi — xuddi o'sha taomlar
+// alohida-alohida buyurtma qilingandek (faqat narx combo narxi bo'yicha
+// hisoblanadi, tarkibidagi taomlarning yig'indi narxi emas — buning
+// farqini priceMode belgilaydi: "auto" = tarkib narxlari yig'indisi,
+// "manual" = egasi qo'lda kiritgan narx).
+function findCombo(owner, id) {
+  return (owner.combos || []).find(c => c.id === id);
+}
+
+// Combo tarkibidagi taomlar narxining yig'indisini hisoblaydi ("avtomatik"
+// narx rejimi uchun — 31-bosqich). Menyudan o'chirilgan/topilmagan taom
+// bo'lsa, uning ulushi yig'indiga qo'shilmaydi (0 sifatida hisoblanadi).
+function comboAutoPrice(owner, itemIds) {
+  return (itemIds || []).reduce((sum, entry) => {
+    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+    return sum + (menuItem ? menuItem.price * entry.qty : 0);
+  }, 0);
+}
+
+// Combo bitta buyurtma miqdorida (comboQty) qancha sklad mahsuloti talab
+// qilishini hisoblaydi — natija {stockId, qty, viaName} massivi;
+// checkStockAvailability (tekshirish) va haqiqiy kamaytirish (consumption)
+// bir xil shu ro'yxatdan foydalanadi, shu bilan ikkalasida mantiq
+// bir-biridan farq qilib qolmaydi.
+function comboStockNeeds(owner, combo, comboQty) {
+  const needs = [];
+  for (const entry of ((combo && combo.itemIds) || [])) {
+    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+    if (!menuItem) continue;
+    const unitsNeeded = entry.qty * comboQty;
+    if (menuItem.directStockId) {
+      needs.push({ stockId: menuItem.directStockId, qty: Math.round(unitsNeeded * 1000) / 1000, viaName: menuItem.name });
+      continue;
+    }
+    const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
+    for (const ing of recipe) {
+      needs.push({ stockId: ing.stockId, qty: Math.round(ing.qty * unitsNeeded * 1000) / 1000, viaName: menuItem.name });
+    }
   }
+  return needs;
+}
 
-  function koSidebarHtml(profile) {
-    return `
-      <div class="ko-sidebar-overlay" id="koSidebarOverlay">
-        <div class="ko-sidebar" id="koSidebar" role="dialog" aria-label="Menyu">
-          <div class="ko-sidebar-header">
-            <div class="ko-sidebar-header-logo">${icon('chef-hat', 'icon-md')}</div>
-            <div class="ko-sidebar-header-titles">
-              <div class="ko-sidebar-header-title">${escapeHtml(profile.name || '')}</div>
-              <div class="ko-sidebar-header-subtitle">Oshxona Menejeri</div>
-            </div>
-            <button type="button" class="ko-sidebar-close-btn" id="koSidebarCloseBtn" aria-label="Yopish">${icon('x')}</button>
-          </div>
-          <nav class="ko-sidebar-nav">${KO_SIDEBAR_ITEMS.map(koSidebarItemHtml).join('')}</nav>
-        </div>
-      </div>
-    `;
+// 47-bosqich: sklad tugagach taom/combo avtomatik "Tugagan" deb belgilanishi
+// uchun — egasi qo'lda o'chirgan "available" belgisidan MUSTAQIL, real vaqtda
+// hisoblanadigan ko'rsatkich. Taom sklad bilan bog'lanmagan bo'lsa (na
+// directStockId, na recipe) — cheklovsiz, doim mavjud deb hisoblanadi.
+function menuItemOutOfStock(owner, menuItem) {
+  if (!menuItem) return false;
+  if (menuItem.directStockId) {
+    const stockItem = (owner.stock || []).find(s => s.id === menuItem.directStockId);
+    if (!stockItem) return false; // sklad kartochkasi topilmasa — eski xatti-harakat saqlanadi (cheklanmaydi)
+    return stockItem.qty < 1;
   }
+  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
+  if (!recipe.length) return false;
+  return recipe.some(ing => {
+    const stockItem = (owner.stock || []).find(s => s.id === ing.stockId);
+    if (!stockItem) return false;
+    return stockItem.qty < ing.qty;
+  });
+}
 
-  function closeKoSidebar() {
-    const overlay = document.getElementById('koSidebarOverlay');
-    if (overlay) overlay.remove();
-  }
+// Combo uchun xuddi shu qoida — tarkibidagi taomlardan BIRORTASI uchun ham
+// sklad yetarli bo'lmasa, combo ham "Tugagan" deb ko'rsatiladi (bitta
+// combo — comboQty=1 — tayyorlash uchun yetarli sklad bormi tekshiriladi).
+function comboOutOfStock(owner, combo) {
+  if (!combo) return false;
+  const needs = comboStockNeeds(owner, combo, 1);
+  return needs.some(need => {
+    const stockItem = (owner.stock || []).find(s => s.id === need.stockId);
+    if (!stockItem) return false;
+    return stockItem.qty < need.qty;
+  });
+}
 
-  function openKoSidebar(profile) {
-    if (document.getElementById('koSidebarOverlay')) return; // allaqachon ochiq
-    document.body.insertAdjacentHTML('beforeend', koSidebarHtml(profile));
-    const overlay = document.getElementById('koSidebarOverlay');
-    const handlers = koNavHandlers(profile);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeKoSidebar(); });
-    document.getElementById('koSidebarCloseBtn').addEventListener('click', closeKoSidebar);
-    overlay.querySelectorAll('[data-sidebar-key]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const key = btn.getAttribute('data-sidebar-key');
-        closeKoSidebar();
-        if (key === 'bosh') { renderOwnerHomeScreen(profile); return; }
-        const fn = handlers[key];
-        if (fn) fn();
-      });
-    });
-  }
+// ---- Dostavka bekor qilinishi (mijoz javob bermay/telefon o'chirib qo'yib
+// kuryerga yetkazib berilmagan buyurtmalar) takrorlansa - shu mijozga endi
+// "naqd/dostavka orqali" to'lov ko'rsatilmaydi, faqat "Karta" (oldindan
+// to'lov) qoladi. Shunda kuryer behuda yo'lga chiqib, pulini ololmay
+// qolish xavfi kamayadi. ----
+const CARD_ONLY_AFTER_CANCELLED_DELIVERIES = 2;
+function customerCancelledDeliveryCount(owner, userId) {
+  return (owner.orders || []).filter(o =>
+    String(o.customerId) === String(userId) &&
+    o.orderType === 'dostavka' &&
+    o.status === 'bekor_qilindi'
+  ).length;
+}
+function customerIsCardOnlyRestricted(owner, userId) {
+  // Egasi "Cheklangan mijozlar" ekranidan bu cheklovni qo'lda olib tashlagan
+  // bo'lishi mumkin (masalan, bekor qilishning sababi asosli bo'lgan) —
+  // shunday bo'lsa, bekor qilingan buyurtmalar soni chegaradan oshgan
+  // bo'lsa ham cheklov qo'llanmaydi.
+  if ((owner.cardOnlyOverrides || []).some(id => String(id) === String(userId))) return false;
+  return customerCancelledDeliveryCount(owner, userId) >= CARD_ONLY_AFTER_CANCELLED_DELIVERIES;
+}
+const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
+// "Dostavka orqali" to'langan buyurtmalarda pul avval kuryerning o'z qo'lida
+// turadi — kuryer shu pulni oshxonaga/egasiga jismonan topshirmaguncha
+// (courierCashCollected === true bo'lmaguncha) bu summa hech qanday daromad
+// hisobotiga (kassa, kunlik Z-hisobot, cashflow va h.k.) QO'SHILMAYDI. Karta
+// orqali to'lovda pul to'g'ridan-to'g'ri hisobga/kassaga tushadi va kuryerning
+// qo'lida "yotib qolmaydi", shuning uchun karta har doim darhol daromadga
+// qo'shiladi (eski buyurtmalarda maydon bo'lmasa ham — moslik uchun default true).
+function orderIncomeAmount(o) {
+  if (o.status === 'bekor_qilindi') return 0;
+  if (o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false) return 0;
+  return o.total || 0;
+}
+// ---- Buyurtma holati bosqichlari: Yangi -> Tayyorlanmoqda -> Tayyor ----
+const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
+// 5-bosqich: "Kechikayotgan" tayyor holatida bo'lmagan ma'lumot modelida
+// mavjud emas — shu sababli hisoblab chiqariladi: buyurtma yaratilganidan
+// shuncha daqiqa o'tib ham hali "tayyor" bo'lmasa, kechikkan hisoblanadi.
+// Hozircha taxminiy qiymat — kerak bo'lsa keyinroq moslashtirish mumkin.
+const ORDER_DELAY_THRESHOLD_MINUTES = 20;
 
-  // =========================================================================
-  // 13-bosqich: KitchenOS bosh sahifa "Muhim ogohlantirishlar" ro'yxati —
-  // /api/dashboard-alerts natijasidagi har bir element uchun: turi bo'yicha
-  // rangli icon (xato=qizil, ogohlantirish=sariq, info=ko'k), matn,
-  // son-badge (agar count berilgan bo'lsa) va chevron. Bosilganda alert
-  // o'zining `screen` maydoniga qarab tegishli ekranga o'tkazadi.
-  // =========================================================================
-  const KO_ALERT_LEVEL_ICON = { error: 'warning', warning: 'warning', info: 'info' };
+// ---- Buyurtma yaratishda "ikki marta bosish" / tarmoq qayta yuborishi tufayli ----
+// ---- bitta buyurtmaning ikki marta yaratilib ketishining oldini olish ----
+// Klient har bir chek-aut urinishi uchun bitta `requestId` yuboradi. Shu
+// `requestId` bilan avval muvaffaqiyatli buyurtma yaratilgan bo'lsa, server
+// yangi buyurtma yaratmasdan, oldingi natijani qaytaradi (sklad ham qayta
+// kamaytirilmaydi). Yozuvlar xotirada saqlanadi va bir muddatdan so'ng
+// avtomatik tozalanadi — bu faqat qisqa muddatli himoya, doimiy audit emas.
+const ORDER_REQUEST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 daqiqa
+const orderRequestCache = new Map(); // key: `${ownerId}:${userId}:${requestId}` -> { response, expiresAt }
 
-  function koAlertItemHtml(alert, index) {
-    return `
-      <div class="ko-alert-item" data-alert-index="${index}">
-        <span class="ko-alert-icon ${alert.level}">${icon(KO_ALERT_LEVEL_ICON[alert.level] || 'info')}</span>
-        <span class="ko-alert-text">${escapeHtml(alert.text)}</span>
-        ${alert.count !== null && alert.count !== undefined ? `<span class="ko-alert-count-badge">${escapeHtml(String(alert.count))}</span>` : ''}
-        <span class="ko-alert-chevron">›</span>
-      </div>
-    `;
-  }
-
-  function koAlertsListHtml(alerts) {
-    const body = (alerts && alerts.length)
-      ? alerts.map((a, i) => koAlertItemHtml(a, i)).join('')
-      : `<div class="ko-alert-empty">${icon('check-circle', 'icon-xs')} Hozircha muhim ogohlantirish yo'q.</div>`;
-    return `
-      <div class="ko-alerts-card kartochka" id="koAlertsList">
-        <div class="section-label">Muhim ogohlantirishlar</div>
-        ${body}
-      </div>
-    `;
-  }
-
-  function koAlertsListSkeletonHtml() {
-    return `
-      <div class="ko-alerts-card kartochka" id="koAlertsList" data-loading="1">
-        <div class="section-label">Muhim ogohlantirishlar</div>
-        <div class="ko-alert-item skeleton-row"><div class="skeleton-line w-60"></div></div>
-        <div class="ko-alert-item skeleton-row"><div class="skeleton-line w-40"></div></div>
-      </div>
-    `;
-  }
-
-  // `screen` qiymatini haqiqiy navigatsiyaga aylantiradi (backend'dagi
-  // /api/dashboard-alerts izohiga qarang: ombor / buyurtmalar_kechikkan / zreport).
-  function koAlertScreenRoute(profile, screenKey) {
-    const goBack = () => renderOwnerHomeScreen(profile);
-    if (screenKey === 'ombor') return () => renderStockScreen(profile.name, 'egasi', goBack);
-    if (screenKey === 'buyurtmalar_kechikkan') return () => renderKitchenScreen(profile.name, goBack);
-    if (screenKey === 'zreport') return () => renderZReportScreen(profile, goBack);
+function getCachedOrderResponse(ownerId, userId, requestId) {
+  if (!requestId) return null;
+  const key = `${ownerId}:${userId}:${requestId}`;
+  const entry = orderRequestCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    orderRequestCache.delete(key);
     return null;
   }
+  return entry.response;
+}
 
-  function wireKoAlertsList(profile, alerts) {
-    const list = document.getElementById('koAlertsList');
-    if (!list) return;
-    list.querySelectorAll('[data-alert-index]').forEach(row => {
-      const alert = alerts[Number(row.getAttribute('data-alert-index'))];
-      const route = alert && koAlertScreenRoute(profile, alert.screen);
-      if (route) row.addEventListener('click', route);
+function setCachedOrderResponse(ownerId, userId, requestId, response) {
+  if (!requestId) return;
+  const key = `${ownerId}:${userId}:${requestId}`;
+  orderRequestCache.set(key, { response, expiresAt: Date.now() + ORDER_REQUEST_CACHE_TTL_MS });
+}
+
+// Eskirgan keshlarni vaqti-vaqti bilan tozalab turadi (xotira sizib ketmasligi uchun)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of orderRequestCache) {
+    if (entry.expiresAt < now) orderRequestCache.delete(key);
+  }
+}, 5 * 60 * 1000);
+
+function isValidRole(role) {
+  return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
+}
+
+// Taom rasmi: https:// havola YOKI galereyadan tanlangan rasm (base64 data URL) bo'lishi mumkin.
+// Base64 rasm hajmi cheklanadi (owners.json fayli haddan tashqari katta bo'lib ketmasligi uchun).
+const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000; // taxminan ~2.2MB dekodlangan rasm (so'rov hajmi cheklovidan kichik)
+function isValidImageValue(value) {
+  if (!value) return true; // bo'sh qiymat ruxsat etiladi (rasm shart emas)
+  if (/^https?:\/\//i.test(value)) return true;
+  if (/^data:image\/(png|jpe?g|webp);base64,/i.test(value)) {
+    return value.length <= MAX_MENU_IMAGE_BASE64_CHARS;
+  }
+  return false;
+}
+
+// Xodimning rollarini har doim massiv shaklida qaytaradi — eski ma'lumotda
+// bitta `role` (string) saqlangan bo'lishi mumkin, buni ham qo'llab-quvvatlaydi.
+function normalizeStaffRoles(staff) {
+  if (!staff) return [];
+  if (Array.isArray(staff.roles) && staff.roles.length) {
+    return staff.roles.filter(isValidRole);
+  }
+  if (staff.role && isValidRole(staff.role)) return [staff.role];
+  return [];
+}
+
+// Xodimda berilgan rol bor-yo'qligini tekshiradi (bir nechta rol biriktirilgan bo'lishi mumkin)
+function staffHasRole(staff, role) {
+  return normalizeStaffRoles(staff).includes(role);
+}
+
+// ctx (resolveOwnerContext natijasi) berilgan rolga ega-yo'qligini tekshiradi.
+// Egasi uchun ctx.role har doim 'egasi' — xodim uchun ctx.roles massividan tekshiriladi.
+function ctxHasRole(ctx, role) {
+  if (!ctx) return false;
+  if (ctx.role === 'egasi') return role === 'egasi';
+  return Array.isArray(ctx.roles) ? ctx.roles.includes(role) : ctx.role === role;
+}
+
+// ctx berilgan rollardan BIRIGA bo'lsa ham ega bo'lsa true qaytaradi
+function ctxHasAnyRole(ctx, roles) {
+  return roles.some(r => ctxHasRole(ctx, r));
+}
+
+// Bir nechta rol nomlarini o'qiladigan matn qilib birlashtiradi (masalan: "Kassir, Oshpaz")
+function rolesLabel(roles) {
+  return (roles || []).map(r => STAFF_ROLES[r] || r).join(', ') || '—';
+}
+
+// Berilgan userId qaysi egasining xodimi ekanini (va rol(lar)ini) topadi.
+// 2-4-bosqich: xodimga biriktirilgan rollardan FAQAT tarifda ochiq bo'lgan
+// panellarga mos keladiganlari qaytariladi (masalan owner kassir panelini
+// tarifda yopib qo'ygan bo'lsa — kassir xodimi endi kassir sifatida hech
+// narsaga kira olmaydi, garchi owner.staff'da rol hali ham saqlanayotgan
+// bo'lsa ham). Owner o'z xodimlarini boshqarishda (staff-list) baribir
+// RAW (filtrlanmagan) rollarni ko'radi — u yerda findStaffInfo ishlatilmaydi.
+function findStaffInfo(owners, userId) {
+  for (const owner of owners) {
+    const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
+    if (staff) {
+      const rawRoles = normalizeStaffRoles(staff);
+      const roles = allowedStaffRoles(owner, rawRoles);
+      return {
+        ownerId: owner.id,
+        ownerName: (owner.profile && owner.profile.name) || null,
+        ownerLogoUrl: (owner.profile && owner.profile.logoUrl) || null,
+        ownerBrandColor: (owner.profile && owner.profile.brandColor) || null,
+        role: roles[0] || null,
+        roles,
+        rawRoles,
+        staff
+      };
+    }
+  }
+  return null;
+}
+
+// Berilgan userId qaysi oshxonaga tegishli ekanini aniqlaydi (egasining o'zi yoki uning xodimi)
+// Qaytaradi: { owner, role, roles, branchId } — role: 'egasi' yoki xodimning birinchi roli
+// (orqaga moslik uchun), roles: xodimga biriktirilgan BARCHA rollar massivi; topilmasa null
+function resolveOwnerContext(owners, userId) {
+  const owner = findOwner(owners, userId);
+  if (isOwnerAccessValid(owner)) return { owner, role: 'egasi', roles: ['egasi'], branchId: null };
+
+  const staffInfo = findStaffInfo(owners, userId);
+  if (staffInfo) {
+    const staffOwner = owners.find(o => String(o.id) === String(staffInfo.ownerId));
+    if (staffOwner) {
+      return {
+        owner: staffOwner,
+        role: staffInfo.role,
+        roles: staffInfo.roles,
+        branchId: staffInfo.staff.branchId || null
+      };
+    }
+  }
+  return null;
+}
+
+// ====== J. Mijozlar uchun menyu (38-40-bosqich) — mijozlar, sevimlilar, aksiyalar, bonus ======
+// Owner ichida mijozlarni topadi/kerak bo'lsa yangi yozuv yaratadi (favorites, bonus ballari shu yerda saqlanadi)
+function findCustomer(owner, userId) {
+  return (owner.customers || []).find(c => String(c.id) === String(userId));
+}
+
+function findOrCreateCustomer(owner, userId, tgUser) {
+  if (!owner.customers) owner.customers = [];
+  let c = findCustomer(owner, userId);
+  if (!c) {
+    c = {
+      id: String(userId),
+      username: (tgUser && tgUser.username) || null,
+      firstName: (tgUser && tgUser.first_name) || null,
+      favorites: [],
+      bonusPoints: 0,
+      ordersCount: 0,
+      totalSpent: 0,
+      createdAt: new Date().toISOString()
+    };
+    owner.customers.push(c);
+  } else {
+    if (tgUser && tgUser.username) c.username = tgUser.username;
+    if (tgUser && tgUser.first_name) c.firstName = tgUser.first_name;
+  }
+  return c;
+}
+
+// Berilgan promoId bo'yicha faol aksiyani topadi va chegirmani hisoblaydi
+function findActivePromo(owner, promoId) {
+  if (!promoId) return null;
+  const promo = (owner.promotions || []).find(p => p.id === promoId && p.active);
+  return promo || null;
+}
+
+function applyPromoDiscount(owner, promoId, subtotal) {
+  const promo = findActivePromo(owner, promoId);
+  if (!promo) return { promo: null, discountAmount: 0 };
+  if (promo.minTotal && subtotal < promo.minTotal) return { promo: null, discountAmount: 0 };
+  const discountAmount = Math.round(subtotal * (promo.discountPercent / 100));
+  return { promo, discountAmount };
+}
+
+// ====== I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ======
+// Har bir muhim amalni (kim, qachon, nima qildi) jurnalga yozadi. errorCount — audit kamomadlari uchun (reyting hisobida ayiriladi)
+function logStaffAction(owner, entry) {
+  if (!owner.staffActionLog) owner.staffActionLog = [];
+  owner.staffActionLog.unshift(Object.assign({
+    id: crypto.randomBytes(4).toString('hex'),
+    errorCount: 0,
+    createdAt: new Date().toISOString()
+  }, entry));
+  if (owner.staffActionLog.length > 2000) owner.staffActionLog.length = 2000;
+}
+
+// Telegram Bot API'ga so'rov yuborish (masalan @username orqali foydalanuvchini topish uchun)
+function telegramApi(method, params) {
+  return new Promise((resolve, reject) => {
+    const qs = new URLSearchParams(params).toString();
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}?${qs}`;
+    https.get(url, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
+// 12-bosqich: Ilgari sendMessage() Telegramdan qaytgan har qanday xatolikni
+// (masalan "Forbidden: bot was blocked by the user" yoki "chat not found" —
+// bular xodim botga hali /start bosmagan yoki uni block qilgan bo'lsa yuz
+// beradi) BUTUNLAY yashirib yuborar edi (`.catch(() => {})`, natijani ham
+// tekshirmasdan). Shu sababli "oshpazga buyurtma tushmayapti" kabi holatlarni
+// aniqlash imkonsiz edi — xabar yuborilmagani hech qayerda ko'rinmasdi.
+// Endi: Telegram `ok:false` qaytarsa ham, tarmoq xatosi bo'lsa ham — sabab
+// konsolga (server logiga) chiqariladi. Chaqiruvchi funksiyalar xatti-harakati
+// o'zgarmaydi (hamon reject qilmaydi, oldingidek natija bilan davom etadi) —
+// faqat endi sabab KO'RINADIGAN bo'ldi. To'liq, ilova ichida ko'rinadigan
+// xatolik jurnali 17-bosqichda qo'shiladi.
+function sendMessage(chatId, text, replyMarkup) {
+  const params = { chat_id: chatId, text, parse_mode: 'HTML' };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  return telegramApi('sendMessage', params).then(result => {
+    if (!result || !result.ok) {
+      const reason = (result && result.description) || 'noma\'lum xatolik';
+      console.error(`[sendMessage xato] chat_id=${chatId}: ${reason}`);
+    }
+    return result;
+  }).catch(err => {
+    console.error(`[sendMessage tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+    return null;
+  });
+}
+
+// 17-bosqich: bir nechta xodimga (notifyTargets ro'yxati) bir xil matnni
+// yuboradigan umumiy yordamchi. Ilgari har bir chaqiruv joyida
+// `for (const targetId of new Set(notifyTargets)) sendMessage(targetId, text)`
+// deb takrorlanardi — endi bitta joyda, va MUHIMI: yetkazib bo'lmagan har bir
+// xabar sababi bilan birga `owner.notificationErrors`ga yoziladi (oxirgi 50
+// tasi saqlanadi), shunda egasi ilova ichida ("Bildirishnoma xatolari"
+// kartochkasi, Sozlamalar) buni ko'ra oladi — Telegram/server logiga
+// kirish shart emas. Chaqiruvchi tomon o'zgarishdan keyin owner obyektini
+// saqlashi (saveOwners) kerak — bu funksiya faylga o'zi yozmaydi.
+function notifyStaffList(owner, targetIds, text, context) {
+  const uniqueIds = [...new Set((targetIds || []).map(String))];
+  const promises = uniqueIds.map(targetId => sendMessage(targetId, text).then(result => {
+    if (!result || !result.ok) {
+      const reason = (result && result.description) || 'yuborilmadi (tarmoq xatosi)';
+      const staff = (owner.staff || []).find(s => String(s.id) === String(targetId));
+      if (!owner.notificationErrors) owner.notificationErrors = [];
+      owner.notificationErrors.unshift({
+        id: crypto.randomBytes(4).toString('hex'),
+        targetId,
+        targetName: staff ? staffDisplayName(staff) : (String(targetId) === String(owner.id) ? 'Egasi' : `ID: ${targetId}`),
+        reason,
+        context: context || null,
+        createdAt: new Date().toISOString()
+      });
+      if (owner.notificationErrors.length > 50) owner.notificationErrors.length = 50;
+    }
+  }));
+  return Promise.all(promises);
+}
+
+function answerCallbackQuery(callbackId, text, showAlert) {
+  const params = { callback_query_id: callbackId };
+  if (text) params.text = text;
+  if (showAlert) params.show_alert = 'true';
+  return telegramApi('answerCallbackQuery', params).catch(() => {});
+}
+
+function editMessageText(chatId, messageId, text, replyMarkup) {
+  const params = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  else params.reply_markup = JSON.stringify({ inline_keyboard: [] });
+  return telegramApi('editMessageText', params).catch(() => {});
+}
+
+// To'lov skrinshoti kabi RASM (caption) xabarlarini tahrirlash uchun -
+// editMessageText FAQAT matnli xabarlarda ishlaydi, rasm/caption'li
+// xabarlarda Telegram xato qaytaradi, shuning uchun alohida.
+function editMessageCaption(chatId, messageId, caption, replyMarkup) {
+  const params = { chat_id: chatId, message_id: messageId, caption, parse_mode: 'HTML' };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  else params.reply_markup = JSON.stringify({ inline_keyboard: [] });
+  return telegramApi('editMessageCaption', params).catch(() => {});
+}
+
+// Mijoz yuborgan skrinshotni (from_chat_id/message_id) qayta yuklamasdan,
+// "Forwarded from" belgisisiz kassir/egasiga ko'chirib yuboradi - caption va
+// tasdiqlash tugmalari bilan birga.
+function copyMessageWithKeyboard(targetChatId, fromChatId, messageId, caption, replyMarkup) {
+  const params = {
+    chat_id: targetChatId, from_chat_id: fromChatId, message_id: messageId,
+    caption, parse_mode: 'HTML'
+  };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  return telegramApi('copyMessage', params).catch(() => {});
+}
+
+// Lokatsiya (lat/lng) berilgan bo'lsa - Google Maps havolasiga aylantiradi
+// (dostavka guruhi/oshxona xabarida bosib ochish uchun).
+function locationMapsLink(location) {
+  if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') return null;
+  return `https://maps.google.com/?q=${location.lat},${location.lng}`;
+}
+
+function displayName(user) {
+  if (!user) return 'Noma\'lum';
+  const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
+  return name || (user.username ? '@' + user.username : String(user.id));
+}
+
+// Mijoz "Tanishuv" shaklida o'zi kiritgan Ism+Familiyani birinchi navbatda
+// ishlatadi — buyurtmalarda "Mijoz:" sifatida shu ko'rsatiladi. Bu Telegram
+// profilidagi (taxallus bo'lishi mumkin bo'lgan) ismdan ko'ra ishonchliroq,
+// chunki mijoz buni ro'yxatdan o'tishda bevosita o'zi yozgan. Ro'yxatdan
+// o'tmagan bo'lsa (masalan eski buyurtmalar) Telegram nomiga qaytadi.
+function customerDisplayName(userId, tgUser) {
+  const profile = findProfile(userId);
+  if (profile && profile.firstName) {
+    return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
+  }
+  return displayName(tgUser);
+}
+
+// Xodimlarga (kassir/oshpaz/dostavka guruhi) yuboriladigan xabarlarda mijoz
+// ism-familiyasi VA telefon raqami har doim birga ko'rsatilishi uchun —
+// order.customerPhone mavjud bo'lsa qo'shimcha qator qo'shiladi.
+function orderCustomerContactLabel(order) {
+  const lines = [`Mijoz: ${escapeHtmlServer(order.customerName)}`];
+  if (order.customerPhone) lines.push(`Tel: ${escapeHtmlServer(order.customerPhone)}`);
+  return lines.join('\n');
+}
+
+// 1-bosqich: xodimlar hisobotlarida (reyting, amallar jurnali) F.I.Sh
+// (to'liq ism-familiya) ko'rsatish uchun. Xodim /api/profile-register orqali
+// (mijozlar bilan bir xil umumiy ro'yxatdan o'tish oqimi — profiles.json)
+// ism-familiyasini kiritgan bo'lsa, o'sha F.I.Sh qaytariladi; aks holda
+// @username'ga, u ham bo'lmasa Telegram ID'siga qaytiladi.
+function staffDisplayName(staff) {
+  if (!staff) return null;
+  const profile = findProfile(staff.id);
+  if (profile && profile.firstName) {
+    return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
+  }
+  return staff.username ? '@' + staff.username : `ID: ${staff.id}`;
+}
+
+// 71-BOSQICH: raqamlarni o'qishga oson qilib chiqarish uchun (1000 -> "1 000",
+// 100000 -> "100 000"). Pul summalari va boshqa katta raqamlar shu orqali chiqariladi.
+function fmtNum(n) {
+  const num = Math.round(Number(n) || 0);
+  return num.toLocaleString('ru-RU').replace(/,/g, ' ');
+}
+
+// Telegram xabarlari HTML parse_mode bilan yuborilgani uchun, foydalanuvchi kiritgan matnni xavfsiz qilib chiqaramiz
+function escapeHtmlServer(str) {
+  return String(str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// Buyurtma haqida oshxonaning biriktirilgan (dostavka) admin guruhiga xabar yuboradi
+// ("Qabul qilish" / "Tayyor" tugmalari bilan — bosilganda mijozga avtomatik xabar boradi).
+// Sarlavha buyurtma turiga qarab moslashadi (Dostavka/Stolga/Olib ketish) — chunki endi
+// guruhga barcha buyurtma turlari yuboriladi, faqat dostavka emas.
+function notifyDeliveryGroup(owner, order, creatorLabel) {
+  if (!owner.deliveryGroupId) return;
+  if (!ownerCanUseFeature(owner, 'delivery-group')) return; // 11-bosqich: tarif keyin o'zgartirilgan bo'lsa ham xabar ketmasin
+  const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+  const mapsLink = locationMapsLink(order.location);
+  const addressLines = [
+    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
+    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
+    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
+  ].filter(Boolean).join('\n');
+  const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
+  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : (order.orderType === 'stol' ? '🍽' : '🥡');
+  const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
+  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
+    (addressLines ? `\n\n${addressLines}` : '');
+  sendMessage(owner.deliveryGroupId, text, {
+    inline_keyboard: [[
+      { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
+      { text: '🏁 Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
+    ]]
+  }).then(result => {
+    if (result && result.ok && result.result && result.result.message_id) {
+      const owners2 = loadOwners();
+      const o2 = findOwner(owners2, owner.id);
+      const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+      if (ord2) {
+        ord2.deliveryGroupMsgId = result.result.message_id;
+        saveOwners(owners2);
+      }
+    }
+  }).catch(err => {
+    console.error(`[notifyDeliveryGroup xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+  });
+}
+
+// 13-bosqich: "Oshpazga buyurtma tushmayapti" muammosining bir qismi — ba'zi
+// oshxonalarda oshpazlar bot bilan shaxsiy chatni ochmagan/bloklagan bo'ladi,
+// shu sababli ularga individual (staff.id bo'yicha) xabar UMUMAN yetib
+// bormaydi. Yechim: dostavka admin guruhiga o'xshab, oshxona egasi alohida
+// bir Telegram guruhini ("Oshpazlar guruhi") ham biriktira oladi — shu
+// guruhga HAR BIR yangi buyurtma (turi qanday bo'lishidan qat'iy nazar)
+// alohida, "✅ Qabul qilish" / "🏁 Tayyor" tugmalari bilan yuboriladi. Bu
+// dostavka guruhidan MUSTAQIL — ikkalasi bir vaqtda biriktirilgan bo'lishi
+// mumkin (masalan, kassirlar bitta guruhda, oshpazlar boshqa guruhda
+// ishlaydi).
+//
+// 14-bosqich: ikkalasi (dostavka guruhi + oshpazlar guruhi) BIR XIL
+// order.status maydonidan foydalanadi — shu sababli qaysi guruhda birinchi
+// bosilishidan qat'iy nazar, ikkinchi guruhdagi tugma "allaqachon bajarilgan"
+// deb javob beradi (dublikat yo'q), va ikkala guruhdagi xabar ham
+// yangilanadi (qarang: syncGroupMessagesForOrder).
+function notifyKitchenGroup(owner, order, creatorLabel) {
+  if (!owner.kitchenGroupId) return;
+  if (!ownerCanUseFeature(owner, 'kitchen-group')) return; // 11-bosqich: tarif keyin o'zgartirilgan bo'lsa ham xabar ketmasin
+  try {
+    const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
+    const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
+    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
+    sendMessage(owner.kitchenGroupId, text, {
+      inline_keyboard: [[
+        { text: '✅ Qabul qilish', callback_data: `kgaccept:${owner.id}:${order.id}` },
+        { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
+      ]]
+    }).then(result => {
+      if (result && result.ok && result.result && result.result.message_id) {
+        const owners2 = loadOwners();
+        const o2 = findOwner(owners2, owner.id);
+        const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+        if (ord2) {
+          ord2.kitchenGroupMsgId = result.result.message_id;
+          saveOwners(owners2);
+        }
+      }
+    }).catch(err => {
+      console.error(`[notifyKitchenGroup xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+    });
+  } catch (err) {
+    console.error(`[notifyKitchenGroup kutilmagan xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+  }
+}
+
+// 14/15-bosqich: dostavka guruhi va oshpazlar guruhidagi xabarlarni (agar
+// ikkalasi ham biriktirilgan bo'lsa), shuningdek buyurtma holati Mini App
+// orqali (kassir/oshpaz/egasi tomonidan, guruh tugmalarisiz) o'zgarganda ham
+// ikkala guruh xabaridagi tugmalarni joriy holatga mos ravishda yangilaydi —
+// shu bilan "bir joyda qabul qilindi, boshqa joyda hali ham eski tugma
+// ko'rinadi" kabi chalkashliklarning oldi olinadi.
+function syncGroupMessagesForOrder(owner, order) {
+  const targets = [
+    { chatId: owner.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
+    { chatId: owner.kitchenGroupId, msgId: order.kitchenGroupMsgId, prefix: 'kg' }
+  ].filter(t => t.chatId && t.msgId);
+  if (!targets.length) return;
+
+  for (const t of targets) {
+    let kb = { inline_keyboard: [] };
+    if (order.status === 'yangi') {
+      kb = { inline_keyboard: [[
+        { text: '✅ Qabul qilish', callback_data: `${t.prefix}accept:${owner.id}:${order.id}` },
+        { text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }
+      ]] };
+    } else if (order.status === 'tayyorlanmoqda') {
+      kb = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }]] };
+    }
+    telegramApi('editMessageReplyMarkup', {
+      chat_id: t.chatId, message_id: t.msgId,
+      reply_markup: JSON.stringify(kb)
+    }).catch(err => {
+      console.error(`[syncGroupMessagesForOrder xatosi] owner=${owner.id} order=${order.id} chat=${t.chatId}: ${(err && err.message) || err}`);
     });
   }
+}
 
-  async function loadKoAlertsList(profile) {
-    const el = document.getElementById('koAlertsList');
-    if (!el) return;
-    const res = await apiPost('/api/dashboard-alerts', { initData });
-    const el2 = document.getElementById('koAlertsList');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
-    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoAlertsList(profile)); return; }
-    if (!res.ok) {
-      el2.outerHTML = `<div class="ko-alerts-card kartochka" id="koAlertsList"><div class="section-label">Muhim ogohlantirishlar</div><div class="bosh">Yuklanmadi.</div></div>`;
-      // Xatolik holatida badge sonini eskicha (yuklanmagan) holatda
-      // qoldiramiz — noto'g'ri "0" ko'rsatib, bor ogohlantirishni
-      // yashirib qo'ymaslik uchun bu yerda updateKoNotifBadges chaqirilmaydi.
+// ====== Obuna muddati tugashini kuzatish (avtomatik bloklash + admin/egaga eslatma) ======
+const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000; // har soatda tekshiradi
+// 65-bosqich: eslatma qancha kun oldin yuborilishi endi tarifga bog'liq —
+// har bir tarif o'zining reminderDays qiymatini belgilashi mumkin (admin
+// panelida, Tarif tahrirlash oynasi). Tarif biriktirilmagan yoki
+// reminderDays ko'rsatilmagan bo'lsa — standart qiymat shu yerdan olinadi
+// (eski, tarif tizimidan oldingi umumiy 1 kunlik xulq bilan bir xil).
+const DEFAULT_REMINDER_DAYS = 1;
+
+function ownerLabel(owner) {
+  return owner.username ? '@' + owner.username : `ID: ${owner.id}`;
+}
+
+// Shu do'kon egasi uchun eslatma necha kun oldin yuborilishini aniqlaydi.
+function ownerReminderBeforeMs(owner) {
+  let reminderDays = DEFAULT_REMINDER_DAYS;
+  if (owner.tariffId) {
+    const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+    if (tariff && Number.isFinite(tariff.reminderDays) && tariff.reminderDays > 0) {
+      reminderDays = tariff.reminderDays;
+    }
+  }
+  return reminderDays * 24 * 60 * 60 * 1000;
+}
+
+// 76-BOSQICH (davomi): Bu funksiya YUQORIDAGI pruneExpiredOwners()dan
+// MUSTAQIL, alohida yo'l bilan har soatda (setInterval, server.listen
+// ichida) ishga tushadi va u ham xuddi shunday muddati tugagan egalarni
+// owners.json'dan BUTUNLAY o'chirib yuborardi (stillActive massivi orqali).
+// Ya'ni faqat pruneExpiredOwners()ni tuzatish YETARLI EMAS edi — bu funksiya
+// ham xuddi shu muammoga ega edi. Endi ikkalasi ham bir xil: hech kimni
+// o'chirmaydi, faqat subscriptionStatus'ni yangilaydi.
+//
+// "Bloklandi" xabari endi FAQAT BIR MARTA yuboriladi (owner.blockedNotifiedAt
+// orqali kuzatiladi) — aks holda har soat qayta-qayta kelaverardi. Owner
+// qayta faol bo'lib qolsa (to'lov/uzaytirish natijasida), shu maydon
+// tozalanadi — keyingi safar chindan bloklansa, xabar yana yuboriladi.
+async function checkOwnerExpirations() {
+  const owners = loadOwners();
+  let changed = false;
+
+  for (const owner of owners) {
+    // O'zi ro'yxatdan o'tib, admin hali trial muddatini tasdiqlamagan
+    // egalarga bu yerda tegilmaydi — ularning holati faqat admin
+    // tasdiqlash/rad etish oqimi orqali o'zgaradi.
+    if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) continue;
+
+    const access = getOwnerSubscriptionAccess(owner);
+
+    if (!access.allowed) {
+      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.BLOCKED) {
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+        changed = true;
+      }
+      if (!owner.blockedNotifiedAt) {
+        owner.blockedNotifiedAt = new Date().toISOString();
+        changed = true;
+        await sendMessage(ADMIN_ID,
+          `⏰ <b>Obuna muddati tugadi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish bloklandi.\nMa'lumotlari (menyu, xodimlar, buyurtmalar) saqlanib qolyapti — obuna uzaytirilsa, kirish avtomatik tiklanadi.`);
+        await sendMessage(owner.id,
+          `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.\nDavom ettirish uchun administrator bilan bog'laning.`);
+      }
+      continue;
+    }
+
+    // Hali ruxsat bor (faol yoki grace davrida) — status shunga mos
+    // yangilanadi va eski bloklanish belgisi tozalanadi.
+    if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.ACTIVE) {
+      owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+      changed = true;
+    }
+    if (owner.blockedNotifiedAt) {
+      owner.blockedNotifiedAt = null;
+      changed = true;
+    }
+
+    if (owner.subscriptionUntil && !owner.reminderSentAt) {
+      const expiresMs = new Date(owner.subscriptionUntil).getTime();
+      const now = Date.now();
+      if (Number.isFinite(expiresMs) && expiresMs > now && expiresMs - now <= ownerReminderBeforeMs(owner)) {
+        changed = true;
+        owner.reminderSentAt = new Date().toISOString();
+        const daysLeft = Math.max(1, Math.ceil((expiresMs - now) / 86400000));
+        await sendMessage(ADMIN_ID,
+          `🔔 <b>Obuna tugashiga oz qoldi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) — taxminan ${daysLeft} kundan keyin tugaydi.`);
+        await sendMessage(owner.id,
+          `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun administrator bilan bog'laning.`);
+      }
+    }
+  }
+
+  if (changed) saveOwners(owners);
+}
+
+// ====== Bir martalik taklif havolalari (invites) ======
+function createInvite() {
+  const token = crypto.randomBytes(16).toString('hex');
+  const invites = loadInvites();
+  invites.push({ token, createdAt: new Date().toISOString(), used: false, usedBy: null, usedAt: null });
+  saveInvites(invites);
+  return token;
+}
+
+function findInvite(token) {
+  const invites = loadInvites();
+  return invites.find(i => i.token === token);
+}
+
+function markInviteUsed(token, userId) {
+  const invites = loadInvites();
+  const inv = invites.find(i => i.token === token);
+  if (inv) { inv.used = true; inv.usedBy = String(userId); inv.usedAt = new Date().toISOString(); saveInvites(invites); }
+}
+
+// ====== Adminga yuborilgan so'rovlar (do'kon egasi bo'lish uchun) ======
+function createRequest(user, token) {
+  const reqId = crypto.randomBytes(4).toString('hex');
+  const reqs = loadRequests();
+  reqs.push({
+    reqId,
+    token,
+    userId: String(user.id),
+    username: user.username || null,
+    firstName: user.first_name || null,
+    createdAt: new Date().toISOString()
+  });
+  saveRequests(reqs);
+  return reqId;
+}
+
+function findRequest(reqId) {
+  return loadRequests().find(r => r.reqId === reqId);
+}
+
+function removeRequest(reqId) {
+  const reqs = loadRequests().filter(r => r.reqId !== reqId);
+  saveRequests(reqs);
+}
+
+const DAY_LABELS = { '1': '1 kun', '7': '7 kun', '30': '30 kun', 'p': 'Doimiy' };
+
+function daysKeyboard(reqId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '1 kun', callback_data: `apr:${reqId}:1` },
+        { text: '7 kun', callback_data: `apr:${reqId}:7` },
+        { text: '30 kun', callback_data: `apr:${reqId}:30` }
+      ],
+      [{ text: 'Doimiy ruxsat', callback_data: `apr:${reqId}:p` }],
+      [{ text: '✏️ Boshqa son (kun kiritish)', callback_data: `custom:${reqId}` }],
+      [{ text: '❌ Rad etish', callback_data: `rej:${reqId}` }]
+    ]
+  };
+}
+
+// ====== "Boshqa son" — admin qo'lda kun sonini yozmoqchi bo'lganda, shu so'rov navbatda kutib turadi ======
+const AWAITING_FILE = path.join(DATA_DIR, 'awaiting.json');
+
+function getAwaitingCustom() {
+  try {
+    const raw = fs.readFileSync(AWAITING_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function setAwaitingCustom(reqId, promptMessageId) {
+  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ reqId, promptMessageId }), 'utf8');
+}
+
+function clearAwaitingCustom() {
+  try { fs.unlinkSync(AWAITING_FILE); } catch (e) {}
+}
+
+// Juda oddiy telefon raqam tekshiruvi — bo'shliq/tire/qavslarni olib tashlab,
+// +xxxxxxxxxxx yoki xxxxxxxxxxx ko'rinishini tekshiradi (qarang: /api/profile-register)
+function isPlausiblePhone(str) {
+  const cleaned = String(str).replace(/[\s\-()]/g, '');
+  return /^\+?\d{7,15}$/.test(cleaned);
+}
+
+// Bitta so'rovni belgilangan kun soni (yoki doimiy, days=null) bilan tasdiqlash — tugma va matn orqali kirish uchun umumiy funksiya
+function approveRequest(reqInfo, days) {
+  const expiresAt = days === null ? null : new Date(Date.now() + days * 86400000).toISOString();
+  const owners = loadOwners();
+  const already = findOwner(owners, reqInfo.userId);
+  if (already) {
+    already.expiresAt = expiresAt;
+    already.username = reqInfo.username || already.username;
+    already.reminderSentAt = null;
+  } else {
+    owners.push({
+      id: reqInfo.userId,
+      username: reqInfo.username || null,
+      addedAt: new Date().toISOString(),
+      expiresAt,
+      price: 0,
+      paid: false,
+      paidAt: null
+    });
+  }
+  saveOwners(owners);
+  removeRequest(reqInfo.reqId);
+  const label = days === null ? 'Doimiy' : `${days} kun`;
+  return label;
+}
+
+// ====== 10-BOSQICH: o'z-o'zidan ro'yxatdan o'tish (self-registration) ======
+// Notanish foydalanuvchi "📝 Ro'yxatdan o'tish" tugmasini bossa, uning
+// keyingi yuboradigan xabarini OSHXONA NOMI sifatida kutamiz. Xotirada
+// saqlanadi (server qayta ishga tushsa tozalanadi — foydalanuvchi tugmani
+// qayta bossa yetarli, ma'lumot yo'qolmaydi, chunki hali owner sifatida
+// SAQLANMAGAN).
+const pendingSelfRegistration = new Set(); // userId(string) larni saqlaydi
+
+// /start buyrug'ining asosiy mantiqi (taklif havolasi, mijoz menyu havolasi va h.k.) —
+// alohida funksiyaga ajratildi, chunki ro'yxatdan o'tish tugagandan keyin ham
+// xuddi shu logikani (asl /start matni bilan) qayta ishga tushirish kerak bo'ladi.
+async function handleStartCommand(chatId, from, text) {
+  const parts = text.split(' ');
+  const payload = parts.length > 1 ? parts[1].trim() : '';
+
+  if (!payload) {
+    if (isAdminId(from.id)) {
+      await sendMessage(chatId, 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.');
       return;
     }
-    el2.outerHTML = koAlertsListHtml(res.alerts);
-    wireKoAlertsList(profile, res.alerts);
-    updateKoNotifBadges(res.alerts.length);
-  }
-
-  // =========================================================================
-  // 15-bosqich: "Bildirishnomalar" — to'liq ekranli ro'yxat. Alohida
-  // bildirishnoma-ma'lumotlar bazasi hali yo'q, shu sababli 13-bosqichdagi
-  // /api/dashboard-alerts'ning o'zi qayta ishlatiladi (bir xil ma'lumot,
-  // header'dagi bell va bu ekran bir xil manbadan keladi — 18-bosqichda
-  // badge soni ham shu yerdan olinadi). Har bir band bosilganda
-  // koAlertScreenRoute() orqali tegishli ekranga o'tadi (12/13-bosqichdagi
-  // bilan bir xil xaritalash).
-  // =========================================================================
-  function koNotificationsListHtml(alerts) {
-    return (alerts && alerts.length)
-      ? alerts.map((a, i) => koAlertItemHtml(a, i)).join('')
-      : `<div class="ko-alert-empty">${icon('check-circle', 'icon-xs')} Hozircha bildirishnoma yo'q.</div>`;
-  }
-
-  function renderNotificationsScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Bildirishnomalar</div>
-        <button class="btn ikkinchi" id="notifBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="kartochka" id="notifList"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-    document.getElementById('notifBackBtn').addEventListener('click', () => onBack && onBack());
-    loadNotificationsList(profile);
-  }
-
-  async function loadNotificationsList(profile) {
-    const el = document.getElementById('notifList');
-    if (!el) return;
-    const res = await apiPost('/api/dashboard-alerts', { initData });
-    const el2 = document.getElementById('notifList');
-    if (!el2) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
-    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadNotificationsList(profile)); return; }
-    if (!res.ok) {
-      el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
+    const owners = loadOwners();
+    if (findOwner(owners, from.id) || findStaffInfo(owners, from.id)) {
+      await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
       return;
     }
-    el2.innerHTML = koNotificationsListHtml(res.alerts);
-    el2.querySelectorAll('[data-alert-index]').forEach(row => {
-      const alert = res.alerts[Number(row.getAttribute('data-alert-index'))];
-      const route = alert && koAlertScreenRoute(profile, alert.screen);
-      if (route) row.addEventListener('click', route);
-    });
+    // 10-bosqich: avval bu yerda "sizga taklif havolasi kerak" deb qat'iy
+    // to'xtatilardi — endi notanish foydalanuvchi ham o'zi ro'yxatdan
+    // o'tishi mumkin, taklif havolasiz.
+    await sendMessage(chatId,
+      `👋 <b>KitchenOS</b>ga xush kelibsiz!\n` +
+      `Bu — oshxonangiz uchun buyurtma qabul qilish va boshqarish tizimi (menyu, xodimlar, sklad, hisobotlar).\n\n` +
+      `O'z oshxonangizni ro'yxatdan o'tkazish uchun quyidagi tugmani bosing:`,
+      { inline_keyboard: [[{ text: "📝 Ro'yxatdan o'tish", callback_data: 'self_register_start' }]] });
+    return;
   }
 
-  // =========================================================================
-  // 15-bosqich: "Profil" ekrani — "Do'kon ma'lumotlari" bo'limi "bosh"
-  // tabidan shu yerga ko'chirildi (endi u yerda ikki marta ko'rsatilmaydi).
-  //
-  // MA'LUM CHEKLOV: "Profilni tahrirlash" tugmasi mavjud renderProfileForm()
-  // ekranini ochadi — u saqlagach doim renderOwnerHomeScreen(profile) (Bosh
-  // sahifa)ga qaytaradi, Profil ekraniga emas, chunki forma ichidagi
-  // navigatsiya shunday yozilgan (bu joyning o'zgarishi emas).
-  // =========================================================================
-  function renderOwnerProfileScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Profil</div>
-        <button class="btn ikkinchi" id="profileBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
-        <div class="kartochka">
-          <div class="profile-view">
-            ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
-            <div class="info">
-              <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
-              <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
-              ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
-            </div>
-          </div>
-          <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
-        </div>
-      </div>
-    `);
-    document.getElementById('profileBackBtn').addEventListener('click', () => onBack && onBack());
-    document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+  // Mijoz uchun oshxona menyusi havolasi: /start menu_<ownerId>
+  if (payload.startsWith('menu_')) {
+    const ownerId = payload.replace(/^menu_/, '').trim();
+    const owners = pruneExpiredOwners();
+    const owner = findOwner(owners, ownerId);
+    if (!owner || !isOwnerAccessValid(owner)) {
+      await sendMessage(chatId, 'Kechirasiz, bu oshxona menyusi hozircha mavjud emas.');
+      return;
+    }
+    if (!PUBLIC_URL) {
+      await sendMessage(chatId, 'Menyu havolasi hozircha sozlanmagan. Iltimos, oshxona bilan bog\'laning.');
+      return;
+    }
+    const restaurantName = (owner.profile && owner.profile.name) || 'Oshxona';
+    const menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
+    await sendMessage(chatId, `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`, {
+      inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]]
+    });
+    return;
   }
 
-  // =========================================================================
-  // 16-bosqich: "Bosh sahifa" — mustaqil ekran funksiyasi. Ilgari shu kontent
-  // renderProfileView(profile) ichidagi "bosh" tabida yashar edi; endi u
-  // yerdan olib tashlanib, shu funksiyaga ko'chirildi va navigatsiyaning
-  // haqiqiy boshlang'ich nuqtasiga aylandi: login/onboarding tugagach hamda
-  // barcha "bosh sahifaga qaytish" callback'lari (pastki nav, "Bugungi
-  // holat → Barchasi", ogohlantirish bandlari, menyu-grid, header
-  // qo'ng'irog'i) endi shu funksiyani chaqiradi — renderProfileView(profile)
-  // emas.
-  //
-  // 20-bosqich: renderProfileView butunlay olib tashlandi (o'lik kod edi,
-  // hech qayerdan chaqirilmasdi). Undagi 3 ta eski tab yangi joylarga
-  // ko'chirildi: "menyu"/"moliya" tabidagi taom, aksiya, bonus va dostavka
-  // guruhi bo'limlari renderProfileForm() (Sozlamalar) ichiga, "xodimlar"
-  // tabidagi xodim qo'shish/ro'yxati esa renderStaffControlScreen()
-  // (Xodimlar) ichiga.
-  // =========================================================================
-  function renderOwnerHomeScreen(profile) {
-    // Rasmda faqat bitta (qizil, KitchenOS uslubidagi) header bor — shu
-    // sababli umumiy app-shell header (setAppHeader, boshqa barcha
-    // ekranlarda ishlatiladi) shu ekranda ko'rsatilmaydi, o'rniga faqat
-    // koHomeHeaderHtml() qoladi.
-    clearAppHeader();
-    // 18-bosqich: bu yerdagi "0" — dastlabki (ma'lumot hali kelmagan) holat,
-    // pastdagi loadKoAlertsList() natijasi kelgach updateKoNotifBadges()
-    // orqali haqiqiy songa almashtiriladi (shu sababli boshida hech qanday
-    // badge ko'rinmaydi, keyin kerak bo'lsa paydo bo'ladi).
-    ekran(`
-      <div class="panel has-ko-bottom-nav ko-home-panel">
-        ${koHomeHeaderHtml(0, profile.name)}
-        ${koKpiGridSkeletonHtml()}
-        ${koStatusBannerSkeletonHtml()}
-        ${koMenuGridHtml()}
-        ${koAlertsListSkeletonHtml()}
-        <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
-        <div class="kartochka">
-          <h2>Filial qo'shish</h2>
-          <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
-          <input type="text" id="branchAddressInput" placeholder="Manzil">
-          <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
-          <button class="btn" id="addBranchBtn">Filial qo'shish</button>
-          <div class="xabar" id="branchMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Filiallar</h2>
-          <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="section-label">${icon('link', 'icon-xs')} Mijozlar bilan ishlash</div>
-        <div class="kartochka">
-          <h2>Mijozlar uchun menyu</h2>
-          <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
-          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
-          <div id="customerLinkWrap"></div>
-          <div class="xabar" id="customerLinkMsg"></div>
-        </div>
-      </div>
-      ${koBottomNavHtml('bosh')}
-    `);
+  // Xodim uchun bir martalik taklif havolasi: /start staffinv_<ownerId>_<token>
+  if (payload.startsWith('staffinv_')) {
+    const rest = payload.replace(/^staffinv_/, '');
+    const sepIdx = rest.indexOf('_');
+    const ownerId = sepIdx >= 0 ? rest.slice(0, sepIdx) : '';
+    const token = sepIdx >= 0 ? rest.slice(sepIdx + 1) : '';
 
-    loadKoKpiGrid(profile);
-    wireKoStatusBanner(profile);
-    loadKoStatusBanner(profile);
-    wireKoMenuGrid(profile);
-    loadKoAlertsList(profile);
-    wireKoHomeHeader(profile);
-    wireKoBottomNav(profile);
+    const owners = pruneExpiredOwners();
+    const owner = findOwner(owners, ownerId);
+    const invite = owner && (owner.staffInvites || []).find(i => i.token === token);
 
-    document.getElementById('addBranchBtn').addEventListener('click', async () => {
-      const name = document.getElementById('branchNameInput').value.trim();
-      const address = document.getElementById('branchAddressInput').value.trim();
-      const phone = document.getElementById('branchPhoneInput').value.trim();
-      const msgEl = document.getElementById('branchMsg');
-      if (!name || !address) {
-        msgEl.textContent = 'Filial nomi va manzilini kiriting.';
-        msgEl.className = 'xabar err';
+    if (!owner || !invite || invite.used || new Date(invite.expiresAt) <= new Date()) {
+      await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, menejerdan yangi havola so\'rang.');
+      return;
+    }
+    if (isAdminId(from.id)) {
+      await sendMessage(chatId, 'Siz administratorsiz, xodim bo\'la olmaysiz.');
+      return;
+    }
+    if (findOwner(owners, from.id)) {
+      await sendMessage(chatId, 'Siz allaqachon oshxona egasisiz, xodim bo\'la olmaysiz.');
+      return;
+    }
+    const existingStaff = findStaffInfo(owners, from.id);
+    if (existingStaff) {
+      await sendMessage(chatId, existingStaff.ownerId === owner.id
+        ? 'Siz allaqachon shu oshxonaning xodimisiz. Mini App tugmasi orqali oching.'
+        : 'Siz boshqa oshxonada xodim sifatida ro\'yxatdasiz.');
+      return;
+    }
+
+    invite.used = true;
+    invite.usedBy = String(from.id);
+    invite.usedAt = new Date().toISOString();
+
+    if (!owner.staff) owner.staff = [];
+    owner.staff.push({
+      id: String(from.id),
+      username: from.username || null,
+      role: invite.roles[0],
+      roles: invite.roles,
+      branchId: invite.branchId || null,
+      addedAt: new Date().toISOString()
+    });
+    saveOwners(owners);
+
+    await sendMessage(chatId,
+      `👋 Siz <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> jamoasiga <b>${escapeHtmlServer(rolesLabel(invite.roles))}</b> sifatida qo\'shildingiz.\nMini App tugmasi orqali oching.`);
+    sendMessage(owner.id, `✅ ${escapeHtmlServer(displayName(from))}${from.username ? ' (@' + escapeHtmlServer(from.username) + ')' : ''} taklif havolasi orqali <b>${escapeHtmlServer(rolesLabel(invite.roles))}</b> sifatida jamoaga qo\'shildi.`);
+    return;
+  }
+
+  const token = payload.replace(/^inv_/, '');
+  const invite = findInvite(token);
+
+  if (isAdminId(from.id)) {
+    await sendMessage(chatId, 'Siz allaqachon administratorsiz.');
+    return;
+  }
+
+  if (!invite || invite.used) {
+    await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, admindan yangi havola so\'rang.');
+    return;
+  }
+
+  const owners = pruneExpiredOwners();
+  const existing = findOwner(owners, from.id);
+  if (existing && isOwnerAccessValid(existing)) {
+    markInviteUsed(token, from.id);
+    await sendMessage(chatId, 'Sizda allaqachon kirish huquqi mavjud. Mini App tugmasi orqali oching.');
+    return;
+  }
+
+  markInviteUsed(token, from.id);
+  const reqId = createRequest(from, token);
+
+  await sendMessage(chatId, 'So\'rovingiz adminga yuborildi. Iltimos, tasdiqlanishini kuting.');
+
+  const infoText = `🆕 <b>Yangi do'kon egasi so'rovi</b>\n` +
+    `Ism: ${displayName(from)}\n` +
+    (from.username ? `Username: @${from.username}\n` : '') +
+    `ID: <code>${from.id}</code>\n\n` +
+    `Necha kunga ruxsat berasiz?`;
+  await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
+}
+
+// ====== Telegram yangilanishlarini (webhook) qayta ishlash ======
+async function handleTelegramUpdate(update) {
+  if (update.message && update.message.text) {
+    const msg = update.message;
+    const text = msg.text.trim();
+    const from = msg.from;
+    const chatId = msg.chat.id;
+
+    // ---- Guruhda /biriktir: oshxona egasi shu guruhni dostavka admin guruhi sifatida bog'laydi ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, from.id);
+      if (!isOwnerAccessValid(owner)) {
+        const blocked = getBlockedOwnerAccess(owners, from.id);
+        if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
+        else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/branch-add', { initData, name, address, phone });
-      if (res.ok) {
-        msgEl.textContent = 'Filial qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('branchNameInput').value = '';
-        document.getElementById('branchAddressInput').value = '';
-        document.getElementById('branchPhoneInput').value = '';
-        loadBranchAndRender();
-      } else {
-        handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('branchList').addEventListener('click', async (e) => {
-      const id = e.target.getAttribute('data-remove-branch-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/branch-remove', { initData, id });
-      loadBranchAndRender();
-    });
-
-    document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('customerLinkMsg');
-      const wrap = document.getElementById('customerLinkWrap');
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/customer-link', { initData });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        wrap.innerHTML = '';
+      if (!ownerCanUseFeature(owner, 'delivery-group')) {
+        await sendMessage(chatId, featureBlockedResult('delivery-group').reason);
         return;
       }
-      msgEl.textContent = '';
-      wrap.innerHTML = `
-        <div class="link-box">
-          <span>${escapeHtml(res.link)}</span>
-          <button id="copyCustomerLinkBtn">Nusxalash</button>
-        </div>
-        <div class="customer-link-hint">Bu havolani mijozlaringizga (masalan, ijtimoiy tarmoqlarda yoki stol ustida QR kod qilib) ulashing.</div>
-      `;
-      document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
-        }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
-        });
+      owner.deliveryGroupId = String(chatId);
+      owner.deliveryGroupTitle = msg.chat.title || null;
+      saveOwners(owners);
+      await sendMessage(chatId,
+        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun admin guruhi sifatida biriktirildi.\n` +
+        `Endi mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.`);
+      return;
+    }
+
+    // ---- Guruhda /bekor_biriktir: bog'lanishni bekor qilish ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/bekor_biriktir(@\S+)?$/.test(text)) {
+      const owners = loadOwners();
+      const owner = findOwner(owners, from.id);
+      if (owner && String(owner.deliveryGroupId) === String(chatId)) {
+        owner.deliveryGroupId = null;
+        owner.deliveryGroupTitle = null;
+        saveOwners(owners);
+        await sendMessage(chatId, 'Bu guruh admin guruhi sifatidan olib tashlandi.');
+      }
+      return;
+    }
+
+    // ---- 13-bosqich: Guruhda /oshpaz_biriktir — shu guruhni "Oshpazlar
+    // guruhi" sifatida bog'laydi. Dostavka guruhidan MUSTAQIL — ikkalasi
+    // bir vaqtda biriktirilgan bo'lishi mumkin (masalan, kassirlar bitta
+    // guruhda, oshpazlar boshqa guruhda ishlashi uchun). ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?$/.test(text)) {
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, from.id);
+      if (!isOwnerAccessValid(owner)) {
+        const blocked = getBlockedOwnerAccess(owners, from.id);
+        if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
+        else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
+        return;
+      }
+      if (!ownerCanUseFeature(owner, 'kitchen-group')) {
+        await sendMessage(chatId, featureBlockedResult('kitchen-group').reason);
+        return;
+      }
+      owner.kitchenGroupId = String(chatId);
+      owner.kitchenGroupTitle = msg.chat.title || null;
+      saveOwners(owners);
+      await sendMessage(chatId,
+        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun Oshpazlar guruhi sifatida biriktirildi.\n` +
+        `Endi har bir yangi buyurtma (Stolga, Olib ketish yoki Dostavka) shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.`);
+      return;
+    }
+
+    // ---- 13-bosqich: Guruhda /oshpaz_bekor_biriktir — Oshpazlar guruhi
+    // bog'lanishini bekor qilish ----
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_bekor_biriktir(@\S+)?$/.test(text)) {
+      const owners = loadOwners();
+      const owner = findOwner(owners, from.id);
+      if (owner && String(owner.kitchenGroupId) === String(chatId)) {
+        owner.kitchenGroupId = null;
+        owner.kitchenGroupTitle = null;
+        saveOwners(owners);
+        await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
+      }
+      return;
+    }
+
+    // ---- 10-bosqich: "📝 Ro'yxatdan o'tish" bosilgandan keyin, foydalanuvchi
+    // yuborgan keyingi (buyruq bo'lmagan) xabarni OSHXONA NOMI sifatida
+    // qabul qilamiz va pending_trial holatida yangi owner yaratamiz. ----
+    if (!isAdminId(from.id) && !text.startsWith('/') && pendingSelfRegistration.has(String(from.id))) {
+      const restaurantName = text.trim();
+      if (restaurantName.length < 2 || restaurantName.length > 60) {
+        await sendMessage(chatId, "Iltimos, oshxona nomini 2 tadan 60 belgigacha oralig'ida yozing.");
+        return;
+      }
+      pendingSelfRegistration.delete(String(from.id));
+
+      const owners = loadOwners();
+      // Ehtiyot chorasi: shu vaqt ichida boshqa yo'l bilan (masalan admin
+      // qo'lda) allaqachon ro'yxatga qo'shilgan bo'lishi mumkin.
+      if (findOwner(owners, from.id)) {
+        await sendMessage(chatId, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
+        return;
+      }
+
+      const newOwner = {
+        id: String(from.id),
+        username: from.username || null,
+        addedAt: new Date().toISOString(),
+        expiresAt: null,
+        price: 0,
+        paid: false,
+        paidAt: null,
+        // pending_trial — admin tasdiqlaguncha kirish yo'q (qarang:
+        // getOwnerSubscriptionAccess). Tasdiqlash — 11-bosqich.
+        subscriptionStatus: SUBSCRIPTION_STATUS.PENDING_TRIAL,
+        subscriptionUntil: null,
+        graceUntil: null,
+        trialGivenAt: null,
+        profile: { name: restaurantName }
+      };
+      owners.push(newOwner);
+      saveOwners(owners);
+
+      await sendMessage(chatId,
+        `✅ So'rovingiz qabul qilindi!\n<b>${escapeHtmlServer(restaurantName)}</b> nomi bilan ro'yxatga olindi.\n` +
+        `Administrator tasdiqlashini kuting — tasdiqlangach shu yerga xabar boradi.`);
+
+      const adminText =
+        `🆕 <b>Yangi oshxona — o'zi ro'yxatdan o'tdi</b>\n` +
+        `Oshxona: <b>${escapeHtmlServer(restaurantName)}</b>\n` +
+        `Ega: ${displayName(from)}${from.username ? ' (@' + escapeHtmlServer(from.username) + ')' : ''}\n` +
+        `ID: <code>${from.id}</code>\n\n` +
+        `Sinov muddatini tasdiqlaysizmi? (tasdiqlansa ${SUBSCRIPTION_TRIAL_DAYS} kunlik standart sinov beriladi)`;
+      const approveKb = {
+        inline_keyboard: [[
+          { text: '✅ Tasdiqlash', callback_data: `approve_trial:${newOwner.id}` },
+          { text: '❌ Rad etish', callback_data: `reject_trial:${newOwner.id}` }
+        ]]
+      };
+      for (const adminId of allAdminIds()) {
+        sendMessage(adminId, adminText, approveKb);
+      }
+      return;
+    }
+
+    // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
+    if (isAdminId(from.id) && !text.startsWith('/')) {
+      const awaiting = getAwaitingCustom();
+      if (awaiting && awaiting.reqId) {
+        const reqInfo = findRequest(awaiting.reqId);
+        if (!reqInfo) {
+          clearAwaitingCustom();
+          await sendMessage(chatId, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+          return;
+        }
+        const n = parseInt(text, 10);
+        if (!Number.isInteger(n) || n <= 0 || String(n) !== text) {
+          await sendMessage(chatId, 'Iltimos, faqat musbat butun son yuboring (masalan: 14). Bekor qilish uchun /bekor yozing.');
+          return;
+        }
+        clearAwaitingCustom();
+        const label = approveRequest(reqInfo, n);
+        if (awaiting.promptMessageId) {
+          await editMessageText(chatId, awaiting.promptMessageId,
+            `✅ <b>Tasdiqlandi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\nRuxsat muddati: ${label}`);
+        } else {
+          await sendMessage(chatId, `✅ Tasdiqlandi. Ruxsat muddati: ${label}`);
+        }
+        await sendMessage(reqInfo.userId,
+          `✅ So'rovingiz tasdiqlandi! Sizga <b>${label}</b> muddatga kirish huquqi berildi.\nMini App tugmasi orqali oching.`);
+        return;
+      }
+    }
+
+    if (isAdminId(from.id) && text === '/bekor') {
+      const awaiting = getAwaitingCustom();
+      if (awaiting) {
+        clearAwaitingCustom();
+        await sendMessage(chatId, 'Bekor qilindi.');
+      }
+      return;
+    }
+
+    if (text.startsWith('/start')) {
+      await handleStartCommand(chatId, from, text);
+      return;
+    }
+    return;
+  }
+
+  // ---- Mijoz to'lov skrinshotini shaxsiy chatga RASM qilib yuborganda ----
+  // (faqat paymentType === 'karta' bo'lgan va hali "kutilmoqda"/"rad_etildi"
+  // holatidagi buyurtmalar uchun - qarang: /api/customer-order'dagi
+  // paymentProofStatus va pastdagi 'payok'/'payrej' callback'lari)
+  if (update.message && update.message.photo && update.message.chat && update.message.chat.type === 'private') {
+    const msg = update.message;
+    const from = msg.from;
+    const chatId = msg.chat.id;
+    const userId = String(from.id);
+
+    const owners = loadOwners();
+    let targetOwner = null;
+    let targetOrder = null;
+    for (const owner of owners) {
+      for (const order of (owner.orders || [])) {
+        if (String(order.customerId) !== userId) continue;
+        if (order.paymentConfirmMethod !== 'skrinshot') continue;
+        if (order.paymentProofStatus !== 'kutilmoqda' && order.paymentProofStatus !== 'rad_etildi') continue;
+        if (!targetOrder || new Date(order.createdAt) > new Date(targetOrder.createdAt)) {
+          targetOwner = owner;
+          targetOrder = order;
+        }
+      }
+    }
+
+    if (!targetOwner || !targetOrder) {
+      // Kutilayotgan karta to'lovi topilmadi - bu oddiy rasm bo'lishi mumkin,
+      // jim o'tkazib yuboramiz (xato deb hisoblamaymiz).
+      return;
+    }
+
+    const photos = msg.photo;
+    const bestPhoto = photos[photos.length - 1]; // Telegram eng kattasini oxiriga qo'yadi
+    targetOrder.paymentProofFileId = bestPhoto.file_id;
+    targetOrder.paymentProofStatus = 'kutilmoqda';
+    targetOrder.paymentProofSentAt = new Date().toISOString();
+    saveOwners(owners);
+
+    await sendMessage(chatId, '📤 Skrinshot qabul qilindi, tasdiqlanishini kuting...');
+
+    const itemsText = targetOrder.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const caption = `💳 <b>To'lov tasdiqlash so'raladi</b>\n` +
+      `${orderCustomerContactLabel(targetOrder)}\n${itemsText}\n\n` +
+      `Jami: ${fmtNum(targetOrder.total)} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}` +
+      `${targetOrder.tableNumber ? ' — stol ' + escapeHtmlServer(targetOrder.tableNumber) : ''}`;
+    const approveKb = {
+      inline_keyboard: [[
+        { text: '✅ Tasdiqlash', callback_data: `payok:${targetOwner.id}:${targetOrder.id}` },
+        { text: '❌ Rad etish', callback_data: `payrej:${targetOwner.id}:${targetOrder.id}` }
+      ]]
+    };
+    const approvers = [targetOwner.id, ...((targetOwner.staff || []).filter(s => staffHasRole(s, 'kassir')).map(s => s.id))];
+    for (const approverId of new Set(approvers.map(String))) {
+      copyMessageWithKeyboard(approverId, chatId, msg.message_id, caption, approveKb);
+    }
+    return;
+  }
+
+  if (update.callback_query) {
+    const cq = update.callback_query;
+    const from = cq.from;
+    const data = cq.data || '';
+    const chatId = cq.message && cq.message.chat && cq.message.chat.id;
+    const messageId = cq.message && cq.message.message_id;
+
+    // ---- 79-BOSQICH: "💳 Obunani uzaytirish" tugmasi (sendSubscriptionBlockedScreen
+    // orqali chiqadigan bloklash ekranida). To'liq tarif tanlash/to'lov oqimi
+    // 12-15-bosqichlarda qo'shiladi — hozircha faqat administrator bilan
+    // bog'lanishga yo'naltiradi, tugma "o'lik" bo'lib qolmasligi uchun. ----
+    if (data === 'obuna_menyu') {
+      await answerCallbackQuery(cq.id);
+      await sendMessage(from.id,
+        '💳 Obunani uzaytirish menyusi tez orada shu yerga qo\'shiladi.\nHozircha davom ettirish uchun administrator bilan bog\'laning.');
+      return;
+    }
+
+    // ---- 10-bosqich: "📝 Ro'yxatdan o'tish" tugmasi (payloadsiz /start
+    // ekranida, notanish foydalanuvchiga ko'rsatiladi) ----
+    if (data === 'self_register_start') {
+      await answerCallbackQuery(cq.id);
+      if (isAdminId(from.id)) {
+        await sendMessage(from.id, 'Siz administratorsiz, ro\'yxatdan o\'tishning hojati yo\'q.');
+        return;
+      }
+      const owners = loadOwners();
+      if (findOwner(owners, from.id)) {
+        await sendMessage(from.id, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
+        return;
+      }
+      if (findStaffInfo(owners, from.id)) {
+        await sendMessage(from.id, 'Siz allaqachon boshqa oshxonaning xodimisiz, alohida ega sifatida ro\'yxatdan o\'ta olmaysiz.');
+        return;
+      }
+      pendingSelfRegistration.add(String(from.id));
+      await sendMessage(from.id, 'Oshxonangiz nomini yozib yuboring (masalan: "Sardor Osh Markazi").');
+      return;
+    }
+
+    // ---- 11-bosqich: admin (yoki qo'shimcha adminlardan biri) o'zi
+    // ro'yxatdan o'tgan oshxonaning sinov muddatini tasdiqlaydi — standart
+    // SUBSCRIPTION_TRIAL_DAYS beriladi (kunlar sonini qo'lda kiritish
+    // keyingi nozik sozlash sifatida qo'shilishi mumkin, hozircha standart
+    // yetarli va tugmani "o'lik" qoldirmaydi). ----
+    if (data.startsWith('approve_trial:')) {
+      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
+      const ownerId = data.slice('approve_trial:'.length);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Bu so\'rov topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
+      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.', true);
+        return;
+      }
+      const until = new Date(Date.now() + SUBSCRIPTION_TRIAL_DAYS * 86400000).toISOString();
+      owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+      owner.subscriptionUntil = until;
+      owner.trialGivenAt = new Date().toISOString();
+      owner.graceUntil = null;
+      saveOwners(owners);
+
+      await answerCallbackQuery(cq.id, '✅ Tasdiqlandi.');
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId,
+          `✅ <b>Tasdiqlandi</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>\nSinov muddati: ${SUBSCRIPTION_TRIAL_DAYS} kun`);
+      }
+      await sendMessage(owner.id,
+        `✅ So'rovingiz tasdiqlandi!\nSizga <b>${SUBSCRIPTION_TRIAL_DAYS} kunlik</b> bepul sinov muddati berildi.\nMini App tugmasi orqali oching va oshxonangizni sozlashni boshlang.`);
+      return;
+    }
+
+    // ---- 11-bosqich: admin so'rovni rad etadi — owner yozuvi butunlay
+    // o'chiriladi (hali hech qanday ma'lumot — menyu, xodim, buyurtma —
+    // yaratilmagan, faqat "ariza" bosqichida edi, shuning uchun bu yerda
+    // 6-bosqichdagi "o'chirishni bekor qilish" qoidasiga zid emas). ----
+    if (data.startsWith('reject_trial:')) {
+      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin rad eta oladi.', true); return; }
+      const ownerId = data.slice('reject_trial:'.length);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Bu so\'rov topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
+      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.PENDING_TRIAL) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.', true);
+        return;
+      }
+      const restaurantName = (owner.profile && owner.profile.name) || 'oshxona';
+      const remaining = owners.filter(o => String(o.id) !== String(ownerId));
+      saveOwners(remaining);
+
+      await answerCallbackQuery(cq.id, '❌ Rad etildi.');
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, `❌ <b>Rad etildi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
+      }
+      await sendMessage(ownerId, '❌ Afsuski, ro\'yxatdan o\'tish so\'rovingiz rad etildi. Savollar bo\'lsa, administrator bilan bog\'laning.');
+      return;
+    }
+
+    // ---- Mijoz "Yetkazildi" xabaridagi yulduzcha tugmasini bosib xizmatni
+    // baholaydi (1-5 ball). Faqat shu buyurtmaning mijozi o'zi bosishi mumkin,
+    // va har bir buyurtma faqat bir marta baholanadi. ----
+    if (data.startsWith('rate:')) {
+      const [, ownerId, orderId, starsRaw] = data.split(':');
+      const stars = Number(starsRaw);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+      if (String(order.customerId) !== String(from.id)) {
+        await answerCallbackQuery(cq.id, 'Bu baho boshqa mijozga tegishli.');
+        return;
+      }
+      if (order.customerRating) {
+        await answerCallbackQuery(cq.id, 'Siz bu buyurtmaga allaqachon baho bergansiz, rahmat! 🙏');
+        return;
+      }
+      if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
+        await answerCallbackQuery(cq.id, 'Noto\'g\'ri baho.');
+        return;
+      }
+
+      order.customerRating = stars;
+      order.customerRatedAt = new Date().toISOString();
+      saveOwners(owners);
+
+      const starsText = '⭐️'.repeat(stars);
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId,
+          `${cq.message.text || ''}\n\nSizning bahoyingiz: ${starsText}\nRahmat! 🙏`, null);
+      }
+      await answerCallbackQuery(cq.id, 'Bahoyingiz uchun rahmat! 🙏');
+
+      // Past baho (1-3) qo'yilsa — egasi va kassirlarga darhol xabar, shikoyatga
+      // tezroq javob berish imkoni bo'lishi uchun.
+      if (stars <= 3) {
+        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const alertText = `⚠️ <b>Past baho olindi</b> (${starsText})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nMijoz: ${orderCustomerContactLabel(order)}`;
+        const staffList = owner.staff || [];
+        const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
+        for (const targetId of new Set([owner.id, ...targetIds])) {
+          sendMessage(targetId, alertText);
+        }
+      }
+      return;
+    }
+
+    // ---- Dostavka guruhi VA Oshpazlar guruhi: "Qabul qilish" / "Tayyor"
+    // tugmalari (guruh a'zolari uchun, admin cheklovisiz). 13-bosqichdan
+    // boshlab ikkala guruh turi ("dg" = dostavka, "kg" = oshpaz) bir xil
+    // mantiq bilan, umumiy holda ishlanadi. 14-bosqich: ikkalasi ham
+    // ORDER.STATUS'NI umumiy manba sifatida ishlatadi — shu sababli qaysi
+    // guruhda birinchi bosilishidan qat'iy nazar, ikkinchisida bosilsa
+    // "allaqachon bajarilgan" javobi qaytadi (dublikat status o'zgarishi
+    // bo'lmaydi), va syncGroupMessagesForOrder orqali ikkala guruhdagi
+    // xabar tugmalari ham yangilanadi. ----
+    if (data.startsWith('dgaccept:') || data.startsWith('dgready:') || data.startsWith('kgaccept:') || data.startsWith('kgready:')) {
+      const [action, ownerId, orderId] = data.split(':');
+      const isKitchen = action.startsWith('kg');
+      const stageField = isKitchen ? 'kitchenGroupStage' : 'deliveryGroupStage';
+      const acceptedByField = isKitchen ? 'kitchenAcceptedBy' : 'deliveryAcceptedBy';
+      const acceptedAtField = isKitchen ? 'kitchenAcceptedAt' : 'deliveryAcceptedAt';
+      const readyByField = isKitchen ? 'kitchenReadyBy' : 'deliveryReadyBy';
+      const readyAtField = isKitchen ? 'kitchenReadyAt' : 'deliveryReadyAt';
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+
+      if (action === 'dgaccept' || action === 'kgaccept') {
+        if (order.status !== 'yangi') {
+          // Boshqa guruhda (yoki Mini App'da) allaqachon qabul qilingan —
+          // dublikat qilib qayta ishlanmaydi, faqat shu haqda xabar beriladi.
+          await answerCallbackQuery(cq.id, 'Allaqachon qabul qilingan.');
+          syncGroupMessagesForOrder(owner, order);
+          return;
+        }
+        order[stageField] = 'qabul_qilindi';
+        order[acceptedByField] = from.id;
+        order[acceptedAtField] = new Date().toISOString();
+        // Guruhdagi "Qabul qilish" bosilganda buyurtmaning asosiy status'i ham
+        // yangilanadi ("tayyorlanmoqda"), aks holda u Mini App bosqichlaridan
+        // uzilib qoladi (masalan, keyinroq "tayyor" belgilanganda kuryerga
+        // ko'rinmay qoladi — chunki kuryer ro'yxati order.status'ga qarab
+        // filtrlanadi, *GroupStage maydoniga emas).
+        order.status = 'tayyorlanmoqda';
+        order.updatedAt = new Date().toISOString();
+        order.updatedBy = String(from.id);
+        if (!order.startedAt) order.startedAt = order.updatedAt;
+        saveOwners(owners);
+
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId,
+            `${cq.message.text || ''}\n\n✅ Qabul qilindi — ${displayName(from)}`,
+            { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${isKitchen ? 'kgready' : 'dgready'}:${ownerId}:${orderId}` }]] });
+        }
+        syncGroupMessagesForOrder(owner, order);
+        if (order.customerId) {
+          await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi, tez orada tayyorlanadi!');
+        }
+        await answerCallbackQuery(cq.id, 'Qabul qilindi ✅');
+        return;
+      }
+
+      if (action === 'dgready' || action === 'kgready') {
+        if (order.status === 'tayyor') {
+          await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
+          syncGroupMessagesForOrder(owner, order);
+          return;
+        }
+        // "Tayyor" tugmasi faqat "Qabul qilish" bosilgandan keyin ishlashi kerak —
+        // aks holda ketma-ketlik buzilib, buyurtma hech kim qabul qilmasdan
+        // tayyor deb belgilanib qolar edi.
+        if (order.status !== 'tayyorlanmoqda') {
+          await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
+          return;
+        }
+        order[stageField] = 'tayyor';
+        order[readyByField] = from.id;
+        order[readyAtField] = new Date().toISOString();
+        // Asosiy status ham "tayyor"ga o'tkaziladi — shu maydon orqali
+        // kuryerlarga buyurtmalar ro'yxati (/api/orders-list) filtrlanadi,
+        // shu jumladan guruhga yangi qo'shilgan kuryer uchun ham.
+        order.status = 'tayyor';
+        order.updatedAt = new Date().toISOString();
+        order.updatedBy = String(from.id);
+        if (!order.readyAt) order.readyAt = order.updatedAt;
+        saveOwners(owners);
+
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId,
+            `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
+        }
+        syncGroupMessagesForOrder(owner, order);
+        if (order.customerId) {
+          const readyMsg = order.orderType === 'dostavka'
+            ? '🏁 Buyurtmangiz tayyor, kuryer yo\'lda!'
+            : '🏁 Buyurtmangiz tayyor!';
+          await sendMessage(order.customerId, readyMsg);
+        }
+        // Kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga ham
+        // Mini App'dagi "Tayyor" tugmasidagi kabi avtomatik bildirishnoma
+        // yuboriladi, xabarni o'zi yuborgan xodimdan tashqari.
+        {
+          const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+          const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
+          const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
+          const staffList = owner.staff || [];
+          const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
+          const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
+          for (const targetId of new Set(targetIds.map(String))) {
+            if (targetId === String(from.id)) continue;
+            sendMessage(targetId, readyText);
+          }
+        }
+        await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
+        return;
+      }
+    }
+
+    // ---- To'lov skrinshotini tasdiqlash/rad etish (kassir yoki egasi uchun,
+    // admin cheklovisiz - dgaccept/dgready bilan bir xil joyga qo'yilgan) ----
+    if (data.startsWith('payok:') || data.startsWith('payrej:')) {
+      const [action, ownerId, orderId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+
+      const isOwnerUser = String(owner.id) === String(from.id);
+      const isCashier = (owner.staff || []).some(s => staffHasRole(s, 'kassir') && String(s.id) === String(from.id));
+      if (!isOwnerUser && !isCashier) {
+        await answerCallbackQuery(cq.id, 'Sizda bu amal uchun ruxsat yo\'q (faqat kassir yoki egasi).');
+        return;
+      }
+
+      // "naqd_kassa" (stolga+naqd) tasdiqlash oddiy MATN xabar bilan yuboriladi,
+      // "skrinshot" (karta) tasdiqlash esa RASM (caption) bilan - shu sababli
+      // tahrirlash uchun to'g'ri Telegram metodini tanlash kerak (aks holda
+      // "message is not modified"/"there is no caption in the message" xatosi).
+      const editConfirmMessage = (extraLine) => {
+        if (!chatId || !messageId) return Promise.resolve();
+        if (cq.message && cq.message.photo) {
+          return editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n${extraLine}`, null);
+        }
+        return editMessageText(chatId, messageId, `${cq.message.text || ''}\n\n${extraLine}`, null);
+      };
+
+      if (order.paymentProofStatus !== 'kutilmoqda') {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        await editConfirmMessage('(allaqachon ko\'rib chiqilgan)');
+        return;
+      }
+
+      if (action === 'payok') {
+        order.paymentProofStatus = 'tasdiqlandi';
+        order.paymentProofApprovedBy = from.id;
+        order.paymentProofApprovedAt = new Date().toISOString();
+        saveOwners(owners);
+
+        // ENDI (va FAQAT ENDI) - to'lov tasdiqlangach - oshxona/kassir/
+        // dostavka guruhiga xabar ketadi (customer-order'dagi bilan bir xil).
+        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
+        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
+        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`);
+        saveOwners(owners);
+        notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
+
+        if (order.customerId) {
+          const okText = order.paymentConfirmMethod === 'naqd_kassa'
+            ? '✅ To\'lovingiz qabul qilindi! Taomingiz tayyorlanishni boshladi. Yoqimli ishtaha! 😊'
+            : '✅ To\'lovingiz tasdiqlandi! Buyurtmangiz oshxonaga yuborildi.';
+          await sendMessage(order.customerId, okText);
+        }
+        await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
+        await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
+        return;
+      }
+
+      if (action === 'payrej') {
+        order.paymentProofStatus = 'rad_etildi';
+        order.paymentProofRejectedBy = from.id;
+        order.paymentProofRejectedAt = new Date().toISOString();
+        saveOwners(owners);
+
+        if (order.customerId) {
+          const rejText = order.paymentConfirmMethod === 'naqd_kassa'
+            ? '❌ Buyurtmangiz bekor qilindi. Savol bo\'lsa, kassaga murojaat qiling.'
+            : '❌ To\'lov skrinshoti tasdiqlanmadi. Iltimos, to\'g\'ri skrinshotni qayta (rasm qilib) yuboring ' +
+              'yoki oshxona bilan bog\'laning.';
+          await sendMessage(order.customerId, rejText);
+        }
+        await editConfirmMessage(`❌ Rad etildi — ${displayName(from)}`);
+        await answerCallbackQuery(cq.id, 'Rad etildi ❌');
+        return;
+      }
+    }
+
+    if (!isAdminId(from.id)) {
+      await answerCallbackQuery(cq.id, 'Faqat admin qaror qabul qila oladi.');
+      return;
+    }
+
+    if (data.startsWith('custom:')) {
+      const [, reqId] = data.split(':');
+      const reqInfo = findRequest(reqId);
+      if (!reqInfo) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        return;
+      }
+      setAwaitingCustom(reqId, messageId);
+      await editMessageText(chatId, messageId,
+        `🆕 <b>Yangi do'kon egasi so'rovi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\n\n` +
+        `✏️ Necha kunga ruxsat berishni istaysiz? Kun sonini oddiy xabar qilib yuboring (masalan: 14).\nBekor qilish uchun /bekor yozing.`);
+      await answerCallbackQuery(cq.id);
+      return;
+    }
+
+    if (data.startsWith('apr:')) {
+      const [, reqId, daysKey] = data.split(':');
+      const reqInfo = findRequest(reqId);
+      if (!reqInfo) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        return;
+      }
+
+      const days = daysKey === 'p' ? null : parseInt(daysKey, 10);
+      const label = approveRequest(reqInfo, days);
+
+      await editMessageText(chatId, messageId,
+        `✅ <b>Tasdiqlandi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\nRuxsat muddati: ${label}`);
+      await sendMessage(reqInfo.userId,
+        `✅ So'rovingiz tasdiqlandi! Sizga <b>${label}</b> muddatga kirish huquqi berildi.\nMini App tugmasi orqali oching.`);
+      await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
+      return;
+    }
+
+    if (data.startsWith('rej:')) {
+      const [, reqId] = data.split(':');
+      const reqInfo = findRequest(reqId);
+      if (!reqInfo) {
+        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+        return;
+      }
+      removeRequest(reqId);
+      await editMessageText(chatId, messageId,
+        `❌ <b>Rad etildi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)`);
+      await sendMessage(reqInfo.userId, '❌ Kechirasiz, so\'rovingiz rad etildi.');
+      await answerCallbackQuery(cq.id, 'Rad etildi');
+      return;
+    }
+  }
+}
+
+// Admin kiritgan matnni (ID yoki username/link) haqiqiy Telegram ID'ga aylantirish
+async function resolveUserInput(input) {
+  const trimmed = String(input || '').trim();
+  if (!trimmed) return { error: 'Ma\'lumot kiritilmagan' };
+
+  // 1) To'g'ridan-to'g'ri raqamli ID (masalan: 123456789)
+  if (/^\d{5,}$/.test(trimmed)) {
+    return { id: trimmed };
+  }
+
+  // 2) tg://user?id=123456789 ko'rinishidagi havola
+  let m = trimmed.match(/id=(\d{5,})/);
+  if (m) return { id: m[1] };
+
+  // 3) @username yoki https://t.me/username ko'rinishidagi havola
+  m = trimmed.match(/(?:t\.me\/|@)([a-zA-Z0-9_]{4,32})/i);
+  if (m) {
+    const username = m[1];
+    try {
+      const result = await telegramApi('getChat', { chat_id: '@' + username });
+      if (result.ok && result.result && result.result.id) {
+        return { id: String(result.result.id), username: result.result.username || username };
+      }
+      return { error: 'Foydalanuvchi topilmadi. Unga botga /start yozishni so\'rang yoki to\'g\'ridan-to\'g\'ri Telegram ID raqamini kiriting (ID ni @userinfobot orqali bilib olish mumkin).' };
+    } catch (e) {
+      return { error: 'Telegram bilan bog\'lanishda xatolik yuz berdi. Qaytadan urinib ko\'ring.' };
+    }
+  }
+
+  return { error: 'Noto\'g\'ri format. Telegram ID raqamini, @username yoki t.me havolasini kiriting.' };
+}
+
+function sendJSON(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(obj));
+}
+
+// 4MB — galereyadan tanlangan taom rasmi (base64, kichraytirilgan holda) + boshqa maydonlar sig'ishi uchun
+const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+function readBody(req, cb) {
+  let body = '';
+  let tooLarge = false;
+  req.on('data', chunk => {
+    if (tooLarge) return;
+    body += chunk;
+    if (body.length > MAX_REQUEST_BODY_BYTES) {
+      tooLarge = true;
+      cb(new Error('body_too_large'));
+      req.destroy();
+    }
+  });
+  req.on('end', () => {
+    if (tooLarge) return;
+    try { cb(null, JSON.parse(body || '{}')); }
+    catch (e) { cb(e); }
+  });
+}
+
+// =============================================================================
+// AI DIREKTOR: har tongi avtomatik hisobot (Telegram xabari).
+// Quyidagi funksiyalar pastdagi `server` (http.createServer) ichidagi
+// computeCashflow/computeStockForecast/computeTopItems bilan BIR XIL
+// mantiqqa asoslangan, lekin ATAYLAB shu yerda (modul darajasida) ALOHIDA
+// yozilgan — chunki o'sha funksiyalar so'rov handler'ining o'zi ICHIDA
+// joylashgan (har bir HTTP so'rovda qayta e'lon qilinadi) va pastdagi
+// kunlik setInterval'dan (bu ham modul darajasida, so'rovdan tashqarida
+// ishlashi kerak) chaqirib bo'lmaydi. Hisoblash formulalari bir xil,
+// faqat joylashuvi boshqa — ikkalasini ham o'zgartirsangiz ikkalasida ham
+// yangilang.
+// =============================================================================
+
+const AI_DIRECTOR_HOUR = 8; // Toshkent vaqti bilan soat nechada yuborilishi (08:00)
+const AI_DIRECTOR_TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+function aiDirDateKey(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).toISOString().slice(0, 10);
+}
+function aiDirDayStartFromKey(dateKey) {
+  return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - AI_DIRECTOR_TZ_OFFSET_MS);
+}
+function aiDirDayStart(input) {
+  return aiDirDayStartFromKey(aiDirDateKey(input));
+}
+function aiDirTashkentHour(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCHours();
+}
+
+// [fromDate, toDate) oralig'idagi kirim/xarajat/foyda/buyurtmalar soni.
+function aiDirCashBucket(owner, fromDate, toDate) {
+  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
+  const expenses = (owner.expenses || []).filter(e => { const t = new Date(e.createdAt); return t >= fromDate && t < toDate; });
+  const income = orders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  return { income, expense, net: income - expense, orderCount: orders.length };
+}
+
+// [fromDate, toDate) oralig'ida taom bo'yicha sotilgan miqdor/tushum (Map: id -> {name, qty, revenue})
+function aiDirItemStats(owner, fromDate, toDate) {
+  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
+  const byId = new Map();
+  for (const o of orders) {
+    for (const it of (o.items || [])) {
+      const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
+      cur.qty += it.qty;
+      cur.revenue += it.price * it.qty;
+      byId.set(it.id, cur);
+    }
+  }
+  return byId;
+}
+
+// Oxirgi 7 kunni undan oldingi 7 kun bilan solishtirib, sezilarli (kamida
+// 15%) kamaygan taomlarni topadi. Juda kam sondagi (haftasiga 5 donadan
+// kam) taomlar hisobga olinmaydi — kichik sonlarda foiz ma'nosiz katta
+// chiqib ketishi mumkin (masalan 1 donadan 0 taga - "100% kamaydi" degani
+// chalg'ituvchi bo'lardi).
+function aiDirDecliningItems(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
+  const prev7Start = new Date(todayStart.getTime() - 14 * 86400000);
+
+  const last7 = aiDirItemStats(owner, last7Start, todayStart);
+  const prev7 = aiDirItemStats(owner, prev7Start, last7Start);
+
+  const declining = [];
+  for (const [id, cur] of last7) {
+    const prev = prev7.get(id);
+    if (!prev || prev.qty < 5) continue;
+    const changePercent = ((cur.qty - prev.qty) / prev.qty) * 100;
+    if (changePercent <= -15) {
+      declining.push({ id, name: cur.name, qtyNow: cur.qty, qtyPrev: prev.qty, changePercent: Math.round(changePercent) });
+    }
+  }
+  declining.sort((a, b) => a.changePercent - b.changePercent);
+  return declining;
+}
+
+// Sklad: qaysi mahsulotlar necha kunga (taxminan) yetishini hisoblaydi
+// (markaziy sklad + BARCHA filiallar birga) - oxirgi 7 kunlik "chiqim"
+// (buyurtma orqali sarflangan) harakatlar o'rtachasi asosida.
+function aiDirStockRunway(owner) {
+  const since = new Date(Date.now() - 7 * 86400000);
+  const pools = [owner, ...(owner.branches || [])];
+  const result = [];
+  for (const pool of pools) {
+    const usageById = new Map();
+    for (const m of (pool.stockMovements || [])) {
+      if (m.type !== 'chiqim') continue;
+      if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
+      if (new Date(m.createdAt) < since) continue;
+      usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
+    }
+    for (const item of (pool.stock || [])) {
+      const used7d = usageById.get(item.id) || 0;
+      if (used7d <= 0) continue;
+      const avgDaily = used7d / 7;
+      if (avgDaily <= 0) continue;
+      result.push({ name: item.name, unit: item.unit, qty: item.qty, avgDaily, daysLeft: item.qty / avgDaily });
+    }
+  }
+  result.sort((a, b) => a.daysLeft - b.daysLeft);
+  return result;
+}
+
+// Eng ko'p TUSHUM keltirgan taom (oxirgi 7 kun). Diqqat: menyu taomlarida
+// tan narxi (cost) kuzatilmagani sabab bu "eng FOYDALI" emas — halol,
+// chalg'itmaydigan atama sifatida "eng ko'p tushum keltirgan" ishlatiladi.
+function aiDirTopItem(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
+  const stats = aiDirItemStats(owner, last7Start, todayStart);
+  let top = null;
+  for (const it of stats.values()) {
+    if (!top || it.revenue > top.revenue) top = it;
+  }
+  return top;
+}
+
+// To'liq "AI Direktor" kunlik hisobotini Telegram uchun tayyor (HTML) matn
+// qilib tuzadi - qoidaviy (AI kaliti kerak emas, har doim ishlaydi).
+function buildAiDirectorText(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const yestStart = new Date(todayStart.getTime() - 86400000);
+  const dayBeforeStart = new Date(todayStart.getTime() - 2 * 86400000);
+
+  const yesterday = aiDirCashBucket(owner, yestStart, todayStart);
+  const dayBefore = aiDirCashBucket(owner, dayBeforeStart, yestStart);
+  const incomeChangePercent = dayBefore.income > 0
+    ? Math.round(((yesterday.income - dayBefore.income) / dayBefore.income) * 100)
+    : null;
+
+  const topItem = aiDirTopItem(owner);
+  const runway = aiDirStockRunway(owner);
+  const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 3);
+  const declining = aiDirDecliningItems(owner);
+
+  const lines = ['📊 <b>Bugungi holat</b>', ''];
+  lines.push(`Kecha tushum: <b>${fmtNum(yesterday.income)} so'm</b>` +
+    (incomeChangePercent !== null ? ` (${incomeChangePercent > 0 ? '+' : ''}${incomeChangePercent}%)` : ''));
+  lines.push(`Foyda: <b>${fmtNum(yesterday.net)} so'm</b>`);
+  if (topItem) lines.push(`Eng ko'p tushum keltirgan taom (7 kun): <b>${escapeHtmlServer(topItem.name)}</b>`);
+
+  if (urgentStock.length) {
+    lines.push('');
+    for (const s of urgentStock) {
+      lines.push(s.daysLeft < 1
+        ? `⚠️ ${escapeHtmlServer(s.name)} bugun tugashi mumkin.`
+        : `⚠️ ${escapeHtmlServer(s.name)} taxminan ${Math.floor(s.daysLeft)} kunga yetadi.`);
+    }
+  }
+
+  if (declining.length) {
+    const d = declining[0];
+    lines.push('');
+    lines.push(`Oxirgi 7 kunda <b>${escapeHtmlServer(d.name)}</b> savdosi ${Math.abs(d.changePercent)}% kamaygan.`);
+    lines.push('');
+    lines.push(`💡 <b>Tavsiya:</b> bugun ${escapeHtmlServer(d.name)} uchun aksiya qiling yoki xaridni kamaytiring.`);
+  }
+
+  return lines.join('\n');
+}
+
+// Bitta egaga AI Direktor hisobotini yuboradi va yuborilgan sanani
+// (bugungi.zayta yubormaslik uchun) yozib qo'yadi. `force` — Mini App'dan
+// "Hozir yubor" bosilganda bugun allaqachon yuborilgan bo'lsa ham qayta
+// yuborish uchun.
+async function sendAiDirectorDigest(owner, force) {
+  const todayKey = aiDirDateKey(new Date());
+  if (!force && owner.aiDirectorLastSent === todayKey) return false;
+  const text = buildAiDirectorText(owner);
+  await sendMessage(owner.id, text);
+  owner.aiDirectorLastSent = todayKey;
+  return true;
+}
+
+// Har 10 daqiqada bir marta tekshiradi: Toshkent vaqti bilan soat
+// AI_DIRECTOR_HOUR bo'lgan (va bugun hali yuborilmagan) har bir egaga
+// avtomatik yuboradi. `aiDirectorEnabled` egasi tomonidan o'chirilgan
+// bo'lsa (=== false), o'sha egaga yuborilmaydi (standart holat - yoqilgan).
+setInterval(() => {
+  if (aiDirTashkentHour(new Date()) !== AI_DIRECTOR_HOUR) return;
+  const owners = pruneExpiredOwners();
+  let changed = false;
+  (async () => {
+    for (const owner of owners) {
+      if (!isOwnerAccessValid(owner)) continue;
+      if (owner.aiDirectorEnabled === false) continue;
+      const sent = await sendAiDirectorDigest(owner, false);
+      if (sent) changed = true;
+    }
+    if (changed) saveOwners(owners);
+  })().catch(() => {});
+}, 10 * 60 * 1000);
+
+const server = http.createServer((req, res) => {
+  // ---- API: initData tekshirish (mini app ochilganda) ----
+  if (req.method === 'POST' && req.url === '/api/verify') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      if (!initData) return sendJSON(res, 400, { ok: false, reason: 'initData yo\'q' });
+
+      const result = verifyAuth(initData);
+      if (!result.ok) return sendJSON(res, 200, { ok: false, reason: result.reason });
+
+      const userId = String(result.user && result.user.id);
+      const admin = isAdminId(userId);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      const ownerOk = isOwnerAccessValid(owner);
+      const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
+      // 2-4-bosqich: xodimga rol(lar) biriktirilgan, lekin ULARNING BARCHASI
+      // joriy tarifda yopilgan bo'lsa (findStaffInfo.roles bo'sh massiv
+      // qaytaradi) — bu xodimni "ok:false" deb hisoblaymiz, aks holda u
+      // rolsiz (bo'sh panel) holatda kirib qolardi.
+      const staffBlocked = !!(staffInfo && staffInfo.rawRoles.length > 0 && staffInfo.roles.length === 0);
+      const ok = admin || ownerOk || !!(staffInfo && !staffBlocked);
+
+      return sendJSON(res, 200, {
+        ok,
+        isAdmin: admin,
+        isOwner: !admin && ownerOk,
+        role: staffInfo ? staffInfo.role : null,
+        roles: staffInfo ? staffInfo.roles : null,
+        roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
+        ownerRestaurantName: staffInfo ? staffInfo.ownerName : (ownerOk ? ((owner.profile && owner.profile.name) || null) : null),
+        ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : (ownerOk ? ((owner.profile && owner.profile.logoUrl) || null) : null),
+        ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : (ownerOk ? ((owner.profile && owner.profile.brandColor) || null) : null),
+        hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
+        // Egasi uchun admin login/parol o'rnatib qo'ygan bo'lsa — Telegram orqali
+        // kirganda ham (initData avtomatik bo'lsa-da) bir martalik parol so'raladi
+        // (qarang: frontend'dagi owner password-gate va /api/owner-confirm-password).
+        hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
+        personRegistered: admin || isRegisteredUser(userId),
+        reason: ok
+          ? null
+          : (staffBlocked
+              ? 'Lavozimingiz (' + rolesLabel(staffInfo.rawRoles) + ') joriy tarifda yopilgan. Administrator bilan bog\'laning.'
+              : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.')
       });
     });
-
-    loadBranchAndRender();
+    return;
   }
 
-  async function loadDeliveryGroupStatus() {
-    const statusEl = document.getElementById('deliveryGroupStatus');
-    const removeBtn = document.getElementById('removeDeliveryGroupBtn');
-    if (!statusEl) return;
-    const res = await apiPost('/api/delivery-group-status', { initData });
-    if (res.ok && res.bound) {
-      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
-      if (removeBtn) removeBtn.classList.remove('hidden');
-    } else {
-      statusEl.textContent = '— Hali admin guruhi biriktirilmagan.';
-      if (removeBtn) removeBtn.classList.add('hidden');
-    }
+  // ---- API: Mini App ichidan ism, familiya, telefon raqam bilan ro'yxatdan o'tish ----
+  // (mijoz, xodim, egasi — barchasi uchun umumiy, botning shaxsiy chatiga
+  // chiqishga hojat qoldirmaydi; qarang: findProfile/isRegisteredUser)
+  if (req.method === 'POST' && req.url === '/api/profile-register') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, firstName, lastName, phone } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const ism = String(firstName || '').trim();
+      const familiya = String(lastName || '').trim();
+      const raqam = String(phone || '').trim();
+
+      if (!ism || ism.length > 60) {
+        return sendJSON(res, 200, { ok: false, reason: 'Ismingizni to\'g\'ri kiriting.' });
+      }
+      if (!familiya || familiya.length > 60) {
+        return sendJSON(res, 200, { ok: false, reason: 'Familiyangizni to\'g\'ri kiriting.' });
+      }
+      if (!isPlausiblePhone(raqam)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqam noto\'g\'ri formatda (masalan: +998901234567).' });
+      }
+
+      const userId = String(check.user && check.user.id);
+      const profiles = loadProfiles();
+      const idx = profiles.findIndex(p => String(p.id) === userId);
+      const profile = {
+        id: userId,
+        username: (check.user && check.user.username) || null,
+        firstName: ism,
+        lastName: familiya,
+        phone: raqam,
+        registeredAt: new Date().toISOString()
+      };
+      if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
+      saveProfiles(profiles);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
   }
 
-  // 13-bosqich: Oshpazlar guruhi holatini yuklaydi — dostavka guruhidan
-  // mustaqil, alohida biriktiriladigan guruh.
-  async function loadKitchenGroupStatus() {
-    const statusEl = document.getElementById('kitchenGroupStatus');
-    const removeBtn = document.getElementById('removeKitchenGroupBtn');
-    if (!statusEl) return;
-    const res = await apiPost('/api/kitchen-group-status', { initData });
-    if (res.ok && res.bound) {
-      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
-      if (removeBtn) removeBtn.classList.remove('hidden');
-    } else {
-      statusEl.textContent = '— Hali Oshpazlar guruhi biriktirilmagan.';
-      if (removeBtn) removeBtn.classList.add('hidden');
-    }
+  // ---- API: egasining o'z xodimlari ro'yxatini olish ----
+  if (req.method === 'POST' && req.url === '/api/staff-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+
+      return sendJSON(res, 200, { ok: true, staff: owner.staff || [] });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodim qo'shadi (kassir/oshpaz/sklad/dostavka — bir nechta rol birga bo'lishi mumkin) ----
+  if (req.method === 'POST' && req.url === '/api/add-staff') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, input, role, roles, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi'));
+
+      // `roles` massiv sifatida keladi (checkbox'lar) — eski frontend hali bitta `role` yuborsa ham ishlaydi
+      const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
+      const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole);
+      if (!uniqueRoles.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
+      }
+
+      let branchIdVal = null;
+      if (branchId) {
+        if (!findBranch(owner, branchId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+        }
+        branchIdVal = branchId;
+      }
+
+      const resolved = await resolveUserInput(input);
+      if (resolved.error) return sendJSON(res, 200, { ok: false, reason: resolved.error });
+
+      if (isAdminId(resolved.id)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi administrator, xodim qilib bo\'lmaydi.' });
+      }
+      if (findOwner(owners, resolved.id)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi allaqachon oshxona egasi.' });
+      }
+      const existingStaff = findStaffInfo(owners, resolved.id);
+      if (existingStaff) {
+        return sendJSON(res, 200, { ok: false, reason: existingStaff.ownerId === owner.id
+          ? 'Bu foydalanuvchi allaqachon sizning xodimingiz.'
+          : 'Bu foydalanuvchi boshqa oshxonada xodim sifatida ro\'yxatda.' });
+      }
+
+      if (!owner.staff) owner.staff = [];
+      owner.staff.push({
+        id: resolved.id,
+        username: resolved.username || null,
+        role: uniqueRoles[0], // orqaga moslik uchun (eski kod shu maydonni o'qishi mumkin)
+        roles: uniqueRoles,
+        branchId: branchIdVal,
+        addedAt: new Date().toISOString()
+      });
+      saveOwners(owners);
+
+      sendMessage(resolved.id,
+        `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${rolesLabel(uniqueRoles)}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: xodim qo'shish uchun BIR MARTALIK havola yaratish (faqat egasi) ----
+  // Manager Telegram ID/username so'ramasdan, tayyor lavozim(lar) va filial
+  // bilan havola yaratadi — xodim shu havolani bosib botni ochsa, avtomatik
+  // (tasdiqlashsiz) o'sha lavozim(lar) bilan jamoaga qo'shiladi. Havola FAQAT
+  // bir marta ishlatiladi (birinchi bosgan odam qo'shiladi, keyin yaroqsiz
+  // bo'lib qoladi) va 24 soatdan keyin muddati tugaydi.
+  if (req.method === 'POST' && req.url === '/api/create-staff-invite') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, role, roles, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi havola yarata oladi'));
+      if (!ownerCanUseFeature(owner, 'staff-invite')) return sendJSON(res, 200, featureBlockedResult('staff-invite'));
+
+      const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
+      const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole);
+      if (!uniqueRoles.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
+      }
+
+      let branchIdVal = null;
+      if (branchId) {
+        if (!findBranch(owner, branchId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+        }
+        branchIdVal = branchId;
+      }
+
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+
+      const token = crypto.randomBytes(16).toString('hex');
+      if (!owner.staffInvites) owner.staffInvites = [];
+      // Eskirgan/ishlatilgan takliflarni tozalab boramiz — fayl cheksiz o'sib ketmasligi uchun
+      owner.staffInvites = owner.staffInvites.filter(inv => !inv.used && new Date(inv.expiresAt) > new Date());
+      owner.staffInvites.push({
+        token,
+        roles: uniqueRoles,
+        branchId: branchIdVal,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        used: false,
+        usedBy: null,
+        usedAt: null
+      });
+      saveOwners(owners);
+
+      const link = `https://t.me/${BOT_USERNAME}?start=staffinv_${owner.id}_${token}`;
+      return sendJSON(res, 200, { ok: true, link, roles: uniqueRoles });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodimning lavozimlarini o'zgartiradi (checkbox bilan - bir nechtasi bo'lishi mumkin) ----
+  if (req.method === 'POST' && req.url === '/api/set-staff-roles') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, roles } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!ownerCanUseFeature(owner, 'staff-roles')) return sendJSON(res, 200, featureBlockedResult('staff-roles'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const staff = (owner.staff || []).find(s => String(s.id) === String(id));
+      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Bunday xodim topilmadi' });
+
+      const uniqueRoles = [...new Set(Array.isArray(roles) ? roles : [])].filter(isValidRole);
+      if (!uniqueRoles.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
+      }
+
+      staff.roles = uniqueRoles;
+      staff.role = uniqueRoles[0]; // orqaga moslik uchun
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, staff });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodimning filialini o'zgartiradi (bo'sh branchId = markaziy) ----
+  if (req.method === 'POST' && req.url === '/api/set-staff-branch') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const staff = (owner.staff || []).find(s => String(s.id) === String(id));
+      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Bunday xodim topilmadi' });
+
+      if (branchId) {
+        if (!findBranch(owner, branchId)) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+        staff.branchId = branchId;
+      } else {
+        staff.branchId = null;
+      }
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, staff });
+    });
+    return;
+  }
+
+  // ---- API: egasi xodimni o'chiradi ----
+  if (req.method === 'POST' && req.url === '/api/remove-staff') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.staff = (owner.staff || []).filter(s => String(s.id) !== String(id));
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: egasining filiallar ro'yxatini olish (egasi va uning xodimlari ko'ra oladi) ----
+  if (req.method === 'POST' && req.url === '/api/branch-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+
+      return sendJSON(res, 200, { ok: true, branches: ctx.owner.branches || [] });
+    });
+    return;
+  }
+
+  // ---- API: yangi filial qo'shish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/branch-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, address, phone } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi filial qo\'sha oladi'));
+      if (!ownerCanUseFeature(owner, 'branch-manage')) return sendJSON(res, 200, featureBlockedResult('branch-manage'));
+
+      const trimmedName = String(name || '').trim();
+      const trimmedAddress = String(address || '').trim();
+      if (!trimmedName || !trimmedAddress) {
+        return sendJSON(res, 200, { ok: false, reason: 'Filial nomi va manzilini kiriting.' });
+      }
+
+      if (!owner.branches) owner.branches = [];
+      const newBranch = {
+        id: generateBranchId(),
+        name: trimmedName,
+        address: trimmedAddress,
+        phone: phone ? String(phone).trim() : null,
+        createdAt: new Date().toISOString()
+      };
+      owner.branches.push(newBranch);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, branch: newBranch });
+    });
+    return;
+  }
+
+  // ---- API: filial ma'lumotlarini tahrirlash (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/branch-rename') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name, address, phone } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const branch = findBranch(owner, id);
+      if (!branch) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const trimmedName = String(name || '').trim();
+      const trimmedAddress = String(address || '').trim();
+      if (!trimmedName || !trimmedAddress) {
+        return sendJSON(res, 200, { ok: false, reason: 'Filial nomi va manzilini kiriting.' });
+      }
+      branch.name = trimmedName;
+      branch.address = trimmedAddress;
+      branch.phone = phone ? String(phone).trim() : null;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, branch });
+    });
+    return;
+  }
+
+  // ---- API: filialni o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/branch-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.branches = (owner.branches || []).filter(b => String(b.id) !== String(id));
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: menyuni olish (egasi yoki uning xodimlari — masalan kassir) ----
+  if (req.method === 'POST' && req.url === '/api/menu-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+
+      const menuWithStock = (ctx.owner.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(ctx.owner, m) }));
+      return sendJSON(res, 200, { ok: true, menu: menuWithStock, categories: sortedOwnerCategories(ctx.owner), role: ctx.role });
+    });
+    return;
   }
 
   // ==================== F. Bo'lim (kategoriya) boshqaruvi (36-40-bosqich) ====================
-  // Egasi panelidagi "Bo'limlar" kartochkasi shu yerda boshqariladi. Yuklab
-  // olingan ro'yxat `ownerCategoriesCache`da saqlanadi — shu bilan bir
-  // vaqtda "Menyuga taom qo'shish" formasidagi select ham to'ldiriladi
-  // (39-bosqich), alohida so'rov yubormasdan.
-  let ownerCategoriesCache = [];
+  // Bo'limlar (menyu kategoriyalari) — egasi endi ularni tuzilmali ro'yxat
+  // sifatida boshqaradi (qo'shish/o'chirish/tartiblash), o'sha ro'yxatdan esa
+  // taom qo'shish/tahrirlash formasida (select) va mijoz/kassir menyusidagi
+  // bo'lim tartibida (qarang: sortedOwnerCategories) foydalaniladi.
 
-  function categoryListHtml(categories) {
-    if (!categories || !categories.length) return `<div class="bosh">Hali bo'lim qo'shilmagan.</div>`;
-    return categories.map((c, i) => `
-      <div class="owner-item">
-        <div class="owner-id">${escapeHtml(c.name)}</div>
-        <div class="owner-actions">
-          <button data-cat-up="${escapeHtml(c.id)}" ${i === 0 ? 'disabled' : ''}>↑</button>
-          <button data-cat-down="${escapeHtml(c.id)}" ${i === categories.length - 1 ? 'disabled' : ''}>↓</button>
-          <button data-remove-cat-id="${escapeHtml(c.id)}">O'chirish</button>
-        </div>
-      </div>
-    `).join('');
+  // ---- API: bo'limlar ro'yxatini olish (egasi yoki uning xodimlari) ----
+  if (req.method === 'POST' && req.url === '/api/category-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(ctx.owner) });
+    });
+    return;
   }
 
-  async function moveCategory(id, direction) {
-    const ids = ownerCategoriesCache.map(c => c.id);
-    const idx = ids.indexOf(id);
-    const swapWith = idx + direction;
-    if (idx < 0 || swapWith < 0 || swapWith >= ids.length) return;
-    const tmp = ids[idx];
-    ids[idx] = ids[swapWith];
-    ids[swapWith] = tmp;
-    await apiPost('/api/category-reorder', { initData, orderedIds: ids });
-    loadCategoriesAndRender();
+  // ---- API: yangi bo'lim qo'shish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/category-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi bo\'limlarni boshqara oladi'));
+      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Bo\'lim nomini kiriting.' });
+
+      const categories = ensureOwnerCategories(owner);
+      const exists = categories.some(c => c.name.toLowerCase() === nameTrim.toLowerCase());
+      if (exists) return sendJSON(res, 200, { ok: false, reason: 'Bunday bo\'lim allaqachon mavjud.' });
+
+      const maxOrder = categories.reduce((max, c) => Math.max(max, c.order), -1);
+      const category = { id: crypto.randomBytes(4).toString('hex'), name: nameTrim, order: maxOrder + 1 };
+      categories.push(category);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, category, categories: sortedOwnerCategories(owner) });
+    });
+    return;
   }
 
-  async function loadCategoriesAndRender() {
-    const listEl = document.getElementById('categoryList');
-    const selectEl = document.getElementById('menuCategoryInput');
-    if (!listEl && !selectEl) return;
-    const res = await apiPost('/api/category-list', { initData });
-    ownerCategoriesCache = (res.ok && Array.isArray(res.categories)) ? res.categories : [];
+  // ---- API: bo'limni o'chirish (faqat egasi) ----
+  // ESLATMA: shu bo'limdan foydalanayotgan taomlar avtomatik boshqa bo'limga
+  // ko'chirilmaydi — ularning `category` maydoni o'zgarishsiz qoladi, lekin
+  // endi ro'yxatda bo'lmagani uchun mijoz/kassir menyusida "Boshqa" bo'limi
+  // ostida chiqadi (qarang: public/app.js — groupMenuItems).
+  if (req.method === 'POST' && req.url === '/api/category-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
-    if (listEl) {
-      listEl.innerHTML = categoryListHtml(ownerCategoriesCache);
-      listEl.querySelectorAll('[data-remove-cat-id]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          await apiPost('/api/category-remove', { initData, id: btn.getAttribute('data-remove-cat-id') });
-          loadCategoriesAndRender();
-        });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      ensureOwnerCategories(owner);
+      owner.categories = owner.categories.filter(c => c.id !== id);
+      // qolganlarini 0 dan boshlab qayta raqamlaymiz — bo'shliq qolmasin
+      owner.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(owner) });
+    });
+    return;
+  }
+
+  // ---- API: bo'limlar tartibini o'zgartirish (faqat egasi) ----
+  // Frontend to'liq tartiblangan id ro'yxatini yuboradi (masalan, ikkita
+  // qo'shni bo'limni ↑/↓ tugmalari bilan almashtirgandan keyin butun
+  // ro'yxatni qayta joylashtirib). Kelmagan (frontendda ko'rinmayotgan)
+  // id'lar bo'lsa ham xato bermaymiz — ular oxiriga, o'zaro nisbiy
+  // tartibini saqlagan holda qo'shiladi.
+  if (req.method === 'POST' && req.url === '/api/category-reorder') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderedIds } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
+      if (!Array.isArray(orderedIds)) return sendJSON(res, 200, { ok: false, reason: 'Tartib ro\'yxati noto\'g\'ri.' });
+
+      const categories = ensureOwnerCategories(owner);
+      const byId = new Map(categories.map(c => [c.id, c]));
+      let nextOrder = 0;
+      orderedIds.forEach(id => {
+        const c = byId.get(String(id));
+        if (c) { c.order = nextOrder++; byId.delete(String(id)); }
       });
-      listEl.querySelectorAll('[data-cat-up]').forEach(btn => {
-        btn.addEventListener('click', () => moveCategory(btn.getAttribute('data-cat-up'), -1));
-      });
-      listEl.querySelectorAll('[data-cat-down]').forEach(btn => {
-        btn.addEventListener('click', () => moveCategory(btn.getAttribute('data-cat-down'), 1));
-      });
-    }
+      // ro'yxatda ko'rsatilmagan qolganlari (agar bo'lsa) — eski nisbiy
+      // tartibini saqlab, oxiriga qo'shiladi.
+      categories.slice().sort((a, b) => a.order - b.order)
+        .filter(c => byId.has(c.id))
+        .forEach(c => { c.order = nextOrder++; });
 
-    if (selectEl) {
-      const prevVal = selectEl.value;
-      selectEl.innerHTML = '<option value="">— Bo\'lim tanlanmagan —</option>' +
-        ownerCategoriesCache.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
-      selectEl.value = prevVal;
-    }
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(owner) });
+    });
+    return;
   }
 
-  function promoListHtml(promotions) {
-    if (!promotions || !promotions.length) return `<div class="bosh">Hali aksiya qo'shilmagan.</div>`;
-    return promotions.map(p => `
-      <div class="owner-item" style="align-items:flex-start;">
-        <div>
-          <div class="owner-id">${escapeHtml(p.title)} — ${p.discountPercent}%</div>
-          ${p.description ? `<div class="owner-username">${escapeHtml(p.description)}</div>` : ''}
-          ${p.minTotal ? `<div class="owner-username">Min: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
-        </div>
-        <div class="owner-actions">
-          <span class="badge ${p.active ? 'paid' : 'unpaid'}">${p.active ? 'Faol' : 'Nofaol'}</span>
-          <button data-toggle-promo-id="${escapeHtml(p.id)}">${p.active ? 'To\'xtatish' : 'Yoqish'}</button>
-          <button data-remove-promo-id="${escapeHtml(p.id)}">O'chirish</button>
-        </div>
-      </div>
-    `).join('');
-  }
+  // ---- API: menyuga taom qo'shish (faqat egasi) ----
+  // C-bo'lim (11-18-bosqich): "Skladdan to'g'ridan sotuvga chiqadigan mahsulot".
+  // Odatdagi taom retsept (recipe: [{stockId, qty}, ...]) orqali bir nechta
+  // ingredientdan tayyorlanadi. Ba'zi "taomlar" esa aslida sklad mahsulotining
+  // o'zi to'g'ridan-to'g'ri sotiladi (masalan shishada suv, banka ichimlik) —
+  // bunday holda alohida retsept tuzishning hojati yo'q, taom bevosita bitta
+  // sklad mahsulotiga bog'lanadi (menuItem.directStockId, faqat MARKAZIY
+  // skladdagi mahsulotga — xuddi recipe.stockId kabi, filial skladiga emas,
+  // chunki buyurtma vaqtida sklad ham shu tarzda faqat markaziydan kamayadi:
+  // qarang pastdagi /api/create-order). Ikkalasi bir vaqtda bo'lishi mumkin
+  // emas: yo retsept, yo directStockId (yoki hech qaysisi — oddiy taom).
+  if (req.method === 'POST' && req.url === '/api/menu-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, price, category, description, imageUrl, directStockId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
-  async function loadPromoAndRender() {
-    const listEl = document.getElementById('promoList');
-    if (!listEl) return;
-    const res = await apiPost('/api/promo-list', { initData });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadPromoAndRender); return; }
-    listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
-  }
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
+      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
 
-  async function loadBonusSettingsAndRender() {
-    const enabledEl = document.getElementById('bonusEnabledInput');
-    if (!enabledEl) return;
-    const res = await apiPost('/api/bonus-settings-get', { initData });
-    const settings = res.ok ? res.settings : { enabled: false, earnPercent: 5 };
-    enabledEl.checked = !!settings.enabled;
-    document.getElementById('bonusPercentInput').value = settings.earnPercent || '';
-  }
-
-  async function loadStaffAndRender() {
-    const listEl = document.getElementById('staffList');
-    if (!listEl) return;
-    const res = await apiPost('/api/staff-list', { initData });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadStaffAndRender); return; }
-    listEl.innerHTML = staffListHtml(res.ok ? res.staff : []);
-  }
-
-  function ownerMenuListHtml(menu) {
-    if (!menu || !menu.length) return `<div class="bosh">Menyu hali bo'sh.</div>`;
-    return menu.map(m => `
-      <div class="menu-item">
-        <div>
-          <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
-          ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
-          <div class="m-price">${escapeHtml(String(m.price))} so'm${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
-        </div>
-        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
-          <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
-          ${m.directStockId ? '' : `<button data-recipe-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Retsept</button>`}
-          <button data-toggle-avail-id="${escapeHtml(m.id)}" class="row-action-btn brand">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
-          <button data-remove-menu-id="${escapeHtml(m.id)}" class="row-action-btn danger">O'chirish</button>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  // ---- Menyuga taom qo'shish bo'limi — qayta ishlatiladigan blok (avval
-  // faqat Sklad ekranida edi, endi Oshxona ekranida ham egasiga ko'rinadi) ----
-  function menuAddSectionHtml() {
-    return `
-      <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
-      <div class="kartochka">
-        <h2>Menyuga taom qo'shish</h2>
-        <input type="text" id="menuNameInput" placeholder="Taom nomi">
-        <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
-        <label class="field-label">Bo'lim (ixtiyoriy)</label>
-        <select id="menuCategoryInput"><option value="">— Bo'lim tanlanmagan —</option></select>
-        <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
-        <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
-        <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
-        <img id="menuImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
-        <input type="hidden" id="menuImageInput">
-
-        <label class="field-label" style="margin-top:10px;">Turi</label>
-        <select id="menuTypeInput">
-          <option value="recipe">Tayyorlanadigan (retsept keyinroq belgilanadi)</option>
-          <option value="direct">To'g'ridan skladdan (masalan: shishada suv)</option>
-        </select>
-        <div id="menuDirectStockWrap" class="hidden" style="margin-top:8px;">
-          <label class="field-label">Sklad mahsuloti</label>
-          <select id="menuDirectStockInput"><option value="">Yuklanmoqda...</option></select>
-        </div>
-
-        <button class="btn" id="addMenuBtn" style="margin-top:10px;">Qo'shish</button>
-        <div class="xabar" id="menuMsg"></div>
-      </div>
-      <div class="kartochka">
-        <h2>Menyu</h2>
-        <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `;
-  }
-
-  function attachMenuAddSectionHandlers() {
-    document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
-      const file = e.target.files && e.target.files[0];
-      const msgEl = document.getElementById('menuMsg');
-      const preview = document.getElementById('menuImagePreview');
-      if (!file) return;
-      try {
-        const dataUrl = await readImageFileAsCompressedDataUrl(file);
-        document.getElementById('menuImageInput').value = dataUrl || '';
-        preview.src = dataUrl;
-        preview.style.display = 'block';
-      } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
-        e.target.value = '';
+      const nameTrim = String(name || '').trim();
+      const priceNum = Number(price);
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
+      if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+      const imageTrim = String(imageUrl || '').trim();
+      if (!isValidImageValue(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
       }
-    });
 
-    // "Turi" tanlovi — "To'g'ridan skladdan" tanlansa, markaziy skladdagi
-    // mahsulotlar ro'yxati (bir marta) yuklanib, select to'ldiriladi.
-    document.getElementById('menuTypeInput').addEventListener('change', (e) => {
-      const wrap = document.getElementById('menuDirectStockWrap');
-      const isDirect = e.target.value === 'direct';
-      wrap.classList.toggle('hidden', !isDirect);
-      if (isDirect) loadMenuDirectStockOptions();
-    });
-
-    document.getElementById('addMenuBtn').addEventListener('click', async () => {
-      const name = document.getElementById('menuNameInput').value.trim();
-      const price = document.getElementById('menuPriceInput').value.trim();
-      const category = document.getElementById('menuCategoryInput').value.trim();
-      const description = document.getElementById('menuDescriptionInput').value.trim();
-      const imageUrl = document.getElementById('menuImageInput').value.trim();
-      const menuType = document.getElementById('menuTypeInput').value;
-      const directStockId = menuType === 'direct' ? document.getElementById('menuDirectStockInput').value : '';
-      const msgEl = document.getElementById('menuMsg');
-      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
-        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
-        msgEl.className = 'xabar err';
-        return;
+      // 12-bosqich: directStockId ixtiyoriy — berilsa, markaziy skladda
+      // shunday mahsulot borligini tekshiramiz. Yangi taomda recipe hali
+      // yo'q (u alohida /api/menu-set-recipe orqali qo'shiladi), shuning
+      // uchun bu yerda retsept bilan to'qnashuv bo'lishi mumkin emas —
+      // to'qnashuvning oldini olish /api/menu-set-recipe tomonida qilinadi
+      // (o'sha yerda directStockId allaqachon borligini tekshiradi).
+      let directStockIdVal = null;
+      if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
+        const stockItem = findStockItem(owner, directStockId);
+        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti (markaziy skladda) topilmadi.' });
+        directStockIdVal = directStockId;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl, directStockId });
-      if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('menuNameInput').value = '';
-        document.getElementById('menuPriceInput').value = '';
-        document.getElementById('menuCategoryInput').value = '';
-        document.getElementById('menuDescriptionInput').value = '';
-        document.getElementById('menuImageInput').value = '';
-        document.getElementById('menuImageFileInput').value = '';
-        document.getElementById('menuImagePreview').style.display = 'none';
-        document.getElementById('menuTypeInput').value = 'recipe';
-        document.getElementById('menuDirectStockWrap').classList.add('hidden');
-        loadMenuAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+
+      if (!owner.menu) owner.menu = [];
+      const item = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: nameTrim,
+        price: priceNum,
+        category: String(category || '').trim() || null,
+        description: String(description || '').trim() || null,
+        imageUrl: imageTrim || null,
+        available: true,
+        directStockId: directStockIdVal,
+        addedAt: new Date().toISOString()
+      };
+      owner.menu.push(item);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, item });
+    });
+    return;
+  }
+
+  // ---- API: menyudagi taom ma'lumotlarini tahrirlash / ko'rinish holatini almashtirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-update') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name, price, category, description, imageUrl, available, directStockId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
+      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const item = (owner.menu || []).find(m => m.id === id);
+      if (!item) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
+
+      if (name !== undefined) {
+        const nameTrim = String(name || '').trim();
+        if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
+        item.name = nameTrim;
       }
-    });
-
-    loadCategoriesAndRender();
-    loadMenuAndRender();
-  }
-
-  async function loadMenuAndRender() {
-    const listEl = document.getElementById('menuList');
-    if (!listEl) return;
-    const res = await apiPost('/api/menu-list', { initData });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadMenuAndRender); return; }
-    const menu = res.ok ? res.menu : [];
-    listEl.innerHTML = ownerMenuListHtml(menu);
-    listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id') });
-        loadMenuAndRender();
-      });
-    });
-    listEl.querySelectorAll('[data-edit-menu-id]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-edit-menu-id');
-        const menuItem = menu.find(m => m.id === id);
-        if (menuItem) renderMenuItemEditOverlay(menuItem);
-      });
-    });
-    listEl.querySelectorAll('[data-recipe-menu-id]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-recipe-menu-id');
-        const menuItem = menu.find(m => m.id === id);
-        if (menuItem) openRecipeEditor(menuItem);
-      });
-    });
-    listEl.querySelectorAll('[data-toggle-avail-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const id = btn.getAttribute('data-toggle-avail-id');
-        const menuItem = menu.find(m => m.id === id);
-        btn.disabled = true;
-        await apiPost('/api/menu-update', { initData, id, available: menuItem ? menuItem.available === false : true });
-        loadMenuAndRender();
-      });
-    });
-  }
-
-  // ---- Xodim (kassir/oshpaz/sklad/dostavka): rolga qarab tegishli ekranni ko'rsatadi ----
-  // YANGI: bir nechta vakolatli xodim uchun "qaysi bo'limda ishlaysiz?" ekrani -
-  // oshxona logotipi va "Xush kelibsiz!" yozuvi bilan (oddiy "Tekshirilmoqda..."
-  // o'rniga - shu ekran endi shuning o'rnini bosadi, chunki bu vaqtga kelib
-  // /api/verify allaqachon javob qaytargan, oshxona ma'lumotlari ma'lum).
-  function renderStaffRolePicker(data) {
-    clearAppHeader();
-    applyBrandColor(data.ownerBrandColor);
-    const restaurantName = data.ownerRestaurantName || 'Oshxona';
-    const logoHtml = data.ownerLogoUrl
-      ? `<img src="${escapeHtml(data.ownerLogoUrl)}" alt="" style="width:72px; height:72px; border-radius:50%; object-fit:cover; margin:0 auto 14px; display:block;">`
-      : `<div style="width:72px; height:72px; margin:0 auto 14px; border-radius:50%; background:var(--brand-primary-light); display:flex; align-items:center; justify-content:center;">${icon('restaurant', 'icon-lg')}</div>`;
-    ekran(`
-      <div class="panel" style="text-align:center;">
-        ${logoHtml}
-        <div class="salom">Xush kelibsiz!</div>
-        <div class="bosh" style="text-align:center;">
-          <b>${escapeHtml(restaurantName)}</b> jamoasidasiz. Sizga bir nechta vakolat berilgan — qaysi bo'limda ishlaysiz?
-        </div>
-        <div class="kartochka" style="text-align:left; margin-top:14px;">
-          ${data.roles.map(r => `
-            <button type="button" class="btn ikkinchi role-pick-btn" data-role="${escapeHtml(r)}" style="width:100%; margin-bottom:8px; justify-content:flex-start; gap:10px;">
-              ${icon(ROLE_ICONS[r] || 'user', 'icon-xs')}<span>${escapeHtml(ROLE_LABELS[r] || r)}</span>
-            </button>
-          `).join('')}
-        </div>
-      </div>
-    `);
-    document.querySelectorAll('.role-pick-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const chosenRole = btn.getAttribute('data-role');
-        const key = staffChosenRoleKey();
-        if (key) localStorage.setItem(key, chosenRole);
-        renderStaffScreen(chosenRole, ROLE_LABELS[chosenRole] || chosenRole, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
-      });
-    });
-  }
-
-  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl, brandColor, roles) {
-    applyBrandColor(brandColor);
-    // Bir nechta vakolati bo'lgan xodimga header'da "🔁 Rol almashtirish"
-    // tugmasi ko'rsatiladi - bosilsa, tanlovi shu qurilmadan o'chiriladi va
-    // ilova qaytadan "qaysi bo'limda ishlaysiz?" ekranini so'raydi.
-    const multiRole = Array.isArray(roles) && roles.length > 1;
-    setAppHeader(logoUrl, restaurantName, roleLabel, multiRole ? staffRoleSwitchHandler : null);
-    if (role === 'kassir') {
-      renderCashierScreen(restaurantName);
-      return;
-    }
-    if (role === 'oshpaz') {
-      renderKitchenScreen(restaurantName);
-      return;
-    }
-    if (role === 'sklad') {
-      currentStockRole = 'sklad';
-      renderStockScreen(restaurantName, 'sklad', null);
-      return;
-    }
-    if (role === 'dostavka') {
-      renderDeliveryScreen(restaurantName);
-      return;
-    }
-    ekran(`
-      <div class="panel" style="text-align:center;">
-        <div class="salom">Salom!</div>
-        <div class="kartochka">
-          <div class="bosh" style="text-align:center; font-size:15px;">
-            Siz <b>${escapeHtml(restaurantName || 'oshxona')}</b> jamoasida
-          </div>
-          <div style="text-align:center; margin-top:10px;">
-            <span class="role-badge" style="font-size:14px; padding:8px 16px;">${escapeHtml(roleLabel)}</span>
-          </div>
-          <div class="bosh" style="text-align:center; margin-top:14px;">
-            Sizning ish bo'limingiz tez orada shu yerga qo'shiladi.
-          </div>
-        </div>
-      </div>
-    `);
-  }
-
-  // "🔁" tugmasi bosilganda: shu qurilmadagi tanlovni tozalab, /api/verify'ni
-  // qaytadan chaqiradi (bootstrapApp) — shu bilan rol ro'yxati ham yangilanadi
-  // (masalan admin bu orada bitta vakolatini olib tashlagan bo'lishi mumkin).
-  function staffRoleSwitchHandler() {
-    const key = staffChosenRoleKey();
-    if (key) localStorage.removeItem(key);
-    bootstrapApp();
-  }
-
-  // ---- Xodim: shaxsiy kunlik/haftalik/oylik statistika (45-bosqich) ----
-  let myStatsState = { period: 'today' };
-
-  function myStatsPeriodLabel(period) {
-    return { today: 'Bugun', week: 'Bu hafta', month: 'Bu oy', all: 'Hammasi' }[period] || period;
-  }
-
-  function myStatsBodyHtml(stats) {
-    const blocks = [];
-    if (stats.kassir) {
-      blocks.push(`
-        <div class="kartochka">
-          <h2>Yaratgan buyurtmalarim</h2>
-          <div class="profile-row"><b>Soni:</b> ${stats.kassir.orderCount} ta</div>
-          <div class="profile-row"><b>Jami summa:</b> ${cfFormatSum(stats.kassir.totalAmount)}</div>
-        </div>
-      `);
-    }
-    if (stats.oshpaz) {
-      blocks.push(`
-        <div class="kartochka">
-          <h2>Tayyorlagan buyurtmalarim</h2>
-          <div class="profile-row"><b>Soni:</b> ${stats.oshpaz.orderCount} ta</div>
-        </div>
-      `);
-    }
-    if (stats.dostavka) {
-      blocks.push(`
-        <div class="kartochka">
-          <h2>Yetkazgan buyurtmalarim</h2>
-          <div class="profile-row"><b>Soni:</b> ${stats.dostavka.orderCount} ta</div>
-          <div class="profile-row"><b>Jami pul:</b> ${cfFormatSum(stats.dostavka.totalAmount)}</div>
-          <div class="profile-row"><b>Komissiyam:</b> ${cfFormatSum(stats.dostavka.commission)}</div>
-        </div>
-      `);
-    }
-    if (stats.sklad) {
-      blocks.push(`
-        <div class="kartochka">
-          <h2>Sklad harakatlarim</h2>
-          <div class="profile-row"><b>Jami:</b> ${stats.sklad.movementCount} ta</div>
-          <div class="profile-row"><b>Kirim:</b> ${stats.sklad.kirimCount} ta</div>
-          <div class="profile-row"><b>Chiqim:</b> ${stats.sklad.chiqimCount} ta</div>
-        </div>
-      `);
-    }
-    if (!blocks.length) return `<div class="bosh">Hozircha statistika yo'q.</div>`;
-    return blocks.join('');
-  }
-
-  function renderMyStatsScreen(onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Statistikam</div>
-        <button class="btn ikkinchi" id="msBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="tab-row">
-          <div class="tab-opt ${myStatsState.period === 'today' ? 'selected' : ''}" data-ms-period="today">Bugun</div>
-          <div class="tab-opt ${myStatsState.period === 'week' ? 'selected' : ''}" data-ms-period="week">Hafta</div>
-          <div class="tab-opt ${myStatsState.period === 'month' ? 'selected' : ''}" data-ms-period="month">Oy</div>
-        </div>
-        <div id="msBody"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-
-    document.getElementById('msBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack && onBack(); });
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const p = e.target.getAttribute('data-ms-period');
-      if (!p || p === myStatsState.period) return;
-      myStatsState.period = p;
-      renderMyStatsScreen(onBack);
-    });
-
-    loadMyStats();
-  }
-
-  async function loadMyStats() {
-    const bodyEl = document.getElementById('msBody');
-    if (!bodyEl) return;
-    const res = await apiPost('/api/my-stats', { initData, period: myStatsState.period });
-    if (res.networkError) { renderNetworkErrorInline(bodyEl, res.reason, () => loadMyStats()); return; }
-    if (!res.ok) {
-      bodyEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    bodyEl.innerHTML = myStatsBodyHtml(res.stats);
-  }
-
-  // ---- Kassir: buyurtma ekrani (menyu → savat → tur/to'lov → yuborish) ----
-  const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
-
-  // 19/20-bosqich: "Stolga" va "Olib ketish" buyurtmalarida faqat "Naqd" va
-  // "Karta" to'lov usullari ko'rsatiladi. 21/22/23-bosqich: "Dostavka
-  // orqali" varianti (matni) FAQAT haqiqiy Dostavka buyurtmalarida
-  // ko'rinadi — ilgari bu variant barcha buyurtma turlarida (Stolga, Olib
-  // ketishda ham) chiqib, mijozlarni chalkashtirib yuborardi. Dostavka
-  // buyurtmasida esa "Naqd" ko'rsatilmaydi — kuryer naqd pulni mijozdan
-  // olishi aynan "Dostavka orqali" varianti bilan ifodalanadi, ikkalasi bir
-  // vaqtda kerak emas (chalkashlikni oldini olish).
-  function visiblePaymentTypeEntries(orderType) {
-    return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
-      if (k === 'dostavka_orqali' && customerState.cardOnlyRestricted) return false;
-      if (orderType === 'dostavka') return k !== 'naqd';
-      return k !== 'dostavka_orqali';
-    });
-  }
-  // orderType o'zgarganda, agar hozirgi tanlov endi ko'rinmaydigan variant
-  // bo'lib qolsa (masalan "dostavka"dan "stol"ga o'tilganda "dostavka_orqali"
-  // tanlangan bo'lsa, yoki "stol"dan "dostavka"ga o'tilganda "naqd" tanlangan
-  // bo'lsa) — variant "karta"ga almashtiriladi, aks holda ko'rinmaydigan
-  // tanlov "yopishib" qolib, mijoz buni sezmasdan yuborib yuborishi mumkin edi.
-  function ensureValidPaymentType(state) {
-    const visibleKeys = visiblePaymentTypeEntries(state.orderType).map(([k]) => k);
-    if (!visibleKeys.includes(state.paymentType)) {
-      state.paymentType = 'karta';
-    }
-  }
-
-  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '', tab: 'yaratish', lastOrderRequestId: null };
-
-  function cashierCartTotal() {
-    return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
-  }
-
-  function cashierTabRowHtml() {
-    return `
-      <div class="tab-row">
-        <div class="tab-opt ${cashierState.tab === 'yaratish' ? 'selected' : ''}" data-cashier-tab="yaratish">Yangi buyurtma</div>
-        <div class="tab-opt ${cashierState.tab === 'holat' ? 'selected' : ''}" data-cashier-tab="holat">Buyurtmalar holati</div>
-        <div class="tab-opt ${cashierState.tab === 'statistika' ? 'selected' : ''}" data-cashier-tab="statistika">Statistikam</div>
-      </div>
-    `;
-  }
-
-  function renderCashierScreen(restaurantName, onBack) {
-    stopOrdersPolling();
-    disconnectSectionedMenuObserver('cashierCatRow');
-    if (cashierState.tab === 'holat') {
-      renderCashierOrdersTab(restaurantName, onBack);
-      return;
-    }
-    if (cashierState.tab === 'statistika') {
-      renderMyStatsScreen(() => { cashierState.tab = 'yaratish'; renderCashierScreen(restaurantName, onBack); });
-      return;
-    }
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
-        ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        ${cashierTabRowHtml()}
-        ${shiftWidgetHtml()}
-        <div class="bosh">Taomni bosib savatga qo'shing.</div>
-        <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
-        <div class="cart-bar">
-          <div class="type-row" id="orderTypeRow">
-            ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
-              <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
-            `).join('')}
-          </div>
-          <div id="tableNumberWrap" class="${cashierState.orderType === 'stol' ? '' : 'hidden'}">
-            <input type="text" id="tableNumberInput" placeholder="Stol raqami" value="${escapeHtml(cashierState.tableNumber)}" inputmode="numeric">
-          </div>
-          <div class="type-row" id="paymentTypeRow">
-            ${visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
-              <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
-            `).join('')}
-          </div>
-          <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${cashierCartTotal()} so'm</span></div>
-          <button class="btn" id="sendOrderBtn">Oshxonaga yuborish</button>
-          <div class="xabar" id="orderMsg"></div>
-        </div>
-      </div>
-    `);
-
-    if (onBack) {
-      document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
-    }
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-cashier-tab');
-      if (!t || t === cashierState.tab) return;
-      cashierState.tab = t;
-      renderCashierScreen(restaurantName, onBack);
-    });
-
-    document.getElementById('orderTypeRow').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-order-type');
-      if (!t) return;
-      cashierState.orderType = t;
-      ensureValidPaymentType(cashierState);
-      renderCashierScreen(restaurantName, onBack);
-    });
-    document.getElementById('paymentTypeRow').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-payment-type');
-      if (!t) return;
-      cashierState.paymentType = t;
-      renderCashierScreen(restaurantName, onBack);
-    });
-    const tableInput = document.getElementById('tableNumberInput');
-    if (tableInput) tableInput.addEventListener('input', (e) => { cashierState.tableNumber = e.target.value; });
-
-    document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
-
-    attachShiftWidgetHandler();
-    loadShiftWidget();
-    loadCashierMenu(restaurantName);
-  }
-
-  // ---- Kassir: "Buyurtmalar holati" tabi — real-vaqtda ro'yxat, faqat "Tayyor" tugmasi bilan ----
-  function renderCashierOrdersTab(restaurantName, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
-        ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        ${cashierTabRowHtml()}
-        ${shiftWidgetHtml()}
-        ${soundToggleBtnHtml()}
-        ${cashierStatusChipsHtml()}
-        <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-    if (onBack) {
-      document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
-    }
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-cashier-tab');
-      if (!t || t === cashierState.tab) return;
-      cashierState.tab = t;
-      renderCashierScreen(restaurantName, onBack);
-    });
-    document.getElementById('cashierStatusChips').addEventListener('click', (e) => {
-      const key = e.target.getAttribute('data-status-chip');
-      if (!key || key === cashierStatusFilter) return;
-      cashierStatusFilter = key;
-      document.querySelectorAll('#cashierStatusChips [data-status-chip]').forEach(el => {
-        el.classList.toggle('selected', el.getAttribute('data-status-chip') === key);
-      });
-      lastOrdersSnapshot = null; // filtr o'zgardi — taxtani majburiy qayta chizamiz
-      refreshOrdersBoard('kassir');
-    });
-    attachSoundToggleHandler();
-    attachShiftWidgetHandler();
-    loadShiftWidget();
-    startOrdersPolling('kassir');
-  }
-
-  // ==================== K. Umumiy: bo'limlarga bo'lingan menyu (29-30-bosqich) ====================
-  // Mijoz va kassir menyusi bir xil "bo'lim + sticky tab-bar + scrollspy"
-  // mantig'iga muhtoj edi — shu komponent ikkalasida ham qayta ishlatiladi,
-  // faqat karta ko'rinishi (renderItem) va konteyner id'lari (opts) farq qiladi.
-
-  // categories (ixtiyoriy) — owner.categories ro'yxati (F-bo'lim, 36-40-bosqich).
-  // Berilsa, bo'limlar shu yerdagi tartib (order) bo'yicha chiqadi; ro'yxatda
-  // yo'q kategoriyalar (masalan, bo'lim keyinchalik o'chirilgan bo'lsa yoki
-  // taomda umuman kategoriya belgilanmagan bo'lsa — "Boshqa") oxiriga,
-  // taomlarda uchragan tartibda qo'shiladi.
-  function groupMenuItems(items, categories) {
-    const orderIndex = {};
-    (categories || []).forEach((c, i) => { orderIndex[c.name] = i; });
-    const order = [];
-    const groups = {};
-    items.forEach(m => {
-      const cat = m.category || 'Boshqa';
-      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
-      groups[cat].push(m);
-    });
-    order.sort((a, b) => {
-      const ai = Object.prototype.hasOwnProperty.call(orderIndex, a) ? orderIndex[a] : Infinity;
-      const bi = Object.prototype.hasOwnProperty.call(orderIndex, b) ? orderIndex[b] : Infinity;
-      return ai - bi;
-    });
-    return { order, groups };
-  }
-
-  // opts: { sectionIdPrefix, itemsWrapperClass, renderItem, emptyText, categories }
-  function renderSectionedMenu(items, opts) {
-    if (!items.length) return `<div class="bosh">${opts.emptyText}</div>`;
-    const { order, groups } = groupMenuItems(items, opts.categories);
-    return order.map((cat, i) => `
-      <div class="menu-section" id="${opts.sectionIdPrefix}-${i}">
-        <div class="cat-heading">${escapeHtml(cat)}</div>
-        <div class="${opts.itemsWrapperClass || ''}">${groups[cat].map(opts.renderItem).join('')}</div>
-      </div>
-    `).join('');
-  }
-
-  // opts: { tabRowId, sectionIdPrefix, listElId, categories }
-  function sectionedMenuTabsHtml(items, opts) {
-    const { order } = groupMenuItems(items, opts.categories);
-    if (order.length <= 1) return '';
-    return `
-      <div class="cat-row sectioned-menu-tabs" id="${opts.tabRowId}">
-        <div class="cat-opt" data-section-id="${opts.listElId}">Hammasi</div>
-        ${order.map((c, i) => `<div class="cat-opt" data-section-id="${opts.sectionIdPrefix}-${i}">${escapeHtml(c)}</div>`).join('')}
-      </div>
-    `;
-  }
-
-  // tabRowId bo'yicha kalitlangan IntersectionObserver'lar — mijoz va
-  // kassir ekranlari bir vaqtda alohida ishlaydi, biri ikkinchisiga
-  // xalaqit bermaydi.
-  const sectionedMenuObservers = {};
-
-  function disconnectSectionedMenuObserver(tabRowId) {
-    if (sectionedMenuObservers[tabRowId]) {
-      sectionedMenuObservers[tabRowId].disconnect();
-      delete sectionedMenuObservers[tabRowId];
-    }
-  }
-
-  function attachSectionedMenuTabHandlers(tabRowId) {
-    const tabRow = document.getElementById(tabRowId);
-    if (!tabRow) return;
-    tabRow.addEventListener('click', (e) => {
-      const opt = e.target.closest('[data-section-id]');
-      if (!opt) return;
-      const targetEl = document.getElementById(opt.getAttribute('data-section-id'));
-      if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }
-
-  function attachSectionedMenuScrollSpy(tabRowId, listElId) {
-    disconnectSectionedMenuObserver(tabRowId);
-    const tabRow = document.getElementById(tabRowId);
-    if (!tabRow) return;
-    const sections = Array.from(document.querySelectorAll('#' + listElId + ' .menu-section'));
-    if (!sections.length) return;
-
-    const setActiveTab = (sectionId) => {
-      tabRow.querySelectorAll('[data-section-id]').forEach(opt => {
-        const isActive = opt.getAttribute('data-section-id') === sectionId;
-        opt.classList.toggle('selected', isActive);
-        if (isActive) opt.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-      });
-    };
-    setActiveTab(sections[0].id);
-
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => { if (entry.isIntersecting) setActiveTab(entry.target.id); });
-    }, { rootMargin: '-96px 0px -70% 0px', threshold: 0 });
-    sections.forEach(sec => observer.observe(sec));
-    sectionedMenuObservers[tabRowId] = observer;
-  }
-
-  function cashierItemRowHtml(m) {
-    const qty = cashierState.cart[m.id] || 0;
-    const thumbHtml = m.imageUrl
-      ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
-      : `<div class="menu-item-thumb-empty"></div>`;
-    // 47-bosqich: sklad tugagan taom avtomatik "Tugagan" deb belgilanadi —
-    // savatga qo'shib bo'lmaydi (miqdor tugmalari o'chiriladi).
-    if (m.outOfStock) {
-      return `
-        <div class="menu-item" style="opacity:0.55;">
-          <div class="menu-item-info">
-            ${thumbHtml}
-            <div>
-              <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
-              <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
-            </div>
-          </div>
-          <div class="qty-controls">
-            <button disabled>-</button>
-            <span class="qty-val">0</span>
-            <button disabled>+</button>
-          </div>
-        </div>
-      `;
-    }
-    return `
-      <div class="menu-item">
-        <div class="menu-item-info">
-          ${thumbHtml}
-          <div>
-            <div class="m-name">${escapeHtml(m.name)}</div>
-            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
-          </div>
-        </div>
-        <div class="qty-controls">
-          <button data-qty-minus="${escapeHtml(m.id)}">-</button>
-          <span class="qty-val">${qty}</span>
-          <button data-qty-plus="${escapeHtml(m.id)}">+</button>
-        </div>
-      </div>
-    `;
-  }
-
-  // 29-bosqich: kassirning "Yangi buyurtma" menyusi ham mijoznikiga
-  // o'xshab bo'limlarga ajratildi (umumiy komponent — 30-bosqich).
-  function cashierMenuHtml() {
-    return `
-      ${sectionedMenuTabsHtml(cashierState.menu, { tabRowId: 'cashierCatRow', sectionIdPrefix: 'menu-section-cashier', listElId: 'cashierMenuList', categories: cashierState.categories })}
-      <div id="cashierMenuList">${renderSectionedMenu(cashierState.menu, {
-        sectionIdPrefix: 'menu-section-cashier',
-        itemsWrapperClass: '',
-        renderItem: cashierItemRowHtml,
-        emptyText: "Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang.",
-        categories: cashierState.categories
-      })}</div>
-    `;
-  }
-
-  async function loadCashierMenu(restaurantName) {
-    const el = document.getElementById('cashierMenu');
-    const res = await apiPost('/api/menu-list', { initData });
-    if (res.networkError) { renderNetworkErrorInline(el, res.reason, () => loadCashierMenu(restaurantName)); return; }
-    cashierState.menu = res.ok ? res.menu : [];
-    cashierState.categories = res.ok ? (res.categories || []) : [];
-    el.innerHTML = cashierMenuHtml();
-    attachQtyHandlers(restaurantName);
-    attachSectionedMenuTabHandlers('cashierCatRow');
-    attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
-  }
-
-  function attachQtyHandlers(restaurantName) {
-    const el = document.getElementById('cashierMenu');
-    el.querySelectorAll('[data-qty-plus]').forEach(btn => btn.onclick = () => {
-      const id = btn.getAttribute('data-qty-plus');
-      cashierState.cart[id] = (cashierState.cart[id] || 0) + 1;
-      el.innerHTML = cashierMenuHtml();
-      attachQtyHandlers(restaurantName);
-      attachSectionedMenuTabHandlers('cashierCatRow');
-      attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
-      updateCartTotal();
-    });
-    el.querySelectorAll('[data-qty-minus]').forEach(btn => btn.onclick = () => {
-      const id = btn.getAttribute('data-qty-minus');
-      cashierState.cart[id] = Math.max(0, (cashierState.cart[id] || 0) - 1);
-      el.innerHTML = cashierMenuHtml();
-      attachQtyHandlers(restaurantName);
-      attachSectionedMenuTabHandlers('cashierCatRow');
-      attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
-      updateCartTotal();
-    });
-  }
-
-  function updateCartTotal() {
-    const el = document.getElementById('cartTotalVal');
-    if (el) el.textContent = cashierCartTotal() + " so'm";
-  }
-
-  async function sendCashierOrder(restaurantName, onBack) {
-    const msgEl = document.getElementById('orderMsg');
-    const sendBtn = document.getElementById('sendOrderBtn');
-    const items = Object.entries(cashierState.cart)
-      .filter(([, qty]) => qty > 0)
-      .map(([id, qty]) => ({ id, qty }));
-
-    if (!items.length) {
-      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-    if (cashierState.orderType === 'stol' && !cashierState.tableNumber.trim()) {
-      msgEl.textContent = 'Stol raqamini kiriting.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-
-    // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
-    // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
-    if (sendBtn) sendBtn.disabled = true;
-    // Bitta chek-aut urinishi uchun bitta requestId — server shu orqali
-    // takroriy so'rovni aniqlab, bir xil natijani qaytaradi
-    if (!cashierState.lastOrderRequestId) {
-      cashierState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    }
-
-    msgEl.textContent = 'Yuborilmoqda...';
-    msgEl.className = 'xabar';
-    const res = await apiPost('/api/create-order', {
-      initData,
-      items,
-      orderType: cashierState.orderType,
-      tableNumber: cashierState.tableNumber,
-      paymentType: cashierState.paymentType,
-      requestId: cashierState.lastOrderRequestId
-    });
-
-    if (res.ok) {
-      cashierState.cart = {};
-      cashierState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
-      msgEl.textContent = '';
-      renderCashierScreen(restaurantName, onBack);
-      const topMsg = document.createElement('div');
-      topMsg.className = 'xabar ok';
-      topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${res.total} so'm)`;
-      document.querySelector('.panel').prepend(topMsg);
-    } else {
-      if (sendBtn) sendBtn.disabled = false; // xato bo'lsa — qayta urinib ko'rish uchun tugma yoqiladi
-      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-      msgEl.className = 'xabar err';
-    }
-  }
-
-
-  // ---- Oshpaz va kassir uchun umumiy: buyurtmalar taxtasi (real-vaqtda) ----
-  const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor', bekor_qilindi: 'Bekor qilindi' };
-  let ordersPollTimer = null;
-  let lastOrdersSnapshot = null;
-  let knownOrderIds = null; // 46-bosqich: yangi buyurtmani aniqlash uchun oldingi ID'lar to'plami
-
-  // 19-bosqich: kassir uchun "Buyurtmalar holati" ekranida chip-filtr —
-  // faqat kassir roli uchun (oshpaz/kuryer ekranlariga tegmaydi),
-  // mavjud .cat-row/.cat-opt chip komponentidan (24-bosqichdagi mijoz
-  // menyu filtri bilan bir xil) qayta foydalanadi.
-  let cashierStatusFilter = 'hammasi';
-  const CASHIER_STATUS_CHIPS = [
-    { key: 'hammasi', label: 'Hammasi' },
-    { key: 'yangi', label: 'Yangi' },
-    { key: 'tayyorlanmoqda', label: 'Tayyorlanmoqda' },
-    { key: 'tayyor', label: 'Tayyor' }
-  ];
-  function cashierStatusChipsHtml() {
-    return `
-      <div class="cat-row" id="cashierStatusChips">
-        ${CASHIER_STATUS_CHIPS.map(c => `<div class="cat-opt ${cashierStatusFilter === c.key ? 'selected' : ''}" data-status-chip="${c.key}">${escapeHtml(c.label)}</div>`).join('')}
-      </div>
-    `;
-  }
-
-  function stopOrdersPolling() {
-    if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
-    lastOrdersSnapshot = null;
-    knownOrderIds = null; // keyingi safar ochilganda mavjud buyurtmalar "eski" deb hisoblansin
-  }
-
-  // ---- Yangi buyurtma kelganda ovozli bildirishnoma (46-bosqich) ----
-  // Har bir xodim (shu qurilmada) ovozni o'chirib/yoqib qo'ya oladi —
-  // localStorage'da saqlanadi, standart holat: yoqilgan.
-  const SOUND_NOTIF_STORAGE_KEY = 'kitchenOsSoundNotif';
-  function soundNotifEnabled() {
-    return localStorage.getItem(SOUND_NOTIF_STORAGE_KEY) !== 'off';
-  }
-  function setSoundNotifEnabled(on) {
-    localStorage.setItem(SOUND_NOTIF_STORAGE_KEY, on ? 'on' : 'off');
-  }
-  let sharedAudioCtx = null;
-  function playNewOrderBeep() {
-    if (!soundNotifEnabled()) return;
-    try {
-      if (!sharedAudioCtx) sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const ctx = sharedAudioCtx;
-      if (ctx.state === 'suspended') ctx.resume();
-      // Ikkita qisqa "bip" — e'tiborni tortish uchun yetarli, lekin bezovta qilmaydigan darajada
-      [0, 0.22].forEach(delay => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
-        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + delay + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + 0.18);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(ctx.currentTime + delay);
-        osc.stop(ctx.currentTime + delay + 0.2);
-      });
-    } catch (e) {
-      // Audio ishlamasa (masalan brauzer bloklagan bo'lsa) — jim o'tkazib yuboriladi, ilova buzilmaydi
-    }
-  }
-  // ---- Kassir/oshpaz: smena boshlash/tugatish (49-bosqich) ----
-  // Ish kunini boshlaganda/tugatganda bosadigan tugma. Holat serverda
-  // saqlanadi (/api/shift-status, /api/shift-toggle) — shu bois qaysi
-  // qurilmadan ochilsa ham bir xil ko'rinadi. shiftState — shu klient
-  // sessiyasidagi keshlangan nusxa: ekran darhol (eski ma'lumot bilan)
-  // chizilib, so'ng loadShiftWidget() serverdan yangi holatni olib keladi.
-  let shiftState = { active: false, startedAt: null };
-  let shiftTickTimer = null;
-
-  function shiftDurationText(startedAt) {
-    if (!startedAt) return '';
-    const ms = Date.now() - new Date(startedAt).getTime();
-    const totalMin = Math.max(0, Math.floor(ms / 60000));
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
-    return h > 0 ? `${h} soat ${m} daqiqa` : `${m} daqiqa`;
-  }
-
-  function stopShiftTicker() {
-    if (shiftTickTimer) { clearInterval(shiftTickTimer); shiftTickTimer = null; }
-  }
-
-  // Smena faol bo'lsa, "necha vaqtdan beri" matnini har 30 soniyada yangilaydi.
-  // Ekran o'sha vaqtda boshqa joyga o'tib ketgan bo'lsa (element yo'q) —
-  // interval o'zi to'xtatiladi.
-  function startShiftTickerIfNeeded() {
-    stopShiftTicker();
-    if (!shiftState.active) return;
-    shiftTickTimer = setInterval(() => {
-      const el = document.getElementById('shiftElapsedText');
-      if (!el) { stopShiftTicker(); return; }
-      el.textContent = shiftDurationText(shiftState.startedAt);
-    }, 30000);
-  }
-
-  function shiftWidgetInnerHtml() {
-    if (shiftState.active) {
-      return `
-        <div class="kartochka shift-widget shift-widget-active">
-          <div class="shift-widget-row">
-            <div class="shift-widget-info">
-              ${icon('clock', 'icon-xs')}
-              <div>
-                <b>Smena boshlangan</b>
-                <div class="shift-widget-time" id="shiftElapsedText">${escapeHtml(shiftDurationText(shiftState.startedAt))}</div>
-              </div>
-            </div>
-            <button type="button" class="btn xavfli shift-widget-btn" id="shiftToggleBtn">Tugatish</button>
-          </div>
-        </div>
-      `;
-    }
-    return `
-      <div class="kartochka shift-widget">
-        <div class="shift-widget-row">
-          <div class="shift-widget-info">${icon('clock', 'icon-xs')}<b>Smena boshlanmagan</b></div>
-          <button type="button" class="btn shift-widget-btn" id="shiftToggleBtn">Smenani boshlash</button>
-        </div>
-      </div>
-    `;
-  }
-
-  // Placeholder — o'zining "wrap" idsi bilan, keyinroq DOM'ning shu qismi
-  // (butun ekranni qayta chizmasdan) yangilanadi.
-  function shiftWidgetHtml() {
-    return `<div id="shiftWidgetWrap" style="margin-bottom:12px;">${shiftWidgetInnerHtml()}</div>`;
-  }
-
-  function attachShiftWidgetHandler() {
-    const btn = document.getElementById('shiftToggleBtn');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      const res = await apiPost('/api/shift-toggle', { initData });
-      if (res.ok) {
-        shiftState.active = res.active;
-        shiftState.startedAt = res.startedAt;
-        const wrap = document.getElementById('shiftWidgetWrap');
-        if (wrap) wrap.innerHTML = shiftWidgetInnerHtml();
-        attachShiftWidgetHandler();
-        startShiftTickerIfNeeded();
-      } else {
-        btn.disabled = false;
-        alert(res.reason || 'Xatolik yuz berdi.');
+      if (price !== undefined) {
+        const priceNum = Number(price);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+        item.price = priceNum;
       }
-    });
-  }
-
-  async function loadShiftWidget() {
-    const res = await apiPost('/api/shift-status', { initData });
-    if (!res.ok) return; // jim o'tkazib yuboriladi — tugma keshlangan holat bilan ham ishlayveradi
-    shiftState.active = res.active;
-    shiftState.startedAt = res.startedAt;
-    const wrap = document.getElementById('shiftWidgetWrap');
-    if (wrap) wrap.innerHTML = shiftWidgetInnerHtml();
-    attachShiftWidgetHandler();
-    startShiftTickerIfNeeded();
-  }
-
-  function soundToggleBtnHtml() {
-    const on = soundNotifEnabled();
-    return `<button class="btn ikkinchi" id="soundNotifToggleBtn" style="margin-bottom:12px;">${on ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan'}</button>`;
-  }
-  function attachSoundToggleHandler() {
-    const btn = document.getElementById('soundNotifToggleBtn');
-    if (!btn) return;
-    btn.addEventListener('click', () => {
-      setSoundNotifEnabled(!soundNotifEnabled());
-      btn.textContent = soundNotifEnabled() ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan';
-      // Yoqishda o'zi bosgan tugma bosilishi (user gesture) AudioContext'ni
-      // ba'zi brauzerlarda "qulflab" ochib beradi — shu bois kichik sinov bipi.
-      if (soundNotifEnabled()) playNewOrderBeep();
-    });
-  }
-
-  function timeAgo(iso) {
-    const ms = Date.now() - new Date(iso).getTime();
-    const min = Math.floor(ms / 60000);
-    if (min < 1) return 'hozirgina';
-    if (min < 60) return `${min} daqiqa oldin`;
-    const soat = Math.floor(min / 60);
-    return `${soat} soat oldin`;
-  }
-
-  function orderCardHtml(order, role) {
-    const orderLabel = `${ORDER_TYPE_LABELS[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtml(order.tableNumber) : ''}`;
-    const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
-
-    // 15-bosqich: buyurtmadagi BARCHA taomlar skladdan to'g'ridan sotiladigan
-    // (retseptsiz, directStockId orqali) bo'lsa - oshpaz tayyorlashi shart emas,
-    // shuning uchun "Boshlash" bosqichisiz to'g'ridan "Tayyor" tugmasi chiqadi.
-    const allDirectStock = Array.isArray(order.items) && order.items.length > 0 &&
-      order.items.every(it => it.directStockId);
-
-    let actionBtn = '';
-    if (order.status === 'yangi') {
-      if (allDirectStock && (role === 'oshpaz' || role === 'kassir')) {
-        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
-      } else if (role === 'oshpaz') {
-        actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyorlanmoqda">Boshlash</button>`;
-      } else if (role === 'egasi') {
-        // Egasi tuzatish/favqulodda holat uchun bosqichni chetlab o'tishi mumkin (server ham shunga ruxsat beradi)
-        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor (majburiy)</button>`;
-      }
-      // kassir uchun (allDirectStock bo'lmasa) bu yerda hech qanday tugma chiqmaydi — buyurtma
-      // hali oshpaz tomonidan "Boshlash" bosilmagan, shuning uchun kassir uni to'g'ridan-to'g'ri
-      // "Tayyor" qila olmaydi.
-    } else if (order.status === 'tayyorlanmoqda') {
-      actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
-    } else if (role === 'egasi' && order.orderType === 'dostavka' && order.deliveredBy) {
-      // Kuryer xato bosib yuborgan bo'lishi mumkin — egasi shu belgini bekor qila oladi
-      actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
-    }
-    const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
-      ? `<div class="order-time">✅ Yetkazib berilgan (${timeAgo(order.deliveredAt)})</div>`
-      : '';
-
-    return `
-      <div class="order-card">
-        <div class="order-top">
-          <div>
-            <div class="order-type">${orderLabel}</div>
-            <div class="order-time">${timeAgo(order.createdAt)}</div>
-          </div>
-          <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
-        </div>
-        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
-        ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button></div>` : ''}
-        <div class="order-items">${itemsHtml}</div>
-        ${deliveredNote}
-        <div class="order-bottom">
-          <span class="order-total">${order.total} so'm</span>
-          ${actionBtn}
-        </div>
-      </div>
-    `;
-  }
-
-  function ordersBoardHtml(orders, role) {
-    let list = orders || [];
-    if (role === 'kassir' && cashierStatusFilter !== 'hammasi') {
-      list = list.filter(o => o.status === cashierStatusFilter);
-    }
-    if (!list.length) {
-      return `<div class="bosh">${role === 'kassir' && cashierStatusFilter !== 'hammasi' ? "Bu holatda buyurtma yo'q." : "Hozircha buyurtmalar yo'q."}</div>`;
-    }
-    return list.map(o => orderCardHtml(o, role)).join('');
-  }
-
-  function attachOrdersBoardHandlers(role) {
-    const board = document.getElementById('ordersBoard');
-    if (!board) return;
-    board.querySelectorAll('[data-set-status]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const orderId = btn.getAttribute('data-order-id');
-        const status = btn.getAttribute('data-set-status');
-        const res = await apiPost('/api/update-order-status', { initData, orderId, status });
-        if (!res.ok) {
-          alert(res.reason || 'Xatolik yuz berdi.');
+      if (category !== undefined) item.category = String(category || '').trim() || null;
+      if (description !== undefined) item.description = String(description || '').trim() || null;
+      if (imageUrl !== undefined) {
+        const imageTrim = String(imageUrl || '').trim();
+        if (!isValidImageValue(imageTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
         }
-        lastOrdersSnapshot = null; // majburiy qayta chizish
-        await refreshOrdersBoard(role);
-      });
-    });
-    board.querySelectorAll('[data-undo-deliver-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Bu buyurtmaning "Yetkazildi" belgisini bekor qilmoqchimisiz?')) return;
-        btn.disabled = true;
-        const orderId = btn.getAttribute('data-undo-deliver-id');
-        const res = await apiPost('/api/undo-deliver-order', { initData, orderId });
-        if (!res.ok) {
-          alert(res.reason || 'Xatolik yuz berdi.');
-        }
-        lastOrdersSnapshot = null;
-        await refreshOrdersBoard(role);
-      });
-    });
-  }
-
-  async function refreshOrdersBoard(role) {
-    const board = document.getElementById('ordersBoard');
-    if (!board) { stopOrdersPolling(); return; }
-    const res = await apiPost('/api/orders-list', { initData });
-    if (!res.ok) {
-      // Faqat hali hech qanday ma'lumot yuklanmagan bo'lsa (birinchi urinish)
-      // to'liq "aloqa yo'q" holatini ko'rsatamiz — aks holda oshpaz ekranidagi
-      // mavjud buyurtmalar ro'yxatini vaqtinchalik uzilish tufayli tozalamaymiz.
-      if (res.networkError && lastOrdersSnapshot === null) {
-        renderNetworkErrorInline(board, res.reason, () => refreshOrdersBoard(role));
+        item.imageUrl = imageTrim || null;
       }
-      return;
-    }
-
-    // 46-bosqich: yangi ("yangi" holatidagi) buyurtma paydo bo'lsa — ovozli
-    // bildirishnoma. Birinchi yuklanishda (knownOrderIds hali yo'q) beep
-    // chalinmaydi — aks holda ekran ochilgan zahoti barcha mavjud
-    // buyurtmalar uchun bir vaqtda ovoz chiqib ketardi.
-    const currentIds = new Set((res.orders || []).map(o => o.id));
-    if (knownOrderIds && (role === 'oshpaz' || role === 'kassir')) {
-      const hasNew = (res.orders || []).some(o => o.status === 'yangi' && !knownOrderIds.has(o.id));
-      if (hasNew) playNewOrderBeep();
-    }
-    knownOrderIds = currentIds;
-
-    const snapshot = JSON.stringify(res.orders);
-    if (snapshot === lastOrdersSnapshot) return; // o'zgarish yo'q — qayta chizmaymiz
-    lastOrdersSnapshot = snapshot;
-    board.innerHTML = ordersBoardHtml(res.orders, role);
-    attachOrdersBoardHandlers(role);
-  }
-
-  function startOrdersPolling(role) {
-    stopOrdersPolling();
-    refreshOrdersBoard(role);
-    ordersPollTimer = setInterval(() => refreshOrdersBoard(role), 4000);
-  }
-
-  // ---- Oshpaz: kelgan buyurtmalar ro'yxati real-vaqtda, holatni bosqichma-bosqich o'zgartirish ----
-  // onBack ixtiyoriy: xodim sifatida kirilganda berilmaydi (orqaga qaytish
-  // yo'q, bu yagona vazifali ekran); egasi "Bugungi holat" bannerdan yoki
-  // menyudan kirganda beriladi (10-bosqich).
-  function renderKitchenScreen(restaurantName, onBack) {
-    // 13-bosqich: bitta vazifali rol — restoran nomi allaqachon doimiy
-    // header'da (11-bosqich) ko'rinadi, shuning uchun bu yerda takrorlanmaydi;
-    // ekran to'g'ridan-to'g'ri yagona vazifaga — buyurtmalarga — qaratiladi.
-    // 62-bosqich: egasi bu ekranga menyudan kirganda (onBack mavjud bo'lganda)
-    // "Menyuga taom qo'shish" bo'limi ham shu yerda ko'rinadi — oshpazning
-    // o'z ish ekranida (onBack yo'q) bu bo'lim chiqmaydi.
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
-        ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        <button class="btn ikkinchi" id="kitchenStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
-        ${shiftWidgetHtml()}
-        ${soundToggleBtnHtml()}
-        <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
-        <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
-        ${onBack ? menuAddSectionHtml() : ''}
-      </div>
-    `);
-    if (onBack) document.getElementById('kitchenBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
-    document.getElementById('kitchenStatsBtn').addEventListener('click', () => {
-      stopOrdersPolling();
-      renderMyStatsScreen(() => renderKitchenScreen(restaurantName, onBack));
-    });
-    attachSoundToggleHandler();
-    attachShiftWidgetHandler();
-    loadShiftWidget();
-    startOrdersPolling('oshpaz');
-    if (onBack) attachMenuAddSectionHandlers();
-  }
-
-
-  // ---- Kuryer: yetkazib berish uchun tayyor bo'lgan dostavka buyurtmalari, real-vaqtda ----
-  // ---- Kuryer: bitta tugma bilan Google Maps marshruti (48-bosqich) ----
-  // Mijoz buyurtma berayotganda joylashuvini (location: {lat,lng}) yuborgan
-  // bo'lsa — to'g'ridan-to'g'ri o'sha nuqtagacha navigatsiya (marshrut)
-  // ochiladi. Joylashuv bo'lmasa, mijoz yozgan manzil izohi (addressNote)
-  // bo'yicha Google Maps qidiruvi ochiladi — hech biri bo'lmasa tugma umuman
-  // ko'rsatilmaydi.
-  function deliveryRouteUrl(order) {
-    const loc = order.location;
-    if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') {
-      return `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}&travelmode=driving`;
-    }
-    if (order.addressNote && order.addressNote.trim()) {
-      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.addressNote.trim())}`;
-    }
-    return null;
-  }
-  function openExternalLink(url) {
-    if (tg && typeof tg.openLink === 'function') {
-      tg.openLink(url);
-    } else {
-      window.open(url, '_blank');
-    }
-  }
-
-  function deliveryCardHtml(order) {
-    const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
-    // 20-bosqich: yetkazib bo'lingan buyurtmaning holati (status) hali ham
-    // "tayyor" bo'lib qoladi (faqat deliveredBy/deliveredAt qo'yiladi) —
-    // shuning uchun bu yerda ko'rinadigan yorliq shu belgiga qarab
-    // "Tayyor" o'rniga "Yetkazildi" deb yoziladi, tugma esa endi bosilmaydigan
-    // holatga o'tadi (qayta bosilib xato chiqarmasligi uchun).
-    const isDelivered = !!order.deliveredBy;
-    const routeUrl = deliveryRouteUrl(order);
-    return `
-      <div class="order-card">
-        <div class="order-top">
-          <div>
-            <div class="order-type">Dostavka</div>
-            <div class="order-time">${timeAgo(order.createdAt)}</div>
-          </div>
-          <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
-        </div>
-        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
-        ${order.addressNote ? `<div class="order-time">📝 ${escapeHtml(order.addressNote)}</div>` : ''}
-        ${order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button> (qo'shimcha)</div>` : ''}
-        ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
-        <div class="order-items">${itemsHtml}</div>
-        <div class="order-bottom">
-          <span class="order-total">${order.total} so'm (${PAYMENT_TYPE_LABELS[order.paymentType] || order.paymentType})</span>
-          ${isDelivered
-            ? `<span class="order-time">✅ Yetkazib berildi (${timeAgo(order.deliveredAt)})</span>`
-            : `<button class="order-action-btn ready" data-deliver-order-id="${escapeHtml(order.id)}">Yetkazildi</button>`}
-        </div>
-        ${isDelivered ? '' : `<button type="button" class="btn ikkinchi" data-reject-order-id="${escapeHtml(order.id)}" style="width:100%; margin-top:8px; color:var(--danger); border-color:var(--danger);">Mijoz qabul qilmadi</button>`}
-      </div>
-    `;
-  }
-
-  let lastDeliveryOrdersById = new Map();
-  function deliveryBoardHtml(orders) {
-    // 20-bosqich: bu taxta FAQAT dostavka turidagi va "tayyor" holatidagi
-    // buyurtmalarni ko'rsatishi kerak — avval bu yerda hech qanday filtr
-    // yo'q edi, shuning uchun stol/olib ketish buyurtmalari ham xato
-    // ravishda "Dostavka"/"Tayyor" deb chiqib, tugmasi doim yoniq ko'rinardi.
-    const relevant = (orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor');
-    lastDeliveryOrdersById = new Map(relevant.map(o => [o.id, o]));
-    if (!relevant.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
-    return relevant.map(o => deliveryCardHtml(o)).join('');
-  }
-
-  function attachDeliveryBoardHandlers() {
-    const board = document.getElementById('ordersBoard');
-    if (!board) return;
-    board.querySelectorAll('[data-deliver-order-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const orderId = btn.getAttribute('data-deliver-order-id');
-        const res = await apiPost('/api/deliver-order', { initData, orderId });
-        if (!res.ok) alert(res.reason || 'Xatolik yuz berdi.');
-        lastOrdersSnapshot = null;
-        await refreshDeliveryBoard();
-      });
-    });
-    board.querySelectorAll('[data-route-order-id]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const orderId = btn.getAttribute('data-route-order-id');
-        const order = lastDeliveryOrdersById.get(orderId);
-        const url = order ? deliveryRouteUrl(order) : null;
-        if (url) openExternalLink(url);
-      });
-    });
-    board.querySelectorAll('[data-reject-order-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        let reason = '';
-        while (true) {
-          reason = prompt('Buyurtma bekor qilinadi. Sababini yozing (majburiy):', reason || '');
-          if (reason === null) return; // foydalanuvchi bekor qildi
-          reason = reason.trim();
-          if (reason) break;
-          alert('Bekor qilish sababini yozish majburiy.');
-        }
-        btn.disabled = true;
-        const orderId = btn.getAttribute('data-reject-order-id');
-        const res = await apiPost('/api/reject-delivery-order', { initData, orderId, reason });
-        if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
-        lastOrdersSnapshot = null;
-        await refreshDeliveryBoard();
-      });
-    });
-  }
-
-  async function refreshDeliveryBoard() {
-    const board = document.getElementById('ordersBoard');
-    if (!board) { stopOrdersPolling(); return; }
-    const res = await apiPost('/api/orders-list', { initData });
-    if (!res.ok) {
-      if (res.networkError && lastOrdersSnapshot === null) {
-        renderNetworkErrorInline(board, res.reason, () => refreshDeliveryBoard());
-      }
-      return;
-    }
-
-    // 46-bosqich: kuryerga yetkazish uchun yangi tayyor buyurtma chiqsa — ovozli bildirishnoma
-    const relevant = (res.orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
-    const currentIds = new Set(relevant.map(o => o.id));
-    if (knownOrderIds) {
-      const hasNew = relevant.some(o => !knownOrderIds.has(o.id));
-      if (hasNew) playNewOrderBeep();
-    }
-    knownOrderIds = currentIds;
-
-    const snapshot = JSON.stringify(res.orders);
-    if (snapshot === lastOrdersSnapshot) return;
-    lastOrdersSnapshot = snapshot;
-    board.innerHTML = deliveryBoardHtml(res.orders);
-    attachDeliveryBoardHandlers();
-  }
-
-  function startDeliveryPolling() {
-    stopOrdersPolling();
-    refreshDeliveryBoard();
-    ordersPollTimer = setInterval(refreshDeliveryBoard, 4000);
-  }
-
-  // onBack ixtiyoriy: kuryer xodim sifatida kirilganda berilmaydi;
-  // egasi menyu-griddan ("Yetkazib berish") kirganda beriladi (12-bosqich).
-  function renderDeliveryScreen(restaurantName, onBack) {
-    // 13-bosqich: bitta vazifali rol — restoran nomi header'da (11-bosqich)
-    // ko'rinadi, shu sabab bu yerda sarlavha bevosita vazifani nomlaydi.
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Yetkazib berish</div>
-        ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        <button class="btn ikkinchi" id="deliveryStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
-        ${onBack ? `<button class="btn ikkinchi" id="restrictedCustomersBtn" style="margin-bottom:12px;">🚫 Cheklangan mijozlar</button>` : ''}
-        ${soundToggleBtnHtml()}
-        <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
-        <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-    if (onBack) document.getElementById('deliveryBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
-    document.getElementById('deliveryStatsBtn').addEventListener('click', () => {
-      stopOrdersPolling();
-      renderMyStatsScreen(() => renderDeliveryScreen(restaurantName, onBack));
-    });
-    // 60-bosqich: bu tugma faqat egasi bu ekranga "Yetkazib berish" menyusi
-    // orqali kirganda (onBack mavjud bo'lganda) ko'rinadi — kuryerning o'zi
-    // (o'z asosiy ekrani, onBack yo'q) mijozlarni boshqara olmasligi kerak.
-    const restrictedBtn = document.getElementById('restrictedCustomersBtn');
-    if (restrictedBtn) {
-      restrictedBtn.addEventListener('click', () => {
-        stopOrdersPolling();
-        renderRestrictedCustomersScreen(() => renderDeliveryScreen(restaurantName, onBack));
-      });
-    }
-    attachSoundToggleHandler();
-    startDeliveryPolling();
-  }
-
-  // ---- Egasi: "Faqat karta" bilan cheklangan mijozlar ro'yxati (60-bosqich) ----
-  // Ketma-ket bir necha marta dostavkani bekor qildirgan mijozlarga tizim
-  // avtomatik "naqd/dostavka orqali" to'lovni yopib qo'yadi. Bu ekranda
-  // egasi kimlar shu holatda ekanini, nima sababdan bekor qilinganini
-  // ko'radi va kerak bo'lsa cheklovni qo'lda olib tashlaydi/qaytaradi.
-  function restrictedCustomerCardHtml(c) {
-    const cancelsHtml = (c.recentCancellations || []).map(rc => `
-      <div class="order-time" style="margin-top:4px;">
-        ${timeAgo(rc.cancelledAt)} — ${rc.total} so'm${rc.reason ? ' · ' + escapeHtml(rc.reason) : ''}
-      </div>
-    `).join('');
-    return `
-      <div class="order-card">
-        <div class="order-top">
-          <div>
-            <div class="order-type">${escapeHtml(c.name)}${c.username ? ' · @' + escapeHtml(c.username) : ''}</div>
-            <div class="order-time">Bekor qilingan dostavkalar: ${c.cancelledCount} ta</div>
-          </div>
-          <span class="status-badge ${c.restricted ? 'yangi' : 'tayyor'}">${c.restricted ? 'Cheklangan' : 'Cheklov olib tashlangan'}</span>
-        </div>
-        ${cancelsHtml}
-        <button type="button" class="btn ikkinchi" style="width:100%; margin-top:10px;"
-          data-toggle-restriction-id="${escapeHtml(String(c.id))}"
-          data-toggle-restriction-action="${c.restricted ? 'clear' : 'restore'}">
-          ${c.restricted ? '✅ Cheklovni olib tashlash' : '🚫 Cheklovni qayta tiklash'}
-        </button>
-      </div>
-    `;
-  }
-
-  async function renderRestrictedCustomersScreen(onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Cheklangan mijozlar</div>
-        <button class="btn ikkinchi" id="restrictedBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="bosh">Ketma-ket 2 marta yoki ko'proq dostavkani bekor qildirgan mijozlarga tizim avtomatik ravishda faqat "Karta" bilan to'lashni taklif qiladi. Sabab asosli bo'lsa, cheklovni bu yerdan olib tashlashingiz mumkin.</div>
-        <div id="restrictedList" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-    document.getElementById('restrictedBackBtn').addEventListener('click', onBack);
-
-    const listEl = document.getElementById('restrictedList');
-    const res = await apiPost('/api/restricted-customers', { initData });
-    if (!res.ok) {
-      if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => renderRestrictedCustomersScreen(onBack)); return; }
-      listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    if (!res.customers.length) {
-      listEl.innerHTML = `<div class="bosh">Hozircha cheklangan mijozlar yo'q.</div>`;
-      return;
-    }
-    listEl.innerHTML = res.customers.map(restrictedCustomerCardHtml).join('');
-    listEl.querySelectorAll('[data-toggle-restriction-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const customerId = btn.getAttribute('data-toggle-restriction-id');
-        const action = btn.getAttribute('data-toggle-restriction-action');
-        const res2 = await apiPost('/api/toggle-customer-restriction', { initData, customerId, action });
-        if (!res2.ok) { alert(res2.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
-        renderRestrictedCustomersScreen(onBack);
-      });
-    });
-  }
-
-  // ---- Sklad: birliklar, ro'yxat, kirim formasi, harakatlar tarixi, kunlik audit ----
-  const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
-  let stockState = { stock: [] };
-  let currentStockRole = null;
-  let currentStockBranchId = null;
-
-  function stockListHtml(stock, canRemove, canTransfer) {
-    if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
-    // Kam qolgan mahsulotlar ro'yxat boshida ko'rinsin — birinchi navbatda e'tibor talab qiladi.
-    const sorted = stock.slice().sort((a, b) => {
-      const lowA = a.minQty != null && a.qty <= a.minQty;
-      const lowB = b.minQty != null && b.qty <= b.minQty;
-      if (lowA !== lowB) return lowA ? -1 : 1;
-      return 0;
-    });
-    return sorted.map(s => {
-      const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
-      // Darajani vizual ko'rsatish uchun chegaraning ikki barobarini "to'liq" deb olamiz;
-      // chegara qo'yilmagan bo'lsa — chiziq ko'rsatilmaydi (nisbiy solishtirish uchun asos yo'q).
-      const levelPct = s.minQty != null && s.minQty > 0
-        ? Math.max(4, Math.min(100, Math.round(s.qty / (s.minQty * 2) * 100)))
-        : null;
-      return `
-        <div class="menu-item ${low ? 'low-stock' : ''}">
-          <div style="flex:1;">
-            <div class="m-name">${escapeHtml(s.name)}${low ? ' <span class="badge warning">Kam qoldi</span>' : ''}</div>
-            <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
-            ${levelPct !== null ? `<div class="stock-level-track"><div class="stock-level-fill ${low ? 'low' : ''}" style="width:${levelPct}%;"></div></div>` : ''}
-          </div>
-          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
-            ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">Filialga o'tkazish</button>` : ''}
-            ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" class="row-action-btn danger">O'chirish</button>` : ''}
-          </div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  function movementTypeLabel(type) {
-    return { kirim: 'Kirim', chiqim: 'Chiqim', audit_tuzatish: 'Audit tuzatish' }[type] || type;
-  }
-
-  function movementsListHtml(movements) {
-    if (!movements || !movements.length) return `<div class="bosh">Hozircha harakatlar yo'q.</div>`;
-    return movements.map(mv => `
-      <div class="menu-item">
-        <div>
-          <div class="m-name">${escapeHtml(mv.stockName)} — ${movementTypeLabel(mv.type)}</div>
-          ${mv.note ? `<div class="m-cat">${escapeHtml(mv.note)}</div>` : ''}
-          <div class="m-price">${mv.qty > 0 ? '+' : ''}${mv.qty} ${escapeHtml(mv.unit)} · ${timeAgo(mv.createdAt)}</div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  function renderStockScreen(restaurantName, role, onBack) {
-    currentStockRole = role;
-    currentStockBranchId = null;
-    ekran(`
-      <div class="panel">
-        ${onBack ? `<button class="btn ikkinchi" id="stockBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        <div class="salom" style="font-size:20px;">Sklad</div>
-        ${role !== 'egasi' ? `<button class="btn ikkinchi" id="stockStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>` : ''}
-        ${role === 'egasi' ? `
-        <div class="kartochka">
-          <h2>Joylashuv</h2>
-          <select id="stockBranchSelect">${branchOptionsHtml(null).replace('— Markaziy (filialsiz) —', 'Markaziy sklad')}</select>
-        </div>` : ''}
-        <div class="kartochka">
-          <h2>Mahsulot kiritish (kirim)</h2>
-          <input type="text" id="stockNameInput" placeholder="Mahsulot nomi">
-          <input type="text" id="stockQtyInput" placeholder="Miqdor" inputmode="decimal">
-          <select id="stockUnitInput">
-            ${Object.entries(STOCK_UNIT_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
-          </select>
-          <input type="text" id="stockPriceInput" placeholder="Narxi, so'm *" inputmode="numeric">
-          <input type="text" id="stockMinInput" placeholder="Kam qolish chegarasi (ixtiyoriy)" inputmode="decimal">
-          <button class="btn" id="stockAddBtn">Qo'shish</button>
-          <div class="xabar" id="stockAddMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>${icon('box', 'icon-xs')} Sklad qoldig'i</h2>
-          <div id="stockList"><div class="bosh">Yuklanmoqda...</div></div>
-          <button class="btn ikkinchi" id="openAuditBtn" style="margin-top:10px;">${icon('clipboard', 'icon-xs')} Kunlik audit qilish</button>
-        </div>
-        <div class="kartochka">
-          <h2>${icon('trending-up', 'icon-xs')} Harakatlar tarixi</h2>
-          <div id="stockMovements"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        ${role === 'egasi' ? menuAddSectionHtml() : ''}
-      </div>
-    `);
-
-    if (onBack) document.getElementById('stockBackBtn').addEventListener('click', onBack);
-    if (role !== 'egasi') {
-      document.getElementById('stockStatsBtn').addEventListener('click', () => {
-        renderMyStatsScreen(() => renderStockScreen(restaurantName, role, onBack));
-      });
-    }
-
-    if (role === 'egasi') {
-      document.getElementById('stockBranchSelect').addEventListener('change', (e) => {
-        currentStockBranchId = e.target.value || null;
-        loadStockAndRender();
-        loadMovementsAndRender();
-      });
-    }
-
-    document.getElementById('stockAddBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('stockAddMsg');
-      const name = document.getElementById('stockNameInput').value.trim();
-      const qty = document.getElementById('stockQtyInput').value.trim();
-      const unit = document.getElementById('stockUnitInput').value;
-      const price = document.getElementById('stockPriceInput').value.trim();
-      const minQty = document.getElementById('stockMinInput').value.trim();
-      if (!name || !qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
-        msgEl.textContent = 'Nomi va to\'g\'ri miqdorni kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      // 5-bosqich: narx endi majburiy — har bir kirim uchun avtomatik
-      // xarajat yozuvi (Moliya) shu narxdan hisoblanadi.
-      if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) {
-        msgEl.textContent = 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/stock-add', { initData, name, qty, unit, price, minQty, branchId: currentStockBranchId });
-      if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi. Xarajat Moliyaga avtomatik yozildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('stockNameInput').value = '';
-        document.getElementById('stockQtyInput').value = '';
-        document.getElementById('stockPriceInput').value = '';
-        document.getElementById('stockMinInput').value = '';
-        loadStockAndRender();
-        loadMovementsAndRender();
-      } else {
-        handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('openAuditBtn').addEventListener('click', () => openAuditForm());
-
-    if (role === 'egasi') {
-      attachMenuAddSectionHandlers();
-    }
-
-    loadStockAndRender();
-    loadMovementsAndRender();
-  }
-
-  async function loadStockAndRender() {
-    const el = document.getElementById('stockList');
-    if (!el) return;
-    const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
-    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadStockAndRender); return; }
-    stockState.stock = res.ok ? res.stock : [];
-    const canTransfer = currentStockRole === 'egasi' && !currentStockBranchId && branchState.branches.length > 0;
-    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi', canTransfer);
-    el.querySelectorAll('[data-remove-stock-id]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        await apiPost('/api/stock-remove', { initData, id: btn.getAttribute('data-remove-stock-id'), branchId: currentStockBranchId });
-        loadStockAndRender();
-      });
-    });
-    el.querySelectorAll('[data-transfer-stock-id]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-transfer-stock-id');
-        const item = stockState.stock.find(s => s.id === id);
-        if (item) openTransferForm(item);
-      });
-    });
-  }
-
-  // ---- Markaziy skladdan filialga o'tkazish (transfer) oynasi ----
-  function openTransferForm(item) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:380px;">
-        <h3>Filialga o'tkazish</h3>
-        <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
-        <select id="transferBranchSelect">${branchOptionsHtml(null).replace('<option value="">— Markaziy (filialsiz) —</option>', '')}</select>
-        <input type="text" id="transferQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
-        <div class="xabar" id="transferMsg"></div>
-        <div class="btn-row">
-          <button class="btn ikkinchi" id="transferCancelBtn">Bekor qilish</button>
-          <button class="btn" id="transferSubmitBtn">O'tkazish</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    document.getElementById('transferCancelBtn').onclick = () => overlay.remove();
-    document.getElementById('transferSubmitBtn').onclick = async () => {
-      const branchId = document.getElementById('transferBranchSelect').value;
-      const qty = document.getElementById('transferQtyInput').value.trim();
-      const msgEl = document.getElementById('transferMsg');
-      if (!branchId) {
-        msgEl.textContent = 'Filialni tanlang.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
-        msgEl.textContent = 'To\'g\'ri miqdor kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'O\'tkazilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/stock-transfer', { initData, stockId: item.id, branchId, qty });
-      if (res.ok) {
-        overlay.remove();
-        loadStockAndRender();
-        loadMovementsAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    };
-  }
-
-  async function loadMovementsAndRender() {
-    const el = document.getElementById('stockMovements');
-    if (!el) return;
-    const res = await apiPost('/api/stock-movements', { initData, branchId: currentStockBranchId });
-    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadMovementsAndRender); return; }
-    el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
-  }
-
-  // ---- Kunlik audit: haqiqiy qoldiqni kiritish oynasi ----
-  function openAuditForm() {
-    const stock = stockState.stock;
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    const rowsHtml = stock.length ? stock.map(s => `
-      <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-        <div style="flex:1; font-size:14px;">${escapeHtml(s.name)} <span style="opacity:.6;">(tizimda: ${s.qty} ${escapeHtml(s.unit)})</span></div>
-        <input type="text" inputmode="decimal" data-audit-qty="${escapeHtml(s.id)}" placeholder="${s.qty}" style="width:80px; margin:0;">
-      </div>
-    `).join('') : `<div class="bosh">Sklad bo'sh.</div>`;
-
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
-        <h3>Kunlik audit</h3>
-        <p>Har bir mahsulotning haqiqiy (ko'zdan kechirilgan) qoldig'ini kiriting. Bo'sh qoldirilsa — o'zgarmaydi.</p>
-        <div>${rowsHtml}</div>
-        <div class="xabar" id="auditMsg"></div>
-        <div class="btn-row">
-          <button class="btn ikkinchi" id="auditCancelBtn">Bekor qilish</button>
-          <button class="btn" id="auditSubmitBtn">Yuborish</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    document.getElementById('auditCancelBtn').onclick = () => overlay.remove();
-    document.getElementById('auditSubmitBtn').onclick = async () => {
-      const entries = [];
-      overlay.querySelectorAll('[data-audit-qty]').forEach(inp => {
-        const val = inp.value.trim();
-        if (val === '') return;
-        const num = Number(val);
-        if (Number.isFinite(num) && num >= 0) {
-          entries.push({ stockId: inp.getAttribute('data-audit-qty'), actualQty: num });
-        }
-      });
-      const msgEl = document.getElementById('auditMsg');
-      if (!entries.length) {
-        msgEl.textContent = 'Kamida bitta mahsulot uchun qoldiq kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Yuborilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/audit-submit', { initData, entries, branchId: currentStockBranchId });
-      if (res.ok) {
-        overlay.remove();
-        showAuditReport(res.audit);
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    };
-  }
-
-  // ---- Umumiy mini-grafik yordamchilari (21-bosqich): Z-hisobot va Moliya trendlari uchun ----
-  // Sanani qisqa "kun.oy" ko'rinishida chiqaradi (masalan "2026-07-21" → "21.07")
-  function shortDateLabel(dateKey) {
-    const parts = String(dateKey || '').split('-');
-    if (parts.length !== 3) return dateKey || '';
-    return `${parts[2]}.${parts[1]}`;
-  }
-
-  // Bitta qatorli ustunli grafik: har bir kun uchun bitta ustun (musbat — success, manfiy — danger).
-  // points: [{ label, value }] — eng ko'pi bilan oxirgi ~14 nuqta chiroyli sig'adi.
-  function trendBarChartSvg(points) {
-    if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
-    const W = 300, H = 120, padTop = 10, padBottom = 20, padSide = 6;
-    const chartH = H - padTop - padBottom;
-    const maxAbs = Math.max(1, ...points.map(p => Math.abs(p.value)));
-    const n = points.length;
-    const slot = (W - padSide * 2) / n;
-    const barW = Math.max(4, Math.min(22, slot * 0.55));
-    const zeroY = padTop + chartH / 2;
-    const bars = points.map((p, i) => {
-      const cx = padSide + slot * i + slot / 2;
-      const h = Math.abs(p.value) / maxAbs * (chartH / 2 - 4);
-      const y = p.value >= 0 ? zeroY - h : zeroY;
-      const cls = p.value >= 0 ? 'trend-bar-pos' : 'trend-bar-neg';
-      return `<rect class="${cls}" x="${(cx - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" rx="2"></rect>
-        <text class="trend-label" x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHtml(p.label)}</text>`;
-    }).join('');
-    return `
-      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sof foyda dinamikasi">
-        <line class="trend-axis" x1="0" y1="${zeroY.toFixed(1)}" x2="${W}" y2="${zeroY.toFixed(1)}"></line>
-        ${bars}
-      </svg>
-    `;
-  }
-
-  // Ikki qatorli (kirim/chiqim) taqqoslash grafigi — har bir kun uchun ikkita yonma-yon ustun.
-  // points: [{ label, income, expense }]
-  function incomeExpenseChartSvg(points) {
-    if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
-    const W = 300, H = 130, padTop = 10, padBottom = 20, padSide = 6;
-    const chartH = H - padTop - padBottom;
-    const maxVal = Math.max(1, ...points.map(p => Math.max(p.income, p.expense)));
-    const n = points.length;
-    const slot = (W - padSide * 2) / n;
-    const barW = Math.max(3, Math.min(11, slot * 0.32));
-    const gap = 2;
-    const baseY = padTop + chartH;
-    const bars = points.map((p, i) => {
-      const cx = padSide + slot * i + slot / 2;
-      const hIncome = p.income / maxVal * chartH;
-      const hExpense = p.expense / maxVal * chartH;
-      const xIncome = cx - barW - gap / 2;
-      const xExpense = cx + gap / 2;
-      return `
-        <rect class="trend-bar-income" x="${xIncome.toFixed(1)}" y="${(baseY - hIncome).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, hIncome).toFixed(1)}" rx="2"></rect>
-        <rect class="trend-bar-expense" x="${xExpense.toFixed(1)}" y="${(baseY - hExpense).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, hExpense).toFixed(1)}" rx="2"></rect>
-        <text class="trend-label" x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHtml(p.label)}</text>
-      `;
-    }).join('');
-    return `
-      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Savdo va xarajat dinamikasi">
-        <line class="trend-axis" x1="0" y1="${baseY.toFixed(1)}" x2="${W}" y2="${baseY.toFixed(1)}"></line>
-        ${bars}
-      </svg>
-      <div class="chart-legend">
-        <div class="chart-legend-item"><span class="chart-legend-dot income"></span>Kirim</div>
-        <div class="chart-legend-item"><span class="chart-legend-dot expense"></span>Chiqim</div>
-      </div>
-    `;
-  }
-
-  // Kategoriya taqsimotini gorizontal ustunlar (bar) ko'rinishida chiqaradi — eng kattasi 100%.
-  // rows: [{ name, sum }]
-  function categoryBarChartHtml(rows) {
-    if (!rows || !rows.length) return '';
-    const maxSum = Math.max(1, ...rows.map(r => r.sum));
-    return rows.map(r => `
-      <div class="cat-bar-row">
-        <div class="cat-bar-top"><span class="cat-bar-name">${escapeHtml(r.name)}</span><span class="cat-bar-sum">${cfFormatSum(r.sum)}</span></div>
-        <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${Math.max(3, Math.round(r.sum / maxSum * 100))}%;"></div></div>
-      </div>
-    `).join('');
-  }
-
-  // ---- Egasi: Moliya (Cashflow) — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik ----
-  let cashflowState = { period: 'today' };
-  let cashflowCategories = { ijara: 'Ijara', maosh: 'Maosh', kommunal: 'Kommunal', mahsulot: 'Mahsulot xaridi', boshqa: 'Boshqa' };
-
-  function cfFormatSum(n) {
-    return Number(n || 0).toLocaleString('ru-RU') + " so'm";
-  }
-
-  function cfCategoryOptionsHtml() {
-    return Object.entries(cashflowCategories).map(([k, label]) => `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
-  }
-
-  function cashflowStatsHtml(cf) {
-    const bucket = cf[cashflowState.period];
-    const netClass = bucket.net >= 0 ? 'positive' : 'negative';
-    return `
-      <div class="cf-stats">
-        <div class="cf-stat income">
-          <div class="cf-label">Kirim (savdo)</div>
-          <div class="cf-val">${cfFormatSum(bucket.income)}</div>
-        </div>
-        <div class="cf-stat expense">
-          <div class="cf-label">Chiqim (xarajat)</div>
-          <div class="cf-val">${cfFormatSum(bucket.expense)}</div>
-        </div>
-        <div class="cf-stat net ${netClass}" style="grid-column: 1 / -1;">
-          <div class="cf-label">Sof foyda</div>
-          <div class="cf-val">${cfFormatSum(bucket.net)}</div>
-        </div>
-      </div>
-      <div class="kartochka" style="margin-top:10px;">
-        <h2>Kassa va dostavka (alohida)</h2>
-        <div class="profile-row"><b>Kassadagi pul</b> (stolga/olib ketish): ${cfFormatSum(bucket.kassaIncome)}</div>
-        <div class="profile-row"><b>Kuryer qo'lidagi pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
-      </div>
-      <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
-      ${cfCategoryBreakdownHtml(bucket.byCategory)}
-    `;
-  }
-
-  function cfCategoryBreakdownHtml(byCategory) {
-    if (!byCategory) return '';
-    const rows = Object.entries(byCategory)
-      .filter(([, sum]) => sum > 0)
-      .map(([key, sum]) => ({ name: cashflowCategories[key] || key, sum }))
-      .sort((a, b) => b.sum - a.sum);
-    if (!rows.length) return '';
-    return `
-      <div class="kartochka" style="margin-top:10px;">
-        <h2>Xarajat kategoriyalari</h2>
-        ${categoryBarChartHtml(rows)}
-      </div>
-    `;
-  }
-
-  function cashflowExpensesHtml(expenses) {
-    if (!expenses.length) return `<div class="bosh">Xarajat kiritilmagan.</div>`;
-    return expenses.map(e => `
-      <div class="cf-expense-item">
-        <div>
-          <div class="cf-e-amount">-${cfFormatSum(e.amount)}</div>
-          <div class="cf-e-note">${escapeHtml(cashflowCategories[e.category] || 'Boshqa')}${e.note ? ' — ' + escapeHtml(e.note) : ''}</div>
-          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
-        </div>
-        <button data-remove-expense="${escapeHtml(e.id)}">O'chirish</button>
-      </div>
-    `).join('');
-  }
-
-  function renderCashflowScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Moliya</div>
-        <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">${icon('scooter', 'icon-xs')} Kuryerlar hisoboti</button>
-        <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
-        <button class="btn ikkinchi" id="cfOrderHistoryBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Buyurtmalar tarixi</button>
-        <div class="tab-row">
-          <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
-          <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
-          <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
-        </div>
-        <div id="cfStats"><div class="bosh">Yuklanmoqda...</div></div>
-        <div class="kartochka chart-card">
-          <h2>${icon('trending-up', 'icon-xs')} Savdo va xarajat dinamikasi</h2>
-          <div class="bosh">Oxirgi yopilgan kunlar bo'yicha (Z-hisobot asosida).</div>
-          <div id="cfTrendChart"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        ${branchState.branches.length ? `
-        <div class="kartochka">
-          <h2>Filiallar solishtiruvi</h2>
-          <div id="cfBranchReport"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>` : ''}
-        <div class="kartochka">
-          <h2>Xarajat qo'shish</h2>
-          <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
-          <select id="cfCategoryInput">${cfCategoryOptionsHtml()}</select>
-          <input type="text" id="cfNoteInput" placeholder="Izoh (ixtiyoriy)">
-          <button class="btn" id="cfAddExpenseBtn">Qo'shish</button>
-          <div class="xabar" id="cfExpenseMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>So'nggi xarajatlar</h2>
-          <div id="cfExpenseList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('cfBackBtn').addEventListener('click', () => onBack && onBack());
-    document.getElementById('cfCourierReportBtn').addEventListener('click', () => {
-      renderCourierReportScreen(profile, () => renderCashflowScreen(profile, onBack));
-    });
-    document.getElementById('cfZReportBtn').addEventListener('click', () => {
-      renderZReportScreen(profile, () => renderCashflowScreen(profile, onBack));
-    });
-    document.getElementById('cfOrderHistoryBtn').addEventListener('click', () => {
-      renderOrderHistoryScreen(profile, () => renderCashflowScreen(profile, onBack));
-    });
-
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const p = e.target.getAttribute('data-cf-period');
-      if (!p || p === cashflowState.period) return;
-      cashflowState.period = p;
-      renderCashflowScreen(profile, onBack);
-    });
-
-    document.getElementById('cfAddExpenseBtn').addEventListener('click', async () => {
-      const amount = document.getElementById('cfAmountInput').value.trim();
-      const category = document.getElementById('cfCategoryInput').value;
-      const note = document.getElementById('cfNoteInput').value.trim();
-      const msgEl = document.getElementById('cfExpenseMsg');
-      if (!amount || !/^\d+$/.test(amount) || parseInt(amount, 10) <= 0) {
-        msgEl.textContent = 'To\'g\'ri summa kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/expense-add', { initData, amount, category, note });
-      if (res.ok) {
-        document.getElementById('cfAmountInput').value = '';
-        document.getElementById('cfNoteInput').value = '';
-        loadCashflowData();
-      } else {
-        handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    loadCashflowData();
-    loadCfTrendChart();
-    if (branchState.branches.length) loadBranchReportAndRender();
-  }
-
-  // Moliya ekranidagi "Savdo va xarajat dinamikasi" grafigi — saqlangan Z-hisobotlar (oxirgi kunlar)ga asoslanadi.
-  async function loadCfTrendChart() {
-    const el = document.getElementById('cfTrendChart');
-    if (!el) return;
-    const res = await apiPost('/api/z-report-list', { initData });
-    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadCfTrendChart); return; }
-    if (!res.ok || !res.reports || !res.reports.length) {
-      el.innerHTML = `<div class="bosh">Grafik uchun hali yopilgan kun yo'q. "Kunlik Z-hisobot" bo'limidan kunni yoping.</div>`;
-      return;
-    }
-    const points = res.reports.slice(0, 7).slice().reverse().map(z => ({
-      label: shortDateLabel(z.date), income: z.income, expense: z.expense
-    }));
-    el.innerHTML = incomeExpenseChartSvg(points);
-  }
-
-  function branchReportHtml(report) {
-    if (!report || !report.length) return `<div class="bosh">Ma'lumot yo'q.</div>`;
-    const maxIncome = Math.max(1, ...report.map(r => r.income));
-    return report.map(r => `
-      <div class="menu-item">
-        <div style="flex:1;">
-          <div class="m-name">${escapeHtml(r.branchName)}</div>
-          <div class="m-price">${cfFormatSum(r.income)} · ${r.orderCount} buyurtma · o'rtacha chek: ${cfFormatSum(r.avgCheck)}</div>
-          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
-            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(r.income / maxIncome * 100)}%;"></div>
-          </div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  async function loadBranchReportAndRender() {
-    const el = document.getElementById('cfBranchReport');
-    if (!el) return;
-    const res = await apiPost('/api/branch-report', { initData, period: cashflowState.period });
-    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadBranchReportAndRender); return; }
-    el.innerHTML = branchReportHtml(res.ok ? res.report : []);
-  }
-
-  async function loadCashflowData() {
-    const statsEl = document.getElementById('cfStats');
-    const listEl = document.getElementById('cfExpenseList');
-    const msgEl = document.getElementById('cfExpenseMsg');
-    if (!statsEl || !listEl) return;
-    const res = await apiPost('/api/cashflow', { initData });
-    if (res.networkError) {
-      renderNetworkErrorInline(statsEl, res.reason, loadCashflowData);
-      listEl.innerHTML = '';
-      return;
-    }
-    if (!res.ok) {
-      statsEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    if (msgEl) { msgEl.textContent = ''; msgEl.className = 'xabar'; }
-    if (res.categories) cashflowCategories = res.categories;
-    statsEl.innerHTML = cashflowStatsHtml(res.cashflow);
-    listEl.innerHTML = cashflowExpensesHtml(res.expenses);
-
-    listEl.querySelectorAll('[data-remove-expense]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        await apiPost('/api/expense-remove', { initData, id: btn.getAttribute('data-remove-expense') });
-        loadCashflowData();
-      });
-    });
-  }
-
-  // ---- Egasi: H. AI analitika (32-34-bosqich) — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ----
-  let aiState = { period: 'week' };
-  // Chat tarixi shu sessiya davomida saqlanadi (sahifa yangilansa tozalanadi) — { role: 'user'|'bot', text, isError }
-  let aiChatState = { messages: [], sending: false };
-  const AI_SUGGESTIONS = [
-    "Bugun foyda qancha bo'ldi?",
-    'Eng ko\'p sotilgan taom qaysi?',
-    "Ertaga sklad kerakmi?",
-    'Bu hafta qanday o\'tdi?'
-  ];
-
-  function aiTopItemsHtml(topItems) {
-    if (!topItems || !topItems.length) return `<div class="bosh">Bu davrda buyurtma bo'lmagan.</div>`;
-    const maxQty = Math.max(1, ...topItems.map(it => it.qty));
-    return topItems.map((it, i) => `
-      <div class="menu-item">
-        <div style="flex:1;">
-          <div class="m-name">${i + 1}. ${escapeHtml(it.name)}</div>
-          <div class="m-price">${it.qty} dona · ${cfFormatSum(it.revenue)}</div>
-          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
-            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(it.qty / maxQty * 100)}%;"></div>
-          </div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  function aiPeakHtml(topHours, topDays) {
-    const hoursText = (topHours && topHours.length)
-      ? topHours.map(h => `${h.hour}:00 (${h.count} ta)`).join(', ')
-      : 'Ma\'lumot yo\'q';
-    const daysText = (topDays && topDays.length)
-      ? topDays.map(d => `${d.dayLabel} (${d.count} ta)`).join(', ')
-      : 'Ma\'lumot yo\'q';
-    return `
-      <div class="profile-row"><b>Eng band soatlar:</b> ${escapeHtml(hoursText)}</div>
-      <div class="profile-row"><b>Eng band kunlar:</b> ${escapeHtml(daysText)}</div>
-    `;
-  }
-
-  function aiForecastHtml(forecast) {
-    if (!forecast || !forecast.length) return `<div class="bosh">Prognoz uchun yetarli sklad harakati tarixi yo'q (oxirgi 7 kun).</div>`;
-    return forecast.slice(0, 10).map(f => `
-      <div class="menu-item">
-        <div style="flex:1;">
-          <div class="m-name">${escapeHtml(f.name)}${f.shortage ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
-          <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)} · Ertangi ehtiyoj: ${f.predictedNeed} ${escapeHtml(f.unit)}</div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  // ---- AI chat: xabarlar ro'yxati, so'rov jo'natish va avtomatik pastga skroll ----
-  function aiChatMessagesHtml() {
-    if (!aiChatState.messages.length) {
-      return `<div class="ai-msg-empty">Savolingizni yozing yoki quyidagi takliflardan birini tanlang.</div>`;
-    }
-    const bubbles = aiChatState.messages.map(m => `
-      <div class="ai-msg ${m.role}">
-        <div class="ai-msg-bubble${m.isError ? ' err' : ''}">${escapeHtml(m.text)}</div>
-      </div>
-    `).join('');
-    const typing = aiChatState.sending ? `
-      <div class="ai-msg bot">
-        <div class="ai-msg-bubble">
-          <div class="ai-typing-bubble"><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span></div>
-        </div>
-      </div>
-    ` : '';
-    return bubbles + typing;
-  }
-
-  function aiScrollChatToBottom() {
-    const el = document.getElementById('aiChatMessages');
-    if (el) el.scrollTop = el.scrollHeight;
-  }
-
-  function aiRenderChat() {
-    const el = document.getElementById('aiChatMessages');
-    if (!el) return;
-    el.innerHTML = aiChatMessagesHtml();
-    aiScrollChatToBottom();
-  }
-
-  async function aiSendQuestion(question) {
-    const qTrim = (question || '').trim();
-    if (!qTrim || aiChatState.sending) return;
-    aiChatState.messages.push({ role: 'user', text: qTrim });
-    aiChatState.sending = true;
-    aiRenderChat();
-
-    const input = document.getElementById('aiQuestionInput');
-    const sendBtn = document.getElementById('aiSendBtn');
-    if (input) input.value = '';
-    if (sendBtn) sendBtn.disabled = true;
-
-    const res = await apiPost('/api/ai-ask', { initData, question: qTrim });
-    aiChatState.sending = false;
-    if (res.ok) {
-      aiChatState.messages.push({ role: 'bot', text: res.answer });
-    } else {
-      aiChatState.messages.push({ role: 'bot', text: res.reason || 'Xatolik yuz berdi.', isError: true });
-    }
-    aiRenderChat();
-    if (sendBtn) sendBtn.disabled = false;
-    if (input) input.focus();
-  }
-
-  function renderAiScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">AI tahlil</div>
-        <button class="btn ikkinchi" id="aiBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="tab-row">
-          <div class="tab-opt ${aiState.period === 'week' ? 'selected' : ''}" data-ai-period="week">Hafta</div>
-          <div class="tab-opt ${aiState.period === 'month' ? 'selected' : ''}" data-ai-period="month">Oy</div>
-          <div class="tab-opt ${aiState.period === 'all' ? 'selected' : ''}" data-ai-period="all">Hammasi</div>
-        </div>
-        <div class="kartochka">
-          <h2>Eng ko'p sotilgan taomlar</h2>
-          <div id="aiTopItems"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Pik vaqtlar</h2>
-          <div id="aiPeak"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Ertangi sklad ehtiyoji (prognoz)</h2>
-          <div id="aiForecast"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka ai-chat-card">
-          <h2>${icon('ai', 'icon-xs')} AI-yordamchi</h2>
-          <div class="ai-chat-messages" id="aiChatMessages">${aiChatMessagesHtml()}</div>
-          <div class="ai-suggest-row" id="aiSuggestRow">
-            ${AI_SUGGESTIONS.map(s => `<button type="button" class="ai-suggest-chip" data-ai-suggest="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('')}
-          </div>
-          <div class="ai-chat-input-row">
-            <input type="text" id="aiQuestionInput" placeholder="Savolingizni yozing...">
-            <button class="btn ai-send-btn" id="aiSendBtn" aria-label="Yuborish">${icon('send')}</button>
-          </div>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('aiBackBtn').addEventListener('click', () => onBack && onBack());
-
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const p = e.target.getAttribute('data-ai-period');
-      if (!p || p === aiState.period) return;
-      aiState.period = p;
-      renderAiScreen(profile, onBack);
-    });
-
-    const questionInput = document.getElementById('aiQuestionInput');
-    document.getElementById('aiSendBtn').addEventListener('click', () => aiSendQuestion(questionInput.value));
-    questionInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); aiSendQuestion(questionInput.value); }
-    });
-    document.getElementById('aiSuggestRow').addEventListener('click', (e) => {
-      const q = e.target.getAttribute('data-ai-suggest');
-      if (q) aiSendQuestion(q);
-    });
-
-    aiRenderChat();
-    loadAiData();
-  }
-
-  async function loadAiData() {
-    const topEl = document.getElementById('aiTopItems');
-    const peakEl = document.getElementById('aiPeak');
-    const forecastEl = document.getElementById('aiForecast');
-    if (!topEl) return;
-    const res = await apiPost('/api/ai-analytics', { initData, period: aiState.period });
-    if (res.networkError) {
-      renderNetworkErrorInline(topEl, res.reason, loadAiData);
-      peakEl.innerHTML = '';
-      forecastEl.innerHTML = '';
-      return;
-    }
-    if (!res.ok) {
-      if (res.blockedFeature) {
-        renderFeatureBlockedInline(topEl, res.reason);
-      } else {
-        topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      }
-      peakEl.innerHTML = '';
-      forecastEl.innerHTML = '';
-      return;
-    }
-    topEl.innerHTML = aiTopItemsHtml(res.topItems);
-    peakEl.innerHTML = aiPeakHtml(res.topHours, res.topDays);
-    forecastEl.innerHTML = aiForecastHtml(res.forecast);
-  }
-
-  // ---- Egasi: I. Xodimlar nazorati (35-37-bosqich) — amallar jurnali, 30 kunlik hisobot, reyting ----
-  let staffControlState = { period: 'month' };
-  const STAFF_ACTION_LABELS = {
-    buyurtma_yaratdi: 'Buyurtma yaratdi',
-    holat_tayyorlanmoqda: 'Tayyorlanmoqda deb belgiladi',
-    holat_tayyor: 'Tayyor deb belgiladi',
-    yetkazdi: 'Yetkazib berdi',
-    sklad_kirim: 'Skladga kirim qildi',
-    audit_topshirdi: 'Audit topshirdi',
-    smena_boshladi: 'Smenani boshladi',
-    smena_tugatdi: 'Smenani tugatdi'
-  };
-
-  function staffPerformanceHtml(report) {
-    if (!report || !report.length) return `<div class="bosh">Hali xodim qo'shilmagan.</div>`;
-    return report.map((s, i) => `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${i + 1}. ${escapeHtml(s.fullName || (s.username ? '@' + s.username : 'ID: ' + s.id))}${s.isTop ? ' ' + icon('trophy', 'icon-xs icon-warning') : ''}</div>
-          <div class="owner-username">${escapeHtml(s.roleLabel)}${(s.fullName && s.username) ? ` · @${escapeHtml(s.username)}` : ''}</div>
-          <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
-        </div>
-        <div class="rating-badge">${s.score}<div class="rating-unit">ball</div></div>
-      </div>
-    `).join('');
-  }
-
-  // 17-bosqich: Telegramga yetib bormagan bildirishnomalar ro'yxati.
-  function notificationErrorLogHtml(entries) {
-    if (!entries || !entries.length) return `<div class="bosh">Hammasi joyida — yaqinda yetkazilmagan bildirishnoma yo'q.</div>`;
-    return entries.map(e => `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${escapeHtml(e.targetName || ('ID: ' + e.targetId))}</div>
-          <div class="owner-username">${escapeHtml(e.context || '')}</div>
-          <div class="owner-expiry" style="color:var(--danger);">${escapeHtml(e.reason)} · ${timeAgo(e.createdAt)}</div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  function staffActivityLogHtml(entries) {
-    if (!entries || !entries.length) return `<div class="bosh">Hali amal qayd etilmagan.</div>`;
-    return entries.map(e => `
-      <div class="cf-expense-item">
-        <div>
-          <div class="cf-e-note"><b>${escapeHtml(e.displayName)}</b> (${escapeHtml(e.roleLabel)}) — ${escapeHtml(STAFF_ACTION_LABELS[e.action] || e.action)}</div>
-          ${e.note ? `<div class="cf-e-note">${escapeHtml(e.note)}</div>` : ''}
-          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
-        </div>
-      </div>
-    `).join('');
-  }
-
-  function renderStaffControlScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Xodimlar</div>
-        <button class="btn ikkinchi" id="scBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="kartochka">
-          <h2>Xodim qo'shish</h2>
-          <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-          <div class="staff-hint" style="margin-top:8px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
-          <div class="staff-role-grid">
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Kuryer</label>
-          </div>
-          <select id="staffBranchInput">
-            <option value="">— Markaziy (filialsiz) —</option>
-          </select>
-          <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
-          <div class="xabar" id="staffMsg"></div>
-          <div class="staff-hint" style="margin-top:14px; border-top:1px solid var(--border-color); padding-top:12px;">
-            Yoki xodimning ID/username'ini bilmasangiz — yuqorida lavozim(lar)ni belgilab, bir martalik havola yarating. Xodim shu havolani bosib botni ochsa, avtomatik shu lavozim(lar) bilan qo'shiladi.
-          </div>
-          <button class="btn ikkinchi" id="createStaffInviteBtn" style="margin-top:8px;">${icon('link', 'icon-xs')} Bir martalik havola yaratish</button>
-          <div id="staffInviteLinkWrap"></div>
-          <div class="xabar" id="staffInviteMsg"></div>
-        </div>
-        <div class="kartochka">
-          <h2>Xodimlar ro'yxati</h2>
-          <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="section-label">${icon('bar-chart', 'icon-xs')} Nazorat</div>
-        <div class="tab-row">
-          <div class="tab-opt ${staffControlState.period === 'week' ? 'selected' : ''}" data-sc-period="week">Hafta</div>
-          <div class="tab-opt ${staffControlState.period === 'month' ? 'selected' : ''}" data-sc-period="month">30 kun</div>
-          <div class="tab-opt ${staffControlState.period === 'all' ? 'selected' : ''}" data-sc-period="all">Hammasi</div>
-        </div>
-        <div class="kartochka">
-          <h2>Xodimlar reytingi</h2>
-          <div id="scRating"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>So'nggi amallar (jurnal)</h2>
-          <div id="scLog"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Bildirishnoma xatolari</h2>
-          <div class="staff-hint">Xodimga Telegram orqali xabar yetib bormagan holatlar (odatda xodim botga hali <code>/start</code> bosmagan yoki uni block qilgan bo'lsa yuz beradi).</div>
-          <div id="scNotifErrors" style="margin-top:8px;"><div class="bosh">Yuklanmoqda...</div></div>
-          <button class="btn ikkinchi" id="clearNotifErrorsBtn" style="margin-top:8px;">Jurnalni tozalash</button>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('scBackBtn').addEventListener('click', () => onBack && onBack());
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const p = e.target.getAttribute('data-sc-period');
-      if (!p || p === staffControlState.period) return;
-      staffControlState.period = p;
-      renderStaffControlScreen(profile, onBack);
-    });
-
-    document.getElementById('addStaffBtn').addEventListener('click', async () => {
-      const val = document.getElementById('staffInput').value.trim();
-      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
-      const branchId = document.getElementById('staffBranchInput').value;
-      const msgEl = document.getElementById('staffMsg');
-      if (!val) {
-        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (!roles.length) {
-        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/add-staff', { initData, input: val, roles, branchId });
-      if (res.ok) {
-        msgEl.textContent = 'Xodim qo\'shildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('staffInput').value = '';
-        document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
-        loadStaffAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    document.getElementById('createStaffInviteBtn').addEventListener('click', async () => {
-      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
-      const branchId = document.getElementById('staffBranchInput').value;
-      const msgEl = document.getElementById('staffInviteMsg');
-      const wrap = document.getElementById('staffInviteLinkWrap');
-      if (!roles.length) {
-        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      wrap.innerHTML = '';
-      const res = await apiPost('/api/create-staff-invite', { initData, roles, branchId });
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = '';
-      wrap.innerHTML = `
-        <div class="link-box">
-          <span>${escapeHtml(res.link)}</span>
-          <button id="copyStaffInviteLinkBtn">Nusxalash</button>
-        </div>
-        <div class="customer-link-hint">Havola bir marta ishlatiladi va 24 soatdan keyin muddati tugaydi (${escapeHtml(rolesLabelClient(res.roles))}).</div>
-      `;
-      document.getElementById('copyStaffInviteLinkBtn').addEventListener('click', () => {
-        navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
-        }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
-        });
-      });
-    });
-
-    document.getElementById('staffList').addEventListener('click', async (e) => {
-      const id = e.target.getAttribute('data-remove-staff-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/remove-staff', { initData, id });
-      loadStaffAndRender();
-    });
-
-    document.getElementById('staffList').addEventListener('change', async (e) => {
-      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
-      if (branchStaffId) {
-        e.target.disabled = true;
-        await apiPost('/api/set-staff-branch', { initData, id: branchStaffId, branchId: e.target.value });
-        loadStaffAndRender();
-        return;
-      }
-      const roleStaffId = e.target.getAttribute('data-staff-role-checkbox');
-      if (roleStaffId) {
-        const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
-        const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
-        if (!roles.length) {
-          e.target.checked = true; // kamida bitta lavozim qolishi shart
-          alert('Xodimda kamida bitta lavozim qolishi kerak.');
-          return;
-        }
-        checkboxes.forEach(cb => cb.disabled = true);
-        await apiPost('/api/set-staff-roles', { initData, id: roleStaffId, roles });
-        loadStaffAndRender();
-      }
-    });
-
-    document.getElementById('clearNotifErrorsBtn').addEventListener('click', async () => {
-      if (!confirm('Bildirishnoma xatolari jurnalini tozalamoqchimisiz?')) return;
-      await apiPost('/api/notification-error-log-clear', { initData });
-      loadStaffControlData();
-    });
-
-    loadBranchAndRender().then(loadStaffAndRender);
-    loadStaffControlData();
-  }
-
-  async function loadStaffControlData() {
-    const ratingEl = document.getElementById('scRating');
-    const logEl = document.getElementById('scLog');
-    if (!ratingEl) return;
-
-    const perfRes = await apiPost('/api/staff-performance-report', { initData, period: staffControlState.period });
-    if (perfRes.networkError) {
-      renderNetworkErrorInline(ratingEl, perfRes.reason, loadStaffControlData);
-      return;
-    }
-    ratingEl.innerHTML = perfRes.ok
-      ? staffPerformanceHtml(perfRes.report)
-      : `<div class="xabar err">${escapeHtml(perfRes.reason || 'Xatolik yuz berdi.')}</div>`;
-
-    const logRes = await apiPost('/api/staff-activity-log', { initData, limit: 50 });
-    if (logRes.networkError) {
-      renderNetworkErrorInline(logEl, logRes.reason, loadStaffControlData);
-      return;
-    }
-    logEl.innerHTML = logRes.ok
-      ? staffActivityLogHtml(logRes.entries)
-      : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
-
-    const notifErrEl = document.getElementById('scNotifErrors');
-    if (notifErrEl) {
-      const notifRes = await apiPost('/api/notification-error-log', { initData });
-      notifErrEl.innerHTML = notifRes.ok
-        ? notificationErrorLogHtml(notifRes.entries)
-        : `<div class="xabar err">${escapeHtml((notifRes.reason) || 'Xatolik yuz berdi.')}</div>`;
-    }
-  }
-
-  // ---- Egasi: Kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya ----
-  let courierReportState = { period: 'today' };
-
-  function courierReportRowsHtml(report) {
-    if (!report.length) return `<div class="bosh">Kuryerlar hali qo'shilmagan.</div>`;
-    return report.map(c => `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${escapeHtml(c.id)}</div>
-          ${c.username ? `<div class="owner-username">@${escapeHtml(c.username)}</div>` : ''}
-          <div class="owner-expiry">Buyurtmalar: ${c.orderCount} ta</div>
-          <div class="owner-price">Jami pul: ${cfFormatSum(c.totalAmount)}</div>
-          ${c.pendingAmount > 0 ? `
-            <div class="owner-expiry" style="color:var(--rang-xato,#e04b4b);">Kuryer qo'lida (kassaga qaytarilmagan): ${cfFormatSum(c.pendingAmount)}</div>
-            <button class="btn ikkinchi" style="margin-top:6px; padding:6px 10px; font-size:13px;" data-cr-collect="${escapeHtml(c.id)}">Kassaga qaytarildi</button>
-          ` : ''}
-        </div>
-        <div class="rating-badge">${cfFormatSum(c.commission)}<div class="rating-unit">komissiya</div></div>
-      </div>
-    `).join('');
-  }
-
-  function courierCashHistoryHtml(movements) {
-    if (!movements || !movements.length) return `<div class="bosh">Hali kassaga qaytarilgan pul yo'q.</div>`;
-    return movements.map(m => {
-      const d = new Date(m.createdAt);
-      const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-      return `
-        <div class="owner-item">
-          <div>
-            <div class="owner-id">${m.courierUsername ? '@' + escapeHtml(m.courierUsername) : escapeHtml(m.courierId)}</div>
-            <div class="owner-expiry">${m.orderCount} ta buyurtma · ${sana}</div>
-          </div>
-          <div class="rating-badge" style="color:var(--rang-ok,#2ecc71);">${cfFormatSum(m.amount)}<div class="rating-unit">kassaga qaytdi</div></div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  function renderCourierReportScreen(profile, onBack, isOwnerView = true) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Kuryerlar hisoboti</div>
-        ${onBack ? `<button class="btn ikkinchi" id="crBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        <div class="tab-row">
-          <div class="tab-opt ${courierReportState.period === 'today' ? 'selected' : ''}" data-cr-period="today">Bugun</div>
-          <div class="tab-opt ${courierReportState.period === 'week' ? 'selected' : ''}" data-cr-period="week">Hafta</div>
-          <div class="tab-opt ${courierReportState.period === 'month' ? 'selected' : ''}" data-cr-period="month">Oy</div>
-          <div class="tab-opt ${courierReportState.period === 'all' ? 'selected' : ''}" data-cr-period="all">Hammasi</div>
-        </div>
-        ${isOwnerView ? `
-        <div class="kartochka">
-          <h2>Komissiya foizi</h2>
-          <input type="text" id="crCommissionInput" placeholder="Masalan: 10" inputmode="numeric">
-          <button class="btn ikkinchi" id="crSaveCommissionBtn">Saqlash</button>
-          <div class="xabar" id="crCommissionMsg"></div>
-        </div>
-        ` : ''}
-        <div class="kartochka">
-          <h2>Kuryerlar</h2>
-          <div id="crList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Kassaga qaytarish tarixi</h2>
-          <div id="crHistory" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-      </div>
-    `);
-
-    if (onBack) document.getElementById('crBackBtn').addEventListener('click', () => onBack());
-
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const p = e.target.getAttribute('data-cr-period');
-      if (!p || p === courierReportState.period) return;
-      courierReportState.period = p;
-      renderCourierReportScreen(profile, onBack, isOwnerView);
-    });
-
-    if (isOwnerView) {
-      document.getElementById('crSaveCommissionBtn').addEventListener('click', async () => {
-        const percent = document.getElementById('crCommissionInput').value.trim();
-        const msgEl = document.getElementById('crCommissionMsg');
-        if (!/^\d+(\.\d+)?$/.test(percent)) {
-          msgEl.textContent = 'To\'g\'ri foiz kiriting (0-100).';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        msgEl.textContent = 'Saqlanmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/set-courier-commission', { initData, percent });
-        if (res.ok) {
-          msgEl.textContent = 'Saqlandi.';
-          msgEl.className = 'xabar ok';
-          loadCourierReport(isOwnerView);
+      if (available !== undefined) item.available = !!available;
+
+      // 17-bosqich: taomning turini ("Tayyorlanadigan" / "To'g'ridan skladdan")
+      // tahrirlash oynasidan ham o'zgartirish mumkin. Bo'sh qator ('') yuborilsa —
+      // "to'g'ridan skladdan" turi bekor qilinib, oddiy (retseptli) taomga qaytadi.
+      if (directStockId !== undefined) {
+        const directTrim = String(directStockId || '').trim();
+        if (!directTrim) {
+          item.directStockId = null;
         } else {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
+          // Retsepti bor taomni to'g'ridan-sklad turiga o'tkazib bo'lmaydi —
+          // avval retseptni tozalash kerak (aks holda ikkalasi ham ishlaydigan
+          // noaniq holat paydo bo'ladi).
+          if (Array.isArray(item.recipe) && item.recipe.length) {
+            return sendJSON(res, 200, { ok: false, reason: 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.' });
+          }
+          const stockItem = findStockItem(owner, directTrim);
+          if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti (markaziy skladda) topilmadi.' });
+          item.directStockId = directTrim;
         }
-      });
-    }
+      }
+      saveOwners(owners);
 
-    loadCourierReport(isOwnerView);
+      return sendJSON(res, 200, { ok: true, item });
+    });
+    return;
   }
 
-  async function loadCourierReport(isOwnerView = true) {
-    const listEl = document.getElementById('crList');
-    const commissionInput = document.getElementById('crCommissionInput');
-    if (!listEl) return;
-    const res = await apiPost('/api/courier-report', { initData, period: courierReportState.period });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadCourierReport(isOwnerView)); return; }
-    if (!res.ok) {
-      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      const historyElOnErr = document.getElementById('crHistory');
-      if (historyElOnErr) historyElOnErr.innerHTML = '';
-      return;
-    }
-    if (commissionInput && document.activeElement !== commissionInput) {
-      commissionInput.value = res.commissionPercent;
-    }
-    listEl.innerHTML = courierReportRowsHtml(res.report);
+  // ---- API: menyudan taomni o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
-    const historyEl = document.getElementById('crHistory');
-    if (historyEl) historyEl.innerHTML = courierCashHistoryHtml(res.recentMovements);
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
-    listEl.querySelectorAll('[data-cr-collect]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const courierId = btn.getAttribute('data-cr-collect');
-        btn.disabled = true;
-        btn.textContent = 'Yuklanmoqda...';
-        const cRes = await apiPost('/api/courier-collect-cash', { initData, courierId });
-        if (cRes.ok) {
-          loadCourierReport(isOwnerView);
-        } else {
-          btn.disabled = false;
-          btn.textContent = 'Kassaga qaytarildi';
-          alert(cRes.reason || 'Xatolik yuz berdi.');
+      owner.menu = (owner.menu || []).filter(m => m.id !== id);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ==================== D-bo'lim (28-31-bosqich): Combo — CRUD ====================
+  // Combo obyekti: { id, name, itemIds: [{menuItemId, qty}], price, priceMode:
+  // 'auto'|'manual', category, imageUrl, available, addedAt }. "auto" rejimda
+  // narx har safar tarkib narxlari yig'indisidan qayta hisoblanadi (agar
+  // tarkibdagi taomlarning narxi keyinroq o'zgarsa ham to'g'ri bo'lib turadi);
+  // "manual" rejimda egasi kiritgan qiymat saqlanadi.
+
+  // ---- API: combo ro'yxatini olish (egasi yoki uning xodimlari — kassir menyuda ko'rsatishi uchun) ----
+  if (req.method === 'POST' && req.url === '/api/combo-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+
+      const combos = (ctx.owner.combos || []).map(c => Object.assign({}, c, {
+        price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price,
+        outOfStock: comboOutOfStock(ctx.owner, c)
+      }));
+      return sendJSON(res, 200, { ok: true, combos });
+    });
+    return;
+  }
+
+  // ---- API: yangi combo qo'shish (28-bosqich, faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/combo-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, itemIds, priceMode, price, category, imageUrl } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
+      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
+
+      // Tarkib — kamida 2 ta taom (aks holda combo emas, oddiy taom bo'lardi)
+      if (!Array.isArray(itemIds) || itemIds.length < 2) {
+        return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
+      }
+      const cleanItemIds = [];
+      for (const entry of itemIds) {
+        const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Tarkibda menyuda mavjud bo\'lmagan taom bor.' });
+        const qtyNum = Number(entry.qty) || 1;
+        if (qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Har bir taom miqdori musbat bo\'lishi kerak.' });
+        cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
+      }
+
+      // 31-bosqich: narx — avtomatik (tarkib yig'indisi) yoki qo'lda
+      const priceModeVal = priceMode === 'manual' ? 'manual' : 'auto';
+      let priceVal;
+      if (priceModeVal === 'manual') {
+        priceVal = Number(price);
+        if (!Number.isFinite(priceVal) || priceVal <= 0) return sendJSON(res, 200, { ok: false, reason: 'Combo narxini to\'g\'ri kiriting.' });
+      } else {
+        priceVal = comboAutoPrice(owner, cleanItemIds);
+      }
+
+      const imageTrim = String(imageUrl || '').trim();
+      if (!isValidImageValue(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+      }
+
+      if (!owner.combos) owner.combos = [];
+      const combo = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: nameTrim,
+        itemIds: cleanItemIds,
+        priceMode: priceModeVal,
+        price: priceVal,
+        category: String(category || '').trim() || null,
+        imageUrl: imageTrim || null,
+        available: true,
+        addedAt: new Date().toISOString()
+      };
+      owner.combos.push(combo);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, combo });
+    });
+    return;
+  }
+
+  // ---- API: comboni tahrirlash / ko'rinish holatini almashtirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/combo-update') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name, itemIds, priceMode, price, category, imageUrl, available } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
+      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const combo = findCombo(owner, id);
+      if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Combo topilmadi.' });
+
+      if (name !== undefined) {
+        const nameTrim = String(name || '').trim();
+        if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
+        combo.name = nameTrim;
+      }
+      if (itemIds !== undefined) {
+        if (!Array.isArray(itemIds) || itemIds.length < 2) {
+          return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
         }
-      });
-    });
-  }
-
-  // ---- Egasi: Buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
-  let orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
-  let orderHistoryEmployeesCache = null;
-
-  function orderHistoryStatusLabel(status) {
-    return ORDER_STATUS_LABELS[status] || status;
-  }
-
-  function orderHistoryRowsHtml(orders) {
-    if (!orders.length) return `<div class="bosh">Bu filtrga mos buyurtma topilmadi.</div>`;
-    return orders.map(o => {
-      const d = new Date(o.createdAt);
-      const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const itemsText = (o.items || []).map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
-      return `
-        <div class="owner-item">
-          <div>
-            <div class="owner-id">${sana}${o.tableNumber ? ' · stol ' + escapeHtml(o.tableNumber) : ''}</div>
-            <div class="owner-username">${escapeHtml(ORDER_TYPE_LABELS[o.orderType] || o.orderType)} · ${escapeHtml(PAYMENT_TYPE_LABELS[o.paymentType] || o.paymentType)} · ${escapeHtml(orderHistoryStatusLabel(o.status))}</div>
-            <div class="owner-expiry">${itemsText}</div>
-            <div class="owner-expiry">Xodim: ${escapeHtml(o.createdByName || '—')}</div>
-          </div>
-          <div class="rating-badge">${cfFormatSum(o.total)}</div>
-        </div>
-      `;
-    }).join('');
-  }
-
-  function orderHistoryEmployeeOptionsHtml(employees) {
-    const opts = ['<option value="">Barcha xodimlar</option>']
-      .concat((employees || []).map(e => `<option value="${escapeHtml(e.id)}">${escapeHtml(e.name)}</option>`));
-    return opts.join('');
-  }
-
-  function renderOrderHistoryScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Buyurtmalar tarixi</div>
-        <button class="btn ikkinchi" id="ohBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="kartochka">
-          <h2>Filtr</h2>
-          <div class="profile-row"><b>Sana (dan)</b></div>
-          <input type="date" id="ohDateFrom" value="${escapeHtml(orderHistoryState.dateFrom)}">
-          <div class="profile-row"><b>Sana (gacha)</b></div>
-          <input type="date" id="ohDateTo" value="${escapeHtml(orderHistoryState.dateTo)}">
-          <div class="profile-row"><b>Xodim</b></div>
-          <select id="ohEmployee"><option value="">Yuklanmoqda...</option></select>
-          <div class="profile-row"><b>To'lov turi</b></div>
-          <select id="ohPaymentType">
-            <option value="">Barcha to'lov turlari</option>
-            <option value="naqd">Naqd</option>
-            <option value="karta">Karta</option>
-            <option value="dostavka_orqali">Dostavka orqali</option>
-          </select>
-          <div class="profile-row"><b>Buyurtma turi</b></div>
-          <select id="ohOrderType">
-            <option value="">Barcha turlar</option>
-            <option value="stol">Stolga</option>
-            <option value="olib_ketish">Olib ketish</option>
-            <option value="dostavka">Dostavka</option>
-          </select>
-          <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
-          <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
-        </div>
-        <div class="kartochka">
-          <div id="ohSummary" class="bosh">Yuklanmoqda...</div>
-        </div>
-        <div class="kartochka">
-          <h2>Buyurtmalar</h2>
-          <div id="ohList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
-          <div id="ohPagination" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"></div>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('ohBackBtn').addEventListener('click', () => onBack && onBack());
-
-    document.getElementById('ohApplyBtn').addEventListener('click', () => {
-      orderHistoryState.dateFrom = document.getElementById('ohDateFrom').value;
-      orderHistoryState.dateTo = document.getElementById('ohDateTo').value;
-      orderHistoryState.employeeId = document.getElementById('ohEmployee').value;
-      orderHistoryState.paymentType = document.getElementById('ohPaymentType').value;
-      orderHistoryState.orderType = document.getElementById('ohOrderType').value;
-      orderHistoryState.page = 1;
-      loadOrderHistory();
-    });
-
-    document.getElementById('ohResetBtn').addEventListener('click', () => {
-      orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
-      renderOrderHistoryScreen(profile, onBack);
-    });
-
-    fillOrderHistoryEmployeeSelect();
-    loadOrderHistory();
-  }
-
-  async function fillOrderHistoryEmployeeSelect() {
-    const selectEl = document.getElementById('ohEmployee');
-    if (!selectEl) return;
-    if (orderHistoryEmployeesCache) {
-      selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
-      selectEl.value = orderHistoryState.employeeId;
-    }
-  }
-
-  async function loadOrderHistory() {
-    const listEl = document.getElementById('ohList');
-    const summaryEl = document.getElementById('ohSummary');
-    const pagEl = document.getElementById('ohPagination');
-    if (!listEl) return;
-    const res = await apiPost('/api/order-history', {
-      initData,
-      dateFrom: orderHistoryState.dateFrom || undefined,
-      dateTo: orderHistoryState.dateTo || undefined,
-      employeeId: orderHistoryState.employeeId || undefined,
-      paymentType: orderHistoryState.paymentType || undefined,
-      orderType: orderHistoryState.orderType || undefined,
-      page: orderHistoryState.page
-    });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadOrderHistory()); return; }
-    if (!res.ok) {
-      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      if (summaryEl) summaryEl.innerHTML = '';
-      if (pagEl) pagEl.innerHTML = '';
-      return;
-    }
-
-    orderHistoryEmployeesCache = res.employees || [];
-    const selectEl = document.getElementById('ohEmployee');
-    if (selectEl) {
-      selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
-      selectEl.value = orderHistoryState.employeeId;
-    }
-
-    if (summaryEl) {
-      summaryEl.innerHTML = `Topildi: <b>${res.totalCount}</b> ta buyurtma · Jami summa: <b>${cfFormatSum(res.totalSum)}</b>`;
-    }
-
-    listEl.innerHTML = orderHistoryRowsHtml(res.orders);
-
-    if (pagEl) {
-      if (res.totalPages > 1) {
-        pagEl.innerHTML = `
-          <button class="btn ikkinchi" id="ohPrevBtn" ${res.page <= 1 ? 'disabled' : ''} style="flex:1; margin-right:6px;">← Oldingi</button>
-          <span class="bosh" style="white-space:nowrap; padding:0 8px;">${res.page} / ${res.totalPages}</span>
-          <button class="btn ikkinchi" id="ohNextBtn" ${res.page >= res.totalPages ? 'disabled' : ''} style="flex:1; margin-left:6px;">Keyingi →</button>
-        `;
-        const prevBtn = document.getElementById('ohPrevBtn');
-        const nextBtn = document.getElementById('ohNextBtn');
-        if (prevBtn) prevBtn.addEventListener('click', () => { orderHistoryState.page = Math.max(1, res.page - 1); loadOrderHistory(); });
-        if (nextBtn) nextBtn.addEventListener('click', () => { orderHistoryState.page = Math.min(res.totalPages, res.page + 1); loadOrderHistory(); });
-      } else {
-        pagEl.innerHTML = '';
-      }
-    }
-  }
-
-  // ---- Egasi: Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda ----
-  function zReportCardHtml(z) {
-    const netClass = z.net >= 0 ? 'positive' : 'negative';
-    const paymentRows = Object.entries(z.paymentBreakdown || {})
-      .filter(([, sum]) => sum > 0)
-      .map(([key, sum]) => `<div class="profile-row"><b>${escapeHtml(PAYMENT_TYPE_LABELS[key] || key)}:</b> ${cfFormatSum(sum)}</div>`)
-      .join('');
-    return `
-      <div class="kartochka">
-        <h2>${escapeHtml(z.date)}</h2>
-        <div class="cf-stats">
-          <div class="cf-stat income">
-            <div class="cf-label">Savdo</div>
-            <div class="cf-val">${cfFormatSum(z.income)}</div>
-          </div>
-          <div class="cf-stat expense">
-            <div class="cf-label">Xarajat</div>
-            <div class="cf-val">${cfFormatSum(z.expense)}</div>
-          </div>
-          <div class="cf-stat net ${netClass}" style="grid-column: 1 / -1;">
-            <div class="cf-label">Sof foyda</div>
-            <div class="cf-val">${cfFormatSum(z.net)}</div>
-          </div>
-        </div>
-        <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${z.orderCount} | Kassa: ${cfFormatSum(z.kassaIncome)} | Dostavka: ${cfFormatSum(z.dostavkaIncome)}</div>
-        ${paymentRows ? `<div style="margin-top:8px;">${paymentRows}</div>` : ''}
-      </div>
-    `;
-  }
-
-  function zReportListHtml(reports) {
-    if (!reports.length) return `<div class="bosh">Hali Z-hisobot yopilmagan.</div>`;
-    return reports.map(z => zReportCardHtml(z)).join('');
-  }
-
-  function renderZReportScreen(profile, onBack) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Kunlik Z-hisobot</div>
-        <button class="btn ikkinchi" id="zrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <div class="kartochka">
-          <div class="bosh">Kunni yopib, bugungi savdo/xarajat/sof foydani rasmiy hisobot sifatida saqlaydi.</div>
-          <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
-          <div class="xabar" id="zrMsg"></div>
-        </div>
-        <div class="kartochka chart-card">
-          <h2>${icon('trending-up', 'icon-xs')} Sof foyda dinamikasi</h2>
-          <div id="zrChart"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div id="zrList"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-
-    document.getElementById('zrBackBtn').addEventListener('click', () => onBack && onBack());
-
-    document.getElementById('zrCreateBtn').addEventListener('click', async () => {
-      const msgEl = document.getElementById('zrMsg');
-      msgEl.textContent = 'Yopilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/z-report-create', { initData });
-      if (res.ok) {
-        msgEl.textContent = res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.';
-        msgEl.className = 'xabar ok';
-        loadZReportList();
-      } else {
-        handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    });
-
-    loadZReportList();
-  }
-
-  async function loadZReportList() {
-    const listEl = document.getElementById('zrList');
-    const chartEl = document.getElementById('zrChart');
-    if (!listEl) return;
-    const res = await apiPost('/api/z-report-list', { initData });
-    if (res.networkError) {
-      renderNetworkErrorInline(listEl, res.reason, loadZReportList);
-      if (chartEl) chartEl.innerHTML = '';
-      return;
-    }
-    if (!res.ok) {
-      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    listEl.innerHTML = zReportListHtml(res.reports);
-    if (chartEl) {
-      const points = res.reports.slice(0, 14).slice().reverse().map(z => ({ label: shortDateLabel(z.date), value: z.net }));
-      chartEl.innerHTML = trendBarChartSvg(points);
-    }
-  }
-
-  function showAuditReport(audit) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    const rows = audit.entries.map(e => `
-      <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;">
-        <span>${escapeHtml(e.name)}</span>
-        <span style="font-weight:700; color:${e.diff === 0 ? '#2fa84f' : (e.diff > 0 ? '#2fa84f' : '#d33')};">
-          ${e.diff > 0 ? '+' : ''}${e.diff} ${escapeHtml(e.unit)}
-        </span>
-      </div>
-    `).join('');
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:380px;">
-        <h3>Audit natijasi</h3>
-        <p>Farqlar (haqiqiy − tizimdagi):</p>
-        <div>${rows}</div>
-        <div class="btn-row">
-          <button class="btn" id="auditReportOkBtn">Yopish</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.getElementById('auditReportOkBtn').onclick = () => {
-      overlay.remove();
-      loadStockAndRender();
-      loadMovementsAndRender();
-    };
-  }
-
-  // ---- Egasi: taom uchun retsept (ingredientlar) tahrirlash oynasi ----
-  let recipeEditorMenuId = null;
-  let recipeEditorStock = [];
-
-  // 13-bosqich: "Menyuga taom qo'shish" formasidagi "To'g'ridan skladdan"
-  // selectini markaziy sklad ro'yxati bilan to'ldiradi. Faqat "direct" turi
-  // tanlanganda (birinchi marta) chaqiriladi — har safar qayta yuklamaslik
-  // uchun oddiy keshlash shart emas, chunki bu kamdan-kam bosiladigan tugma.
-  async function loadMenuDirectStockOptions() {
-    const select = document.getElementById('menuDirectStockInput');
-    if (!select) return;
-    select.innerHTML = '<option value="">Yuklanmoqda...</option>';
-    const res = await apiPost('/api/stock-list', { initData });
-    if (!select.isConnected) return; // foydalanuvchi allaqachon boshqa ekranga o'tgan bo'lishi mumkin
-    const stock = (res.ok && Array.isArray(res.stock)) ? res.stock : [];
-    if (!stock.length) {
-      select.innerHTML = '<option value="">Avval skladga mahsulot qo\'shing</option>';
-      return;
-    }
-    select.innerHTML = '<option value="">— Tanlang —</option>' +
-      stock.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('');
-  }
-
-  async function openRecipeEditor(menuItem) {
-    recipeEditorMenuId = menuItem.id;
-    const res = await apiPost('/api/stock-list', { initData });
-    recipeEditorStock = res.ok ? res.stock : [];
-    renderRecipeEditorOverlay(menuItem);
-  }
-
-  function renderRecipeEditorOverlay(menuItem) {
-    const existingMap = {};
-    (menuItem.recipe || []).forEach(r => { existingMap[r.stockId] = r.qty; });
-    const rowsHtml = recipeEditorStock.length
-      ? recipeEditorStock.map(s => `
-          <div class="recipe-row">
-            <div class="recipe-name">${escapeHtml(s.name)} <span class="recipe-unit">(${escapeHtml(s.unit)})</span></div>
-            <input type="text" inputmode="decimal" data-recipe-qty="${escapeHtml(s.id)}" placeholder="0" value="${existingMap[s.id] != null ? existingMap[s.id] : ''}">
-          </div>
-        `).join('')
-      : `<div class="bosh">Avval skladga mahsulot qo'shing.</div>`;
-
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
-        <h3>Retsept: ${escapeHtml(menuItem.name)}</h3>
-        <p>Har bir taom uchun sarflanadigan miqdorni kiriting (bo'sh = ishlatilmaydi).</p>
-        <div>${rowsHtml}</div>
-        <div class="xabar" id="recipeMsg"></div>
-        <div class="btn-row">
-          <button class="btn ikkinchi" id="recipeCancelBtn">Bekor qilish</button>
-          <button class="btn" id="recipeSaveBtn">Saqlash</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    document.getElementById('recipeCancelBtn').onclick = () => overlay.remove();
-    document.getElementById('recipeSaveBtn').onclick = async () => {
-      const recipe = [];
-      overlay.querySelectorAll('[data-recipe-qty]').forEach(inp => {
-        const val = inp.value.trim();
-        if (!val) return;
-        const num = Number(val);
-        if (Number.isFinite(num) && num > 0) {
-          recipe.push({ stockId: inp.getAttribute('data-recipe-qty'), qty: num });
+        const cleanItemIds = [];
+        for (const entry of itemIds) {
+          const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+          if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Tarkibda menyuda mavjud bo\'lmagan taom bor.' });
+          const qtyNum = Number(entry.qty) || 1;
+          if (qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Har bir taom miqdori musbat bo\'lishi kerak.' });
+          cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
         }
-      });
-      const msgEl = document.getElementById('recipeMsg');
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-set-recipe', { initData, menuId: recipeEditorMenuId, recipe });
-      if (res.ok) {
-        overlay.remove();
-        loadMenuAndRender();
+        combo.itemIds = cleanItemIds;
+      }
+      if (priceMode !== undefined) combo.priceMode = priceMode === 'manual' ? 'manual' : 'auto';
+      if (combo.priceMode === 'manual') {
+        if (price !== undefined) {
+          const priceVal = Number(price);
+          if (!Number.isFinite(priceVal) || priceVal <= 0) return sendJSON(res, 200, { ok: false, reason: 'Combo narxini to\'g\'ri kiriting.' });
+          combo.price = priceVal;
+        }
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        // auto rejimda narx doim tarkibdan qayta hisoblanadi
+        combo.price = comboAutoPrice(owner, combo.itemIds);
       }
-    };
-  }
+      if (category !== undefined) combo.category = String(category || '').trim() || null;
+      if (imageUrl !== undefined) {
+        const imageTrim = String(imageUrl || '').trim();
+        if (!isValidImageValue(imageTrim)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+        }
+        combo.imageUrl = imageTrim || null;
+      }
+      if (available !== undefined) combo.available = !!available;
+      saveOwners(owners);
 
-  async function renderMenuItemEditOverlay(menuItem) {
-    let pendingImage = menuItem.imageUrl || '';
-    const isDirectInitially = !!menuItem.directStockId;
-    // 17-bosqich: "To'g'ridan skladdan" turini tanlash uchun markaziy sklad
-    // ro'yxati oldindan yuklab qo'yiladi (select tayyor tursin).
-    const stockRes = await apiPost('/api/stock-list', { initData });
-    const stockList = (stockRes.ok && Array.isArray(stockRes.stock)) ? stockRes.stock : [];
-    const stockOptionsHtml = stockList.length
-      ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
-      : '';
-    // 39-bosqich: bo'limlar ro'yxatini yuklab, select uchun tayyorlaymiz.
-    // Agar taomning joriy kategoriyasi biror sababdan ro'yxatda bo'lmasa
-    // (masalan, o'sha bo'lim keyinchalik o'chirilgan bo'lsa), uni saqlashda
-    // sezdirmasdan yo'qotib qo'ymaslik uchun alohida belgi bilan qo'shamiz.
-    const catRes = await apiPost('/api/category-list', { initData });
-    const categoriesList = (catRes.ok && Array.isArray(catRes.categories)) ? catRes.categories : [];
-    let categoryOptionsHtml = '<option value="">— Bo\'lim tanlanmagan —</option>';
-    if (menuItem.category && !categoriesList.some(c => c.name === menuItem.category)) {
-      categoryOptionsHtml += `<option value="${escapeHtml(menuItem.category)}" selected>${escapeHtml(menuItem.category)} (ro'yxatda yo'q)</option>`;
-    }
-    categoryOptionsHtml += categoriesList.map(c => `<option value="${escapeHtml(c.name)}" ${c.name === (menuItem.category || '') ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;">
-        <h3>Taomni tahrirlash</h3>
-        <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
-        <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
-        <label class="field-label">Bo'lim (ixtiyoriy)</label>
-        <select id="editMenuCategoryInput">${categoryOptionsHtml}</select>
-        <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
-        <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
-        <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
-        <input type="file" id="editMenuImageFileInput" accept="image/*">
-
-        <label class="field-label" style="margin-top:10px;">Turi</label>
-        <select id="editMenuTypeInput">
-          <option value="recipe" ${isDirectInitially ? '' : 'selected'}>Tayyorlanadigan (retsept)</option>
-          <option value="direct" ${isDirectInitially ? 'selected' : ''}>To'g'ridan skladdan (masalan: shishada suv)</option>
-        </select>
-        <div id="editMenuDirectStockWrap" class="${isDirectInitially ? '' : 'hidden'}" style="margin-top:8px;">
-          <label class="field-label">Sklad mahsuloti</label>
-          <select id="editMenuDirectStockInput">${stockOptionsHtml || '<option value="">Avval skladga mahsulot qo\'shing</option>'}</select>
-        </div>
-
-        <div class="xabar" id="editMenuMsg"></div>
-        <div class="btn-row">
-          <button class="btn ikkinchi" id="editMenuCancelBtn">Bekor qilish</button>
-          <button class="btn" id="editMenuSaveBtn">Saqlash</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
-
-    document.getElementById('editMenuTypeInput').addEventListener('change', (e) => {
-      document.getElementById('editMenuDirectStockWrap').classList.toggle('hidden', e.target.value !== 'direct');
+      return sendJSON(res, 200, { ok: true, combo });
     });
+    return;
+  }
 
-    document.getElementById('editMenuImageFileInput').addEventListener('change', async (e) => {
-      const file = e.target.files && e.target.files[0];
-      const msgEl = document.getElementById('editMenuMsg');
-      if (!file) return;
-      try {
-        const dataUrl = await readImageFileAsCompressedDataUrl(file);
-        pendingImage = dataUrl || '';
-        const preview = document.getElementById('editMenuImagePreview');
-        preview.src = pendingImage;
-        preview.style.display = pendingImage ? 'block' : 'none';
-      } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
-        e.target.value = '';
-      }
+  // ---- API: comboni o'chirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/combo-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.combos = (owner.combos || []).filter(c => c.id !== id);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
     });
-
-    document.getElementById('editMenuSaveBtn').onclick = async () => {
-      const name = document.getElementById('editMenuNameInput').value.trim();
-      const price = document.getElementById('editMenuPriceInput').value.trim();
-      const category = document.getElementById('editMenuCategoryInput').value.trim();
-      const description = document.getElementById('editMenuDescriptionInput').value.trim();
-      const menuType = document.getElementById('editMenuTypeInput').value;
-      const directStockId = menuType === 'direct' ? document.getElementById('editMenuDirectStockInput').value : '';
-      const msgEl = document.getElementById('editMenuMsg');
-      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
-        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-update', {
-        initData, id: menuItem.id, name, price, category, description, imageUrl: pendingImage, directStockId
-      });
-      if (res.ok) {
-        overlay.remove();
-        loadMenuAndRender();
-      } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-      }
-    };
-  }
-
-  async function loadOwnProfileAndRender() {
-    const res = await apiPost('/api/my-profile', { initData });
-    if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
-    if (res.ok && res.profile) { applyBrandColor(res.profile.brandColor); renderOwnerHomeScreen(res.profile); }
-    else { resetBrandColor(); renderProfileForm(res.ok ? res.profile : null); }
-  }
-
-  async function loadOwnersAndRender() {
-    resetBrandColor();
-    const res = await apiPost('/api/owners', { initData });
-    if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnersAndRender); return; }
-    renderAdminPanel(res.ok ? res.owners : [], res.ok ? res.revenue : null);
+    return;
   }
 
   // ==================== J. Mijozlar uchun menyu (38-40-bosqich) ====================
-  // Mijoz "Mijozlar havolasi" orqali kirganda bot ?customer=<ownerId> bilan Mini App'ni ochadi
-  let customerState = {
-    ownerId: null,
-    restaurant: null,
-    menu: [],
-    categories: [],
-    promotions: [],
-    favorites: [],
-    bonusPoints: 0,
-    bonusEnabled: false,
-    cart: {},
-    orderType: 'stol',
-    paymentType: 'naqd',
-    tableNumber: '',
-    location: null,
-    addressNote: '',
-    extraPhone: '',
-    tab: 'menyu',
-    category: 'hammasi',
-    promoId: '',
-    usePoints: false,
-    cardOnlyRestricted: false,
-    lastOrderRequestId: null
+
+  // ---- API: egasi uchun mijoz-menyu havolasini olish ----
+  if (req.method === 'POST' && req.url === '/api/customer-link') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+      const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}`;
+      return sendJSON(res, 200, { ok: true, link });
+    });
+    return;
+  }
+
+  // ---- API: dostavka admin guruhi biriktirilgan-yo'qligini olish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/delivery-group-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
+      return sendJSON(res, 200, {
+        ok: true,
+        bound: !!owner.deliveryGroupId,
+        groupTitle: owner.deliveryGroupTitle || null
+      });
+    });
+    return;
+  }
+
+  // ---- API: dostavka admin guruhini bog'lanishdan chiqarish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/delivery-group-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
+      owner.deliveryGroupId = null;
+      owner.deliveryGroupTitle = null;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- 13-bosqich API: Oshpazlar guruhi biriktirilgan-yo'qligini olish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/kitchen-group-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
+      return sendJSON(res, 200, {
+        ok: true,
+        bound: !!owner.kitchenGroupId,
+        groupTitle: owner.kitchenGroupTitle || null
+      });
+    });
+    return;
+  }
+
+  // ---- 13-bosqich API: Oshpazlar guruhini bog'lanishdan chiqarish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/kitchen-group-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
+      owner.kitchenGroupId = null;
+      owner.kitchenGroupTitle = null;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: aksiyalar ro'yxati (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      return sendJSON(res, 200, { ok: true, promotions: owner.promotions || [] });
+    });
+    return;
+  }
+
+  // ---- API: aksiya/chegirma qo'shish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, title, description, discountPercent, minTotal } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      if (!ownerCanUseFeature(owner, 'promo-manage')) return sendJSON(res, 200, featureBlockedResult('promo-manage'));
+
+      const titleTrim = String(title || '').trim();
+      const percentNum = Number(discountPercent);
+      if (!titleTrim) return sendJSON(res, 200, { ok: false, reason: 'Aksiya nomini kiriting.' });
+      if (!Number.isFinite(percentNum) || percentNum <= 0 || percentNum > 90) {
+        return sendJSON(res, 200, { ok: false, reason: 'Chegirma foizi 1-90 oralig\'ida bo\'lishi kerak.' });
+      }
+      let minTotalNum = null;
+      if (minTotal !== undefined && minTotal !== null && minTotal !== '') {
+        const n = Number(minTotal);
+        if (!Number.isFinite(n) || n < 0) return sendJSON(res, 200, { ok: false, reason: 'Minimal summa noto\'g\'ri.' });
+        minTotalNum = n;
+      }
+
+      if (!owner.promotions) owner.promotions = [];
+      const promo = {
+        id: crypto.randomBytes(4).toString('hex'),
+        title: titleTrim,
+        description: String(description || '').trim() || null,
+        discountPercent: percentNum,
+        minTotal: minTotalNum,
+        active: true,
+        createdAt: new Date().toISOString()
+      };
+      owner.promotions.push(promo);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, promo });
+    });
+    return;
+  }
+
+  // ---- API: aksiyani faol/nofaol qilish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+
+      const promo = (owner.promotions || []).find(p => p.id === id);
+      if (!promo) return sendJSON(res, 200, { ok: false, reason: 'Aksiya topilmadi.' });
+      promo.active = !promo.active;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, promo });
+    });
+    return;
+  }
+
+  // ---- API: aksiyani o'chirish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/promo-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      owner.promotions = (owner.promotions || []).filter(p => p.id !== id);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: bonus tizimi sozlamalarini olish (egasi) ----
+  if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
+      return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
+    });
+    return;
+  }
+
+  // ---- API: bonus tizimi sozlamalarini saqlash (egasi) — qaytgan mijozlarga necha % bonus berish ----
+  if (req.method === 'POST' && req.url === '/api/bonus-settings-save') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, enabled, earnPercent } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi saqlay oladi'));
+      if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
+
+      const percentNum = Number(earnPercent);
+      if (!Number.isFinite(percentNum) || percentNum < 0 || percentNum > 50) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bonus foizi 0-50 oralig\'ida bo\'lishi kerak.' });
+      }
+      owner.bonusSettings = { enabled: !!enabled, earnPercent: percentNum };
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings });
+    });
+    return;
+  }
+
+  // ---- API: mijoz — asosiy "Ochish" tugmasi orqali kirganda (havolasiz) faol oshxonalar ro'yxati ----
+  // ---- API: bitta oshxonaning ochiq brend ma'lumoti (nomi, logotipi, rangi) ----
+  // Mijoz ilovasi ochilganda "Tekshirilmoqda..." o'rniga darhol shu oshxonaning
+  // logotipi va "Xush kelibsiz!" yozuvini ko'rsatish uchun — shu sababli bu
+  // yengil va TEZ ishlaydigan, autentifikatsiya/yozuv talab qilmaydigan
+  // so'rov (bir xil ma'lumot allaqachon ochiq menyu sahifasida ko'rinadi).
+  if (req.method === 'POST' && req.url === '/api/restaurant-brand') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { ownerId } = payload;
+      if (!ownerId) return sendJSON(res, 200, { ok: false });
+      const owner = findOwner(loadOwners(), ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false });
+      return sendJSON(res, 200, {
+        ok: true,
+        name: (owner.profile && owner.profile.name) || 'Oshxona',
+        logoUrl: (owner.profile && owner.profile.logoUrl) || null,
+        brandColor: (owner.profile && owner.profile.brandColor) || null
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/customer-restaurants-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const owners = pruneExpiredOwners();
+      const restaurants = owners
+        .filter(o => isOwnerAccessValid(o) && o.profile && o.profile.completedAt)
+        .map(o => ({
+          id: o.id,
+          name: o.profile.name,
+          address: o.profile.address,
+          logoUrl: o.profile.logoUrl || null,
+          brandColor: o.profile.brandColor || null
+        }));
+
+      return sendJSON(res, 200, { ok: true, restaurants });
+    });
+    return;
+  }
+
+  // ---- API: mijoz — initData tekshirib, oshxona kontekstiga kiradi (avtomatik ro'yxatga oladi) ----
+  if (req.method === 'POST' && req.url === '/api/customer-verify') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      }
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, {
+        ok: true,
+        restaurant: {
+          id: owner.id,
+          name: (owner.profile && owner.profile.name) || 'Oshxona',
+          address: (owner.profile && owner.profile.address) || null,
+          phone: (owner.profile && owner.profile.phone) || null,
+          workHours: (owner.profile && owner.profile.workHours) || null,
+          logoUrl: (owner.profile && owner.profile.logoUrl) || null,
+          brandColor: (owner.profile && owner.profile.brandColor) || null
+        },
+        customer: { favorites: customer.favorites, bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
+        personRegistered: isRegisteredUser(userId),
+        bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
+      });
+    });
+    return;
+  }
+
+  // ---- API: mijoz uchun katalog-menyu (faqat "available" taomlar) + faol aksiyalar ----
+  if (req.method === 'POST' && req.url === '/api/customer-menu-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
+
+      const menu = (owner.menu || []).filter(m => m.available !== false)
+        .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(owner, m) }));
+      // 30-bosqich: combolar ham mijoz menyusiga qo'shiladi — frontend ularni
+      // alohida "Combo" bo'limi sifatida ko'rsatadi (qarang: customerMenuListHtml).
+      // "auto" narx rejimidagilar uchun narx shu yerda qayta hisoblanadi, shunda
+      // tarkibdagi taom narxi keyinroq o'zgargan bo'lsa ham mijozga to'g'ri ko'rinadi.
+      const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
+        price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
+        outOfStock: comboOutOfStock(owner, c)
+      }));
+      const promotions = (owner.promotions || []).filter(p => p.active);
+      return sendJSON(res, 200, { ok: true, menu, combos, promotions, categories: sortedOwnerCategories(owner) });
+    });
+    return;
+  }
+
+  // ---- API: mijoz — sevimlilarga qo'shish/olib tashlash ----
+  if (req.method === 'POST' && req.url === '/api/customer-favorite-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, itemId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!itemId) return sendJSON(res, 200, { ok: false, reason: 'Taom ko\'rsatilmagan.' });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      const idx = customer.favorites.indexOf(itemId);
+      if (idx >= 0) customer.favorites.splice(idx, 1);
+      else customer.favorites.push(itemId);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, favorites: customer.favorites });
+    });
+    return;
+  }
+
+  // ---- API: mijozning o'z buyurtmalari tarixi ----
+  if (req.method === 'POST' && req.url === '/api/customer-orders-history') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const orders = (owner.orders || [])
+        .filter(o => String(o.customerId) === userId)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 50);
+
+      return sendJSON(res, 200, { ok: true, orders });
+    });
+    return;
+  }
+
+  // ---- API: mijoz o'zi to'g'ridan-to'g'ri buyurtma beradi (katalog-menyu orqali) ----
+  if (req.method === 'POST' && req.url === '/api/customer-order') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote, extraPhone, requestId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
+
+      // Mijoz hali ism, familiya va telefon raqami bilan botga tanishtirilmagan bo'lsa,
+      // buyurtma qabul qilinmaydi — avval botning shaxsiy chatida /start orqali
+      // ro'yxatdan o'tishi kerak (qarang: handleTelegramUpdate'dagi ro'yxatdan o'tish oqimi).
+      if (!isRegisteredUser(userId)) {
+        return sendJSON(res, 200, {
+          ok: false,
+          reason: 'Buyurtma berishdan oldin ism, familiya va telefon raqamingizni kiritib ro\'yxatdan o\'ting.'
+        });
+      }
+
+      // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
+      // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
+      // muvaffaqiyatli javob berilgan bo'lsa, o'shani qaytaramiz.
+      const cachedResponse = getCachedOrderResponse(owner.id, userId, requestId);
+      if (cachedResponse) return sendJSON(res, 200, cachedResponse);
+
+      if (!Array.isArray(items) || !items.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
+      }
+      if (orderType === 'stol' && !String(tableNumber || '').trim()) {
+        return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
+      }
+      // Dostavka buyurtmasida "naqd" varianti mavjud emas — kuryer naqd
+      // pulni olsa ham bu "dostavka_orqali" turi bilan hisoblanadi (pastda
+      // qarang: courierCashCollected daromad hisobotlarini to'g'ri yuritish uchun).
+      if (orderType === 'dostavka' && paymentType === 'naqd') {
+        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+      }
+      // 21/23-bosqich: "Dostavka orqali" to'lov turi FAQAT haqiqiy Dostavka
+      // buyurtmalarida mavjud — Stolga/Olib ketish buyurtmalarida bu
+      // variant mantiqsiz (kuryer yo'q), shuning uchun backend'da ham
+      // rad etiladi (frontendda ko'rsatilmasligidan tashqari — himoya
+      // ikki qavatli bo'lishi kerak).
+      if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
+        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+      }
+      // YANGI: kuryer avval yetkazib bera olmagan (mijoz javob bermagan/rad
+      // etgan) buyurtmalar takrorlangan mijozlarga endi "dostavka orqali"
+      // (naqd, kuryerga to'lov) taklif qilinmaydi — faqat Karta orqali
+      // oldindan to'lov bilan buyurtma qabul qilinadi (qarang:
+      // customerIsCardOnlyRestricted()).
+      if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Avvalgi buyurtma(lar)ingizda kuryer sizga bog\'lana olmagani sababli, endi faqat Karta orqali oldindan to\'lov bilan buyurtma bera olasiz.' });
+      }
+
+      // YANGI: dostavka buyurtmasida manzil ma'lumoti kerak - kuryer
+      // mijozni topa olishi uchun kamida BITTASI bo'lishi shart: aniqlangan
+      // joylashuv (lokatsiya) YOKI qo'lda yozilgan manzil izohi.
+      let deliveryLocation = null;
+      if (orderType === 'dostavka') {
+        if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
+            Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
+          deliveryLocation = { lat: location.lat, lng: location.lng };
+        }
+        const addressNoteTrimmed = String(addressNote || '').trim();
+        if (!deliveryLocation && !addressNoteTrimmed) {
+          return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
+        }
+        // YANGI: dostavka buyurtmasida qo'shimcha telefon raqam majburiy —
+        // kuryer mijozga bog'lana olmay qolgan holatlar uchun zaxira aloqa.
+        const extraPhoneDigits = String(extraPhone || '').replace(/\D/g, '');
+        if (extraPhoneDigits.length < 7) {
+          return sendJSON(res, 200, { ok: false, reason: 'Qo\'shimcha telefon raqamingizni kiriting.' });
+        }
+      }
+      const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
+      const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
+
+      const menu = (owner.menu || []).filter(m => m.available !== false);
+      const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
+      const orderItems = [];
+      for (const it of items) {
+        const qty = parseInt(it.qty, 10);
+        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        if (it.isCombo) {
+          const combo = combosAvailable.find(c => c.id === it.id);
+          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
+          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          continue;
+        }
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
+        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
+      }
+      const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      // Aksiya (agar tanlangan bo'lsa) chegirmasi
+      const { promo, discountAmount } = applyPromoDiscount(owner, promoId, subtotal);
+      let total = Math.max(0, subtotal - discountAmount);
+
+      // Bonus ballaridan foydalanish (1 ball = 1 so'm)
+      const customer = findOrCreateCustomer(owner, userId, check.user);
+      let pointsUsed = 0;
+      if (usePoints) {
+        const requested = Math.max(0, Math.floor(Number(usePoints) || 0));
+        pointsUsed = Math.min(requested, customer.bonusPoints, total);
+        total -= pointsUsed;
+      }
+
+      // Retsept asosida skladdan mahsulot avtomatik yechiladi
+      if (!owner.stock) owner.stock = [];
+
+      const stockCheck = checkStockAvailability(owner, orderItems, menu);
+      if (!stockCheck.ok) {
+        return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
+      }
+
+      for (const it of orderItems) {
+        if (it.isCombo) {
+          const combo = findCombo(owner, it.id);
+          if (combo) {
+            for (const need of comboStockNeeds(owner, combo, it.qty)) {
+              const stockItem = findStockItem(owner, need.stockId);
+              if (!stockItem) continue;
+              stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
+              addStockMovement(owner, {
+                stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+                qty: need.qty, unit: stockItem.unit,
+                note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
+                userId
+              });
+              checkLowStockAlert(owner, stockItem, userId);
+            }
+          }
+          continue;
+        }
+        const menuItem = menu.find(m => m.id === it.id);
+        // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
+        // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi,
+        // retsept ingredientlari tekshirilmaydi (chunki bunday taomda recipe yo'q).
+        if (menuItem && menuItem.directStockId) {
+          const stockItem = findStockItem(owner, menuItem.directStockId);
+          if (stockItem) {
+            const consumeQty = it.qty;
+            stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+            addStockMovement(owner, {
+              stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+              qty: consumeQty, unit: stockItem.unit,
+              note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
+              userId
+            });
+            checkLowStockAlert(owner, stockItem, userId);
+          }
+          continue;
+        }
+        const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+        for (const ing of recipe) {
+          const stockItem = findStockItem(owner, ing.stockId);
+          if (!stockItem) continue;
+          const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+          stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+          addStockMovement(owner, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+            qty: consumeQty, unit: stockItem.unit,
+            note: `Mijoz buyurtmasi: ${menuItem.name} x${it.qty}`,
+            userId
+          });
+          checkLowStockAlert(owner, stockItem, userId);
+        }
+      }
+
+      // Bonus ballari to'planishi (sozlamada yoqilgan bo'lsa)
+      let pointsEarned = 0;
+      if (owner.bonusSettings && owner.bonusSettings.enabled) {
+        pointsEarned = Math.floor(total * (owner.bonusSettings.earnPercent || 0) / 100);
+      }
+      customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
+      customer.ordersCount = (customer.ordersCount || 0) + 1;
+      customer.totalSpent = (customer.totalSpent || 0) + total;
+
+      if (!owner.orders) owner.orders = [];
+      const order = {
+        id: crypto.randomBytes(4).toString('hex'),
+        items: orderItems,
+        subtotal,
+        promoId: promo ? promo.id : null,
+        promoTitle: promo ? promo.title : null,
+        discountAmount,
+        pointsUsed,
+        pointsEarned,
+        total,
+        orderType,
+        tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
+        location: deliveryLocation,
+        addressNote: addressNoteFinal,
+        extraPhone: extraPhoneFinal,
+        paymentType,
+        status: 'yangi',
+        // YANGI: karta bilan to'lagan mijoz to'lov skrinshotini yubormaguncha
+        // va kassir/egasi shuni tasdiqlamaguncha - buyurtma "kutilmoqda"
+        // holatida turadi, oshxona/dostavka guruhiga XABAR KETMAYDI (qarang:
+        // pastdagi if (paymentType === 'karta') bloki va 'payok'/'payrej'
+        // callback'lari). Naqd/"dostavka orqali" to'lovda bu tekshiruv
+        // kerak emas - shuning uchun null.
+        //
+        // YANA: STOLGA + NAQD buyurtmada ham xuddi shunday - mijoz oldin
+        // kassaga borib to'lashi, kassir "✅ To'lov qabul qilindi" tugmasini
+        // bosishi kerak, SHUNDAN KEYIN oshpazga buyurtma ketadi (ish
+        // boshlanadi). Farqi: skrinshot TALAB QILINMAYDI - kassir mijozni
+        // ko'zi bilan ko'rib, naqd pulni qo'lida ushlab tasdiqlaydi.
+        // paymentConfirmMethod shu ikki holatni bir-biridan ajratadi
+        // (xabar matnlari va UI shunga qarab farqlanadi).
+        paymentProofStatus: (paymentType === 'karta' || (orderType === 'stol' && paymentType === 'naqd')) ? 'kutilmoqda' : null,
+        paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : (orderType === 'stol' && paymentType === 'naqd') ? 'naqd_kassa' : null,
+        paymentProofFileId: null,
+        // Kuryer "dostavka orqali" pulni mijozdan qo'lda olgani uchun bu pul
+        // egasi kuryerdan jismonan qabul qilib olmaguncha (/api/courier-collect-cash)
+        // daromad hisobiga qo'shilmaydi — qarang: orderIncomeAmount().
+        courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
+        branchId: null,
+        customerId: userId,
+        customerName: customerDisplayName(userId, check.user),
+        customerPhone: (findProfile(userId) || {}).phone || null,
+        source: 'customer',
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      };
+      owner.orders.push(order);
+      logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${fmtNum(total)} so'm` });
+      saveOwners(owners);
+
+      if (paymentType === 'karta') {
+        // Oshxona/kassir/dostavka guruhiga HALI xabar YUBORILMAYDI - avval
+        // mijoz to'lov skrinshotini shu botning shaxsiy chatiga yuborishi,
+        // keyin kassir/egasi tasdiqlashi kerak (qarang: 'payok' callback -
+        // xuddi shu notifyText/notifyTargets/notifyDeliveryGroup o'sha yerda
+        // takrorlanadi, FAQAT tasdiqlangandan keyin ishga tushadi).
+        await sendMessage(userId,
+          '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.\n\n' +
+          'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
+          'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
+      } else if (order.paymentConfirmMethod === 'naqd_kassa') {
+        // YANGI: STOLGA + NAQD - mijozga YUMSHOQ, tushunarli tarzda
+        // tushuntiriladi: avval kassaga to'lov, keyin tayyorlash boshlanadi.
+        // Skrinshot kerak emas - kassir "✅ To'lov qabul qilindi" tugmasini
+        // bosgach (naqd pulni qo'lida ko'rib) - oshpazga yuboriladi.
+        await sendMessage(userId,
+          `🍽 Buyurtmangiz qabul qilindi!\n\n` +
+          `Iltimos, xohishingiz bo'lsa avval kassaga borib to'lovni amalga oshiring - ` +
+          `to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi. Rahmat! 🙏`);
+
+        const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const confirmCaption = `💵 <b>Naqd to'lov tasdiqlash kerak</b>\n` +
+          `Stol: ${escapeHtmlServer(order.tableNumber || '-')}\n${orderCustomerContactLabel(order)}\n${itemsText}\n\n` +
+          `Jami: ${fmtNum(total)} so'm\n\nMijoz kassaga to'lov qilgach, shu yerda tasdiqlang - shundan keyin oshpazga ketadi.`;
+        const confirmKb = {
+          inline_keyboard: [[
+            { text: '✅ To\'lov qabul qilindi', callback_data: `payok:${owner.id}:${order.id}` },
+            { text: '❌ Bekor qilish', callback_data: `payrej:${owner.id}:${order.id}` }
+          ]]
+        };
+        const cashApprovers = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'kassir')).map(s => s.id))];
+        for (const approverId of new Set(cashApprovers.map(String))) {
+          sendMessage(approverId, confirmCaption, confirmKb);
+        }
+      } else {
+        const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
+        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`);
+        notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
+        saveOwners(owners);
+      }
+
+      const successResponse = {
+        ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
+        bonusBalance: customer.bonusPoints, paymentPending: !!order.paymentProofStatus,
+        paymentConfirmMethod: order.paymentConfirmMethod
+      };
+      setCachedOrderResponse(owner.id, userId, requestId, successResponse);
+      return sendJSON(res, 200, successResponse);
+    });
+    return;
+  }
+
+  // ---- Sklad (ombor) — birliklar, harakatlar tarixi va kam qolish ogohlantirish yordamchilari ----
+  function findStockItem(pool, id) {
+    return (pool.stock || []).find(s => s.id === id);
+  }
+
+  // Sklad harakati (kirim/chiqim/audit tuzatish) tarixga yoziladi — kim, qachon, nima
+  function addStockMovement(pool, entry) {
+    if (!pool.stockMovements) pool.stockMovements = [];
+    pool.stockMovements.unshift(Object.assign({
+      id: crypto.randomBytes(4).toString('hex'),
+      createdAt: new Date().toISOString()
+    }, entry));
+    if (pool.stockMovements.length > 500) pool.stockMovements.length = 500;
+  }
+
+  // Mahsulot chegaradan kam qolsa — egasi va shu joy (markaziy/filial)dagi sklad xodimlariga bir marta ogohlantirish yuboradi
+  function checkLowStockAlert(owner, item, excludeUserId, branchId) {
+    if (item.minQty === null || item.minQty === undefined) return;
+    if (item.qty <= item.minQty) {
+      if (!item.lowStockAlertSent) {
+        item.lowStockAlertSent = true;
+        const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
+        const targets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'sklad') && (s.branchId || null) === (branchId || null)).map(s => s.id))];
+        for (const t of new Set(targets)) {
+          if (String(t) === String(excludeUserId)) continue;
+          sendMessage(t, text);
+        }
+      }
+    } else {
+      item.lowStockAlertSent = false;
+    }
+  }
+
+  // Buyurtmadagi barcha taomlar uchun retseptga ko'ra yetarli sklad (ombor) mahsuloti
+  // bor-yo'qligini tekshiradi — hech narsani o'zgartirmaydi, faqat "yetadimi" degan
+  // javob qaytaradi. Bir xil ingredient bir nechta taomda ishlatilsa, talab qilingan
+  // miqdorlar jamlanadi (masalan, 2 xil taom bir xil pomidorni ishlatsa).
+  // Qaytadi: { ok: true } yoki { ok: false, reason, stockName }
+  function checkStockAvailability(owner, orderItems, menu) {
+    const needed = new Map(); // stockId -> jami kerak bo'lgan miqdor
+    for (const it of orderItems) {
+      if (it.isCombo) {
+        const combo = findCombo(owner, it.id);
+        if (!combo) continue;
+        for (const need of comboStockNeeds(owner, combo, it.qty)) {
+          needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+        }
+        continue;
+      }
+      const menuItem = menu.find(m => m.id === it.id);
+      // 16-bosqich: retsept o'rniga directStockId bilan bog'langan taom
+      // bo'lsa - bitta sklad birligi taom donasiga to'g'ri keladi (1:1),
+      // shuning uchun kerakli miqdor to'g'ridan it.qty ga teng.
+      if (menuItem && menuItem.directStockId) {
+        const consumeQty = it.qty;
+        needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
+        continue;
+      }
+      const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+      for (const ing of recipe) {
+        const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+        needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+      }
+    }
+    for (const [stockId, requiredQty] of needed) {
+      const stockItem = findStockItem(owner, stockId);
+      if (!stockItem) continue; // sklad kartochkasi yo'q bo'lsa, eski xatti-harakatni saqlab qolamiz (o'tkazib yuboriladi)
+      if (stockItem.qty < requiredQty) {
+        return {
+          ok: false,
+          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+          stockName: stockItem.name
+        };
+      }
+    }
+    return { ok: true };
+  }
+
+  // ---- API: kassir yangi buyurtma yaratadi va oshxonaga yuboradi ----
+  // Ruxsat etilgan holat o'tishlari: "yangi" -> "tayyorlanmoqda" -> "tayyor".
+  // Bosqich tashlab ketib bo'lmaydi (masalan, "yangi"dan to'g'ridan-to'g'ri "tayyor"ga).
+  const ORDER_STATUS_TRANSITIONS = {
+    yangi: ['tayyorlanmoqda'],
+    tayyorlanmoqda: ['tayyor'],
+    tayyor: []
   };
 
-  function customerCartTotal() {
-    return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
+  // 15-bosqich: buyurtmadagi BARCHA taomlar skladdan to'g'ridan sotiladigan
+  // bo'lsa (retseptsiz, directStockId orqali) - oshpaz tayyorlashi shart emas,
+  // shuning uchun bunday buyurtmalar uchun "tayyorlanmoqda" bosqichi kerak emas.
+  // Buyurtmaning har bir qatorida directStockId saqlanadi (qarang: /api/create-order
+  // va mijoz buyurtmasi endpointi) - shu yerda faqat o'sha belgiga qaraladi.
+  function orderNeedsKitchen(order) {
+    const items = (order && order.items) || [];
+    if (!items.length) return true;
+    return items.some(it => !it.directStockId);
   }
 
-  function customerCartQty() {
-    return Object.values(customerState.cart).reduce((sum, q) => sum + (q || 0), 0);
-  }
+  // Berilgan rol berilgan holatga o'tkaza olish-olmasligini tekshiradi.
+  // `order` — joriy buyurtma obyekti (uning hozirgi status'idan qaysi keyingi
+  // status'larga o'tish mumkinligini aniqlash uchun kerak).
+  function canSetOrderStatus(ctx, order, newStatus) {
+    if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
 
-  function customerTabRowHtml() {
-    return `
-      <div class="tab-row">
-        <div class="tab-opt ${customerState.tab === 'menyu' ? 'selected' : ''}" data-customer-tab="menyu">Menyu</div>
-        <div class="tab-opt ${customerState.tab === 'sevimli' ? 'selected' : ''}" data-customer-tab="sevimli">Sevimlilar</div>
-        <div class="tab-opt ${customerState.tab === 'tarix' ? 'selected' : ''}" data-customer-tab="tarix">Buyurtmalarim</div>
-      </div>
-    `;
-  }
+    // egasi tuzatish uchun istalgan holatga o'tkaza oladi (bosqichlarni chetlab o'tishi mumkin)
+    if (ctxHasRole(ctx, 'egasi')) return true;
 
-  function customerHeaderHtml() {
-    const r = customerState.restaurant || {};
-    return `
-      <div class="profile-view" style="margin-bottom:12px;">
-        ${r.logoUrl ? `<img class="logo-preview" src="${escapeHtml(r.logoUrl)}" onerror="this.style.display='none'">` : ''}
-        <div class="info">
-          <div class="salom" style="font-size:20px; margin-bottom:2px;">${escapeHtml(r.name || 'Oshxona')}</div>
-          ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
-          ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
-        </div>
-      </div>
-    `;
-  }
-
-  // 30-bosqich: mijoz uchun ham xuddi shu umumiy komponent (K-bo'lim,
-  // yuqorida) ishlatiladi — alohida customerMenuGroups/customerSectionId
-  // endi kerak emas.
-  function customerCategoriesHtml() {
-    return sectionedMenuTabsHtml(customerState.menu, {
-      tabRowId: 'customerCatRow', sectionIdPrefix: 'menu-section-cust', listElId: 'customerMenuList', categories: customerState.categories
-    });
-  }
-
-  function customerItemCardHtml(m) {
-    const qty = customerState.cart[m.id] || 0;
-    const isFav = customerState.favorites.includes(m.id);
-    // 47-bosqich: sklad tugagan taom mijoz menyusida "Tugagan" deb
-    // ko'rinadi, savatga qo'shish tugmasi o'chiriladi.
-    if (m.outOfStock) {
-      return `
-        <div class="catalog-item" style="opacity:0.55;">
-          <div class="catalog-img-wrap">
-            ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
-          </div>
-          <div class="catalog-body">
-            <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
-            ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
-            <div class="catalog-bottom-row">
-              <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
-            </div>
-          </div>
-        </div>
-      `;
+    // boshqa rollar uchun faqat ketma-ket bosqichlarga o'tishga ruxsat bor
+    const currentStatus = order ? order.status : 'yangi';
+    let allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
+    // 15-bosqich: retseptsiz/directStockId buyurtmalarda "yangi" dan to'g'ridan
+    // "tayyor"ga o'tish ham ruxsat etiladi ("tayyorlanmoqda" bosqichi shart emas).
+    if (currentStatus === 'yangi' && !orderNeedsKitchen(order)) {
+      allowedNext = allowedNext.concat('tayyor');
     }
-    return `
-      <div class="catalog-item">
-        <div class="catalog-img-wrap">
-          ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
-          <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
-        </div>
-        <div class="catalog-body">
-          <div class="m-name">${escapeHtml(m.name)}</div>
-          ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
-          <div class="catalog-bottom-row">
-            <div class="m-price">${escapeHtml(String(m.price))} so'm</div>
-            ${qty > 0 ? `
-              <div class="qty-controls">
-                <button data-cqty-minus="${escapeHtml(m.id)}">-</button>
-                <span class="qty-val">${qty}</span>
-                <button data-cqty-plus="${escapeHtml(m.id)}">+</button>
-              </div>
-            ` : `
-              <button type="button" class="qty-add-btn" data-cqty-plus="${escapeHtml(m.id)}">+</button>
-            `}
-          </div>
-        </div>
-      </div>
-    `;
+    if (!allowedNext.includes(newStatus)) return false;
+
+    if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
+    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true; // kassir ham "Tayyor" tugmasini bosa oladi (faqat "tayyorlanmoqda"dan keyin)
+    return false;
   }
 
-  function customerMenuListHtml() {
-    return renderSectionedMenu(customerState.menu, {
-      sectionIdPrefix: 'menu-section-cust',
-      itemsWrapperClass: 'catalog-grid',
-      renderItem: customerItemCardHtml,
-      emptyText: "Menyu hali bo'sh.",
-      categories: customerState.categories
-    });
-  }
+  if (req.method === 'POST' && req.url === '/api/create-order') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, items, orderType, tableNumber, paymentType, requestId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
-  function customerPromoBannerHtml() {
-    if (!customerState.promotions.length) return '';
-    return customerState.promotions.map(p => `
-      <div class="promo-banner ${customerState.promoId === p.id ? 'selected' : ''}" data-promo-id="${escapeHtml(p.id)}">
-        <div style="font-weight:700;">🎁 ${escapeHtml(p.title)} — ${p.discountPercent}% chegirma</div>
-        ${p.description ? `<div style="font-size:12px; opacity:0.8; margin-top:2px;">${escapeHtml(p.description)}</div>` : ''}
-        ${p.minTotal ? `<div style="font-size:12px; opacity:0.7; margin-top:2px;">Minimal buyurtma: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
-      </div>
-    `).join('');
-  }
-
-  function attachCustomerCatalogHandlers() {
-    const listEl = document.getElementById('customerMenuList');
-    if (!listEl) return;
-    listEl.querySelectorAll('[data-cqty-plus]').forEach(btn => btn.onclick = () => {
-      const id = btn.getAttribute('data-cqty-plus');
-      customerState.cart[id] = (customerState.cart[id] || 0) + 1;
-      listEl.innerHTML = customerState.tab === 'sevimli'
-        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
-        : customerMenuListHtml();
-      attachCustomerCatalogHandlers();
-      if (customerState.tab !== 'sevimli') attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
-      updateCustomerCartFab();
-    });
-    listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
-      const id = btn.getAttribute('data-cqty-minus');
-      customerState.cart[id] = Math.max(0, (customerState.cart[id] || 0) - 1);
-      listEl.innerHTML = customerState.tab === 'sevimli'
-        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
-        : customerMenuListHtml();
-      attachCustomerCatalogHandlers();
-      if (customerState.tab !== 'sevimli') attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
-      updateCustomerCartFab();
-    });
-    listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
-      const id = btn.getAttribute('data-fav-id');
-      btn.disabled = true;
-      const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
-      if (res.ok) customerState.favorites = res.favorites;
-      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
-      else {
-        listEl.innerHTML = customerMenuListHtml();
-        attachCustomerCatalogHandlers();
-        attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir buyurtma yaratishi mumkin' });
       }
-    });
-  }
 
-  // ---- Savat cho'ntak paneli (pastda mahkam turadigan kichik panel) ----
-  // 15-bosqich: checkout formasi endi shu yerda emas — faqat "N ta
-  // mahsulot / summa" va bitta tugma. Tugma bosilganda checkout ALOHIDA
-  // oynada (overlay/modal) ochiladi, ya'ni menyu ustiga xunuk chiqib
-  // qolmaydi.
-  function cartFabBarHtml() {
-    const qty = customerCartQty();
-    return `
-      <div class="cart-fab-bar ${qty ? '' : 'hidden'}" id="cCartFab">
-        <div class="cart-fab-info">
-          <span class="cart-fab-count" id="cCartFabCount">${qty} ta mahsulot</span>
-          <span class="cart-fab-total" id="cCartFabTotal">${customerCartTotal()} so'm</span>
-        </div>
-        <button type="button" class="btn" id="cOpenCheckoutBtn">Buyurtma berish</button>
-      </div>
-    `;
-  }
+      // Ikki marta bosish yoki tarmoq qayta yuborishi tufayli bitta buyurtma
+      // ikki marta yaratilib ketmasligi uchun — shu requestId bilan avval
+      // muvaffaqiyatli javob berilgan bo'lsa, o'shani qaytaramiz.
+      const cachedResponse = getCachedOrderResponse(ctx.owner.id, userId, requestId);
+      if (cachedResponse) return sendJSON(res, 200, cachedResponse);
 
-  function attachCartFabHandler() {
-    const btn = document.getElementById('cOpenCheckoutBtn');
-    if (btn) btn.onclick = openCustomerCheckoutModal;
-  }
-
-  function updateCustomerCartFab() {
-    const qty = customerCartQty();
-    const bar = document.getElementById('cCartFab');
-    if (bar) bar.classList.toggle('hidden', !qty);
-    const panelEl = document.querySelector('.panel');
-    if (panelEl) panelEl.classList.toggle('has-cart-fab', !!qty);
-    const countEl = document.getElementById('cCartFabCount');
-    if (countEl) countEl.textContent = qty + ' ta mahsulot';
-    const totalEl = document.getElementById('cCartFabTotal');
-    if (totalEl) totalEl.textContent = customerCartTotal() + " so'm";
-    // Agar checkout oynasi hozir ochiq bo'lsa, undagi summani ham yangilaymiz.
-    const modalTotalEl = document.getElementById('cCartTotalVal');
-    if (modalTotalEl) modalTotalEl.textContent = customerCartTotal() + " so'm";
-  }
-
-  function renderCustomerMenuTab() {
-    ekran(`
-      <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
-        ${customerHeaderHtml()}
-        ${customerTabRowHtml()}
-        ${customerPromoBannerHtml()}
-        ${customerCategoriesHtml()}
-        <div id="customerMenuList" style="margin-top:8px;">${customerMenuListHtml()}</div>
-      </div>
-      ${cartFabBarHtml()}
-    `);
-
-    attachCustomerCatalogHandlers();
-    attachCustomerTabHandlers();
-    attachCartFabHandler();
-    attachSectionedMenuTabHandlers('customerCatRow');
-    attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
-
-    document.querySelectorAll('[data-promo-id]').forEach(el => {
-      el.addEventListener('click', () => {
-        const id = el.getAttribute('data-promo-id');
-        customerState.promoId = customerState.promoId === id ? '' : id;
-        renderCustomerMenuTab();
-      });
-    });
-  }
-
-  // ---- Checkout — ALOHIDA oynada (overlay/modal) ----
-  // Buyurtma turi, stol/dostavka, to'lov turi, bonus va "Buyurtma
-  // berish" shu yerda. Har bir tanlov o'zgarganda faqat shu modal ichi
-  // qayta chiziladi (butun sahifa emas), shuning uchun modal ochiq
-  // qolaveradi.
-  function customerCheckoutModalBodyHtml() {
-    return `
-      <h3>Buyurtmani rasmiylashtirish</h3>
-      <div class="type-row" id="cOrderTypeRow">
-        ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
-          <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
-        `).join('')}
-      </div>
-      <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
-        <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
-      </div>
-      <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
-        <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
-          ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
-        </button>
-        <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
-        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
-        <input type="tel" id="cExtraPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel">
-      </div>
-      <div class="type-row" id="cPaymentTypeRow">
-        ${visiblePaymentTypeEntries(customerState.orderType).map(([k, label]) => `
-          <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
-        `).join('')}
-      </div>
-      ${customerState.orderType === 'dostavka' && customerState.cardOnlyRestricted ? `
-        <div class="xabar err" style="margin-bottom:10px;">Avvalgi buyurtma(lar)ingizda kuryer sizga bog'lana olmagani sababli, hozircha faqat Karta orqali oldindan to'lov mavjud.</div>
-      ` : ''}
-      ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
-        <label style="display:flex; align-items:center; gap:8px; font-size:var(--fs-body); margin-bottom:10px;">
-          <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
-          Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
-        </label>
-      ` : ''}
-      <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${customerCartTotal()} so'm</span></div>
-      <div class="xabar" id="cOrderMsg"></div>
-      <div class="btn-row">
-        <button type="button" class="btn ikkinchi" id="cCloseCheckoutBtn">Bekor qilish</button>
-        <button type="button" class="btn" id="cSendOrderBtn">Buyurtma berish</button>
-      </div>
-    `;
-  }
-
-  function openCustomerCheckoutModal() {
-    if (!customerCartQty()) return;
-    const fabBar = document.getElementById('cCartFab');
-    if (fabBar) fabBar.classList.add('hidden');
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`;
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); updateCustomerCartFab(); } });
-    renderCheckoutModalBody(overlay);
-  }
-
-  function renderCheckoutModalBody(overlay) {
-    const modalEl = overlay.querySelector('.modal');
-    modalEl.innerHTML = customerCheckoutModalBodyHtml();
-    wireCheckoutModal(overlay);
-  }
-
-  function wireCheckoutModal(overlay) {
-    const modalEl = overlay.querySelector('.modal');
-
-    modalEl.querySelector('#cCloseCheckoutBtn').addEventListener('click', () => { overlay.remove(); updateCustomerCartFab(); });
-
-    modalEl.querySelector('#cOrderTypeRow').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-corder-type');
-      if (!t) return;
-      customerState.orderType = t;
-      ensureValidPaymentType(customerState);
-      renderCheckoutModalBody(overlay);
-    });
-    modalEl.querySelector('#cPaymentTypeRow').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-cpayment-type');
-      if (!t) return;
-      customerState.paymentType = t;
-      renderCheckoutModalBody(overlay);
-    });
-    const tableInput = modalEl.querySelector('#cTableInput');
-    if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
-
-    // Dostavka - joylashuvni aniqlash (brauzer/Telegram webview
-    // Geolocation API orqali) va manzil izohi.
-    const locationBtn = modalEl.querySelector('#cLocationBtn');
-    const locationStatusEl = modalEl.querySelector('#cLocationStatus');
-    if (locationBtn) locationBtn.addEventListener('click', () => {
-      if (!navigator.geolocation) {
-        locationStatusEl.textContent = 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Joylashuv (GPS) sozlamalarini tekshiring yoki manzilni pastga yozib qoldiring.';
-        locationStatusEl.className = 'xabar err';
-        return;
+      if (!Array.isArray(items) || !items.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
       }
-      locationStatusEl.textContent = 'Aniqlanmoqda...';
-      locationStatusEl.className = 'xabar';
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          customerState.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          locationStatusEl.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi.`;
-          locationStatusEl.className = 'xabar ok';
-          locationBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
-        },
-        (geoErr) => {
-          let hint = 'Iltimos, telefoningizda joylashuv (GPS/geolokatsiya) yoqilganini va brauzerga ruxsat berilganini tekshiring, so\'ng qayta urinib ko\'ring — yoki manzilni pastga yozib qoldiring.';
-          if (geoErr && geoErr.code === 3) {
-            hint = 'Joylashuvni aniqlash vaqti tugadi. Telefoningizda joylashuv (GPS) yoqilganini tekshirib, qayta urinib ko\'ring — yoki manzilni pastga yozib qoldiring.';
+      if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
+      }
+      if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+        return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
+      }
+      if (orderType === 'stol' && !String(tableNumber || '').trim()) {
+        return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
+      }
+      if (orderType === 'dostavka' && paymentType === 'naqd') {
+        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+      }
+      // 21/23-bosqich: "Dostavka orqali" to'lov turi FAQAT haqiqiy Dostavka
+      // buyurtmalarida mavjud — Stolga/Olib ketish buyurtmalarida bu
+      // variant mantiqsiz (kuryer yo'q), shuning uchun backend'da ham
+      // rad etiladi (frontendda ko'rsatilmasligidan tashqari — himoya
+      // ikki qavatli bo'lishi kerak).
+      if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
+        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+      }
+
+      // Narxlarni klientdan emas, serverdagi menyudan olamiz (soxtalashtirilmasligi uchun)
+      const menu = ctx.owner.menu || [];
+      const combosAvailable = ctx.owner.combos || [];
+      const orderItems = [];
+      for (const it of items) {
+        const qty = parseInt(it.qty, 10);
+        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        if (it.isCombo) {
+          const combo = combosAvailable.find(c => c.id === it.id);
+          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
+          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          continue;
+        }
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
+        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
+      }
+      const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      // Retsept asosida skladdan mahsulot avtomatik yechiladi (taom tayyorlansa ingredient kamayadi)
+      if (!ctx.owner.stock) ctx.owner.stock = [];
+
+      const stockCheck = checkStockAvailability(ctx.owner, orderItems, menu);
+      if (!stockCheck.ok) {
+        return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
+      }
+
+      for (const it of orderItems) {
+        if (it.isCombo) {
+          const combo = findCombo(ctx.owner, it.id);
+          if (combo) {
+            for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
+              const stockItem = findStockItem(ctx.owner, need.stockId);
+              if (!stockItem) continue;
+              stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
+              addStockMovement(ctx.owner, {
+                stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+                qty: need.qty, unit: stockItem.unit,
+                note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
+                userId
+              });
+              checkLowStockAlert(ctx.owner, stockItem, userId);
+            }
           }
-          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo'lmadi. ${hint}`;
-          locationStatusEl.className = 'xabar err';
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    });
-    const addressNoteInput = modalEl.querySelector('#cAddressNoteInput');
-    if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
-
-    const extraPhoneInput = modalEl.querySelector('#cExtraPhoneInput');
-    if (extraPhoneInput) extraPhoneInput.addEventListener('input', (e) => { customerState.extraPhone = e.target.value; });
-
-    const pointsCheckbox = modalEl.querySelector('#cUsePoints');
-    if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
-
-    modalEl.querySelector('#cSendOrderBtn').addEventListener('click', () => sendCustomerOrder(overlay));
-  }
-
-
-  function attachCustomerTabHandlers() {
-    const tabRow = document.querySelector('.tab-row');
-    if (!tabRow) return;
-    tabRow.addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-customer-tab');
-      if (!t || t === customerState.tab) return;
-      customerState.tab = t;
-      disconnectSectionedMenuObserver('customerCatRow');
-      if (t === 'sevimli') renderCustomerFavoritesTab();
-      else if (t === 'tarix') renderCustomerHistoryTab();
-      else renderCustomerMenuTab();
-    });
-  }
-
-  function renderCustomerFavoritesTab() {
-    const favItems = customerState.menu.filter(m => customerState.favorites.includes(m.id));
-    ekran(`
-      <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
-        ${customerHeaderHtml()}
-        ${customerTabRowHtml()}
-        <div id="customerMenuList" class="catalog-grid" style="margin-top:10px;">
-          ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda ${icon('heart', 'icon-xs icon-muted')} tugmasini bosing.</div>`}
-        </div>
-      </div>
-      ${cartFabBarHtml()}
-    `);
-    attachCustomerCatalogHandlers();
-    attachCustomerTabHandlers();
-    attachCartFabHandler();
-  }
-
-  function customerOrderHistoryCardHtml(o) {
-    const itemsText = o.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
-    return `
-      <div class="order-card">
-        <div class="order-top">
-          <div>
-            <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
-            <div class="order-time">${timeAgo(o.createdAt)}</div>
-          </div>
-          <span class="status-badge ${o.status}">${ORDER_STATUS_LABELS[o.status] || o.status}</span>
-        </div>
-        <div class="order-items">${itemsText}</div>
-        <div class="order-bottom">
-          <div class="order-total">${o.total} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${o.discountAmount})</span>` : ''}</div>
-          ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
-        </div>
-      </div>
-    `;
-  }
-
-  async function renderCustomerHistoryTab() {
-    ekran(`
-      <div class="panel">
-        ${customerHeaderHtml()}
-        ${customerTabRowHtml()}
-        <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
-      </div>
-    `);
-    attachCustomerTabHandlers();
-    const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
-    const listEl = document.getElementById('customerHistoryList');
-    if (!listEl) return;
-    const orders = res.ok ? res.orders : [];
-    listEl.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
-  }
-
-  async function sendCustomerOrder(overlay) {
-    const msgEl = document.getElementById('cOrderMsg');
-    const sendBtn = overlay ? overlay.querySelector('#cSendOrderBtn') : document.getElementById('cSendOrderBtn');
-    const items = Object.entries(customerState.cart)
-      .filter(([, qty]) => qty > 0)
-      .map(([id, qty]) => ({ id, qty }));
-
-    if (!items.length) {
-      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-    if (customerState.orderType === 'stol' && !customerState.tableNumber.trim()) {
-      msgEl.textContent = 'Stol raqamini kiriting.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-    if (customerState.orderType === 'dostavka' && !customerState.location && !customerState.addressNote.trim()) {
-      msgEl.textContent = 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-    if (customerState.orderType === 'dostavka' && customerState.extraPhone.trim().replace(/\D/g, '').length < 7) {
-      msgEl.textContent = 'Qo\'shimcha telefon raqamingizni kiriting.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-
-    // Tugmani darhol o'chiramiz — foydalanuvchi tez-tez bossa ham,
-    // ikkinchi so'rov ketmaydi (qo'sh buyurtma/qo'sh sklad chiqimining oldini oladi)
-    if (sendBtn) sendBtn.disabled = true;
-    // Bitta chek-aut urinishi uchun bitta requestId — server shu orqali
-    // takroriy so'rovni aniqlab, bir xil natijani qaytaradi
-    if (!customerState.lastOrderRequestId) {
-      customerState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    }
-
-    msgEl.textContent = 'Yuborilmoqda...';
-    msgEl.className = 'xabar';
-    const res = await apiPost('/api/customer-order', {
-      initData,
-      ownerId: customerState.ownerId,
-      items,
-      orderType: customerState.orderType,
-      tableNumber: customerState.tableNumber,
-      paymentType: customerState.paymentType,
-      promoId: customerState.promoId || null,
-      usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
-      location: customerState.orderType === 'dostavka' ? customerState.location : null,
-      addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : '',
-      extraPhone: customerState.orderType === 'dostavka' ? customerState.extraPhone : '',
-      requestId: customerState.lastOrderRequestId
-    });
-
-    if (res.ok) {
-      customerState.cart = {};
-      customerState.usePoints = false;
-      customerState.bonusPoints = res.bonusBalance;
-      customerState.location = null;
-      customerState.addressNote = '';
-      customerState.extraPhone = '';
-      customerState.lastOrderRequestId = null; // keyingi buyurtma uchun yangi requestId kerak bo'ladi
-      if (overlay) overlay.remove();
-      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
-      else renderCustomerMenuTab();
-      const topMsg = document.createElement('div');
-      topMsg.className = 'xabar ok';
-      if (res.paymentPending) {
-        if (res.paymentConfirmMethod === 'naqd_kassa') {
-          topMsg.innerHTML = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm).<br>` +
-            `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
-        } else {
-          // 24-bosqich: ilgari shu joyda faqat kichik, page tepasida
-          // ko'rinadigan xabar (topMsg) bo'lgan — ayniqsa Dostavka+Karta
-          // holatida (boshqa joylashuv/manzil xabarlari orasida) mijoz
-          // buni ko'rmay qolib, skrinshot yubormasdan qolib ketishi mumkin
-          // edi. 25/26-bosqich: endi bu ALOHIDA, undov belgili, qizil
-          // ramkali modal sifatida ochiladi — mijoz uni yopmaguncha davom
-          // eta olmaydi.
-          topMsg.innerHTML = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm) — <b>tasdiqlash kutilmoqda</b>.`;
-          showPaymentProofModal();
+          continue;
         }
-      } else {
-        topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${res.total} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
-      }
-      document.querySelector('.panel').prepend(topMsg);
-    } else {
-      if (sendBtn) sendBtn.disabled = false; // xato bo'lsa — qayta urinib ko'rish uchun tugma yoqiladi
-      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-      msgEl.className = 'xabar err';
-    }
-  }
-
-  // 25/26-bosqich: karta bilan to'lagan mijozga - to'lov skrinshotini
-  // yuborish shartligi haqida ALOHIDA, aniq ko'rinadigan (⚠️, qizil ramkali)
-  // modal oyna. Mijoz "Tushundim" tugmasini bosmaguncha (yoki fonga
-  // bosmaguncha) yopilmaydi - shu bilan e'tiborsiz qoldirib ketish
-  // ehtimoli kamayadi. Buyurtma turi qanday bo'lishidan (Stolga, Olib
-  // ketish, Dostavka) qat'iy nazar bir xil ishlaydi.
-  function showPaymentProofModal() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
-      <div class="modal payment-proof-modal">
-        <h3>${icon('warning', 'icon-sm modal-warn-icon')} Chek rasmini yuboring</h3>
-        <p>Buyurtma hali <b>tasdiqlanmagan</b>.<br>To'lov chekining rasmini botning shaxsiy chatiga yuboring.</p>
-        <div class="btn-row">
-          <button type="button" class="btn xavfli" id="paymentProofOkBtn" style="width:100%;">Tushundim</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    overlay.querySelector('#paymentProofOkBtn').addEventListener('click', () => overlay.remove());
-  }
-
-  // ---- Ism, familiya, telefon raqam bilan ro'yxatdan o'tish (Mini App ichida,
-  // botning shaxsiy chatiga chiqmasdan). onDone — muvaffaqiyatli yuborilgandan
-  // keyin chaqiriladigan callback (odatda joriy ekranni qayta yuklaydigan funksiya). ----
-  async function renderPersonRegistrationScreen(onDone) {
-    const canRequestContact = tg && typeof tg.requestContact === 'function';
-    ekran(`
-      <div class="panel">
-        <div class="salom">Tanishuv</div>
-        <div class="bosh">Davom etishdan oldin ismingiz, familiyangiz va telefon raqamingizni kiriting.</div>
-        <div class="kartochka">
-          <label class="field-label">Ism</label>
-          <input type="text" id="regFirstName" placeholder="Ism" autocomplete="given-name">
-          <label class="field-label" style="margin-top:10px;">Familiya</label>
-          <input type="text" id="regLastName" placeholder="Familiya" autocomplete="family-name">
-          <label class="field-label" style="margin-top:10px;">Telefon raqam</label>
-          <input type="tel" id="regPhone" placeholder="+998901234567" autocomplete="tel">
-          ${canRequestContact ? `<button type="button" class="btn" id="regContactBtn" style="margin-top:8px;">${icon('user', 'icon-xs')}<span>Raqamni Telegram orqali yuborish</span></button>` : ''}
-          <button class="btn" id="regSubmitBtn" style="margin-top:14px;">${icon('check-circle', 'icon-xs')}<span>Davom etish</span></button>
-          <div class="xabar" id="regMsg"></div>
-        </div>
-      </div>
-    `);
-
-    const contactBtn = document.getElementById('regContactBtn');
-    if (contactBtn) {
-      contactBtn.addEventListener('click', () => {
-        try {
-          tg.requestContact((granted, contactData) => {
-            if (!granted) return;
-            const c = (contactData && (contactData.responseUnsafe || contactData)) || {};
-            const contact = c.contact || c;
-            if (contact && contact.phone_number) {
-              document.getElementById('regPhone').value = contact.phone_number;
-            }
-            if (contact && contact.first_name && !document.getElementById('regFirstName').value) {
-              document.getElementById('regFirstName').value = contact.first_name;
-            }
-            if (contact && contact.last_name && !document.getElementById('regLastName').value) {
-              document.getElementById('regLastName').value = contact.last_name;
-            }
+        const menuItem = menu.find(m => m.id === it.id);
+        // 14-bosqich: retsept o'rniga directStockId bilan bog'langan taom
+        // bo'lsa - sklad miqdori to'g'ridan (1 birlik = 1 dona) kamaytiriladi.
+        if (menuItem && menuItem.directStockId) {
+          const stockItem = findStockItem(ctx.owner, menuItem.directStockId);
+          if (stockItem) {
+            const consumeQty = it.qty;
+            stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+            addStockMovement(ctx.owner, {
+              stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+              qty: consumeQty, unit: stockItem.unit,
+              note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
+              userId
+            });
+            checkLowStockAlert(ctx.owner, stockItem, userId);
+          }
+          continue;
+        }
+        const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+        for (const ing of recipe) {
+          const stockItem = findStockItem(ctx.owner, ing.stockId);
+          if (!stockItem) continue;
+          const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+          stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+          addStockMovement(ctx.owner, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+            qty: consumeQty, unit: stockItem.unit,
+            note: `Buyurtma: ${menuItem.name} x${it.qty}`,
+            userId
           });
-        } catch (e) { /* eski Telegram versiyalarida requestContact bo'lmasligi mumkin */ }
-      });
-    }
-
-    const doSubmit = async () => {
-      const msgEl = document.getElementById('regMsg');
-      const btn = document.getElementById('regSubmitBtn');
-      const firstName = document.getElementById('regFirstName').value.trim();
-      const lastName = document.getElementById('regLastName').value.trim();
-      const phone = document.getElementById('regPhone').value.trim();
-      if (!firstName || !lastName || !phone) {
-        msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
-        msgEl.className = 'xabar err';
-        return;
+          checkLowStockAlert(ctx.owner, stockItem, userId);
+        }
       }
-      btn.disabled = true;
-      msgEl.textContent = 'Yuborilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/profile-register', { initData, firstName, lastName, phone });
-      if (res.networkError) {
-        msgEl.textContent = res.reason;
-        msgEl.className = 'xabar err';
-        btn.disabled = false;
-        return;
-      }
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
-        btn.disabled = false;
-        return;
-      }
-      onDone();
-    };
-    document.getElementById('regSubmitBtn').addEventListener('click', doSubmit);
-  }
 
-  // Mijoz ilovasi ochilganda ko'rsatiladigan "Xush kelibsiz" yuklanish ekrani —
-  // oshxonaning logotipi orqa fonda (xira/qorong'ilashtirilgan), ustida
-  // "Xush kelibsiz!" va oshxona nomi. brand — /api/restaurant-brand natijasi
-  // ({name, logoUrl}) yoki null (topilmasa/hali kelmagan bo'lsa umumiy ko'rinish).
-  function customerWelcomeLoadingHtml(brand) {
-    const name = (brand && brand.name) || 'Oshxona';
-    const logoUrl = brand && brand.logoUrl;
-    return `
-      <div class="customer-welcome-loading"${logoUrl ? ` style="background-image:url('${escapeHtml(logoUrl)}')"` : ''}>
-        <div class="customer-welcome-overlay">
-          ${logoUrl
-            ? `<img class="customer-welcome-logo" src="${escapeHtml(logoUrl)}" alt="">`
-            : `<div class="customer-welcome-logo customer-welcome-logo-fallback">${icon('restaurant', 'icon-lg')}</div>`}
-          <div class="customer-welcome-title">Xush kelibsiz!</div>
-          <div class="customer-welcome-sub">${escapeHtml(name)}</div>
-          <div class="customer-welcome-loading-text">Yuklanmoqda...</div>
-        </div>
-      </div>
-    `;
-  }
+      if (!ctx.owner.orders) ctx.owner.orders = [];
+      const orderBranchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const order = {
+        id: crypto.randomBytes(4).toString('hex'),
+        items: orderItems,
+        total,
+        orderType,
+        tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
+        paymentType,
+        status: 'yangi',
+        branchId: orderBranchId,
+        // qarang: orderIncomeAmount() — kuryerda turgan naqd pul egasi
+        // tomonidan olinmaguncha daromadga qo'shilmaydi.
+        courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      };
+      ctx.owner.orders.push(order);
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${fmtNum(total)} so'm` });
+      saveOwners(owners);
 
-  async function renderCustomerApp(ownerId) {
-    clearAppHeader();
-    ekran(customerWelcomeLoadingHtml(null));
-    // Brend (logo/nom) va to'liq tekshiruv PARALLEL yuboriladi — logo tezroq
-    // qaytsa, ekran darhol yangilanadi. `stillLoading` — brend so'rovi
-    // tekshiruvdan KECHROQ qaytib qolsa (ekran allaqachon menyuga o'tgan
-    // bo'lsa), uni qayta "Xush kelibsiz" ekrani bilan bosib qo'ymasligi uchun.
-    let stillLoading = true;
-    apiPost('/api/restaurant-brand', { ownerId }).then(r => {
-      if (stillLoading && r && r.ok) ekran(customerWelcomeLoadingHtml(r));
-    }).catch(() => {});
-    const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
-    stillLoading = false;
-    if (verifyRes.networkError) {
-      renderNetworkErrorScreen(verifyRes.reason, () => renderCustomerApp(ownerId));
-      return;
-    }
-    if (!verifyRes.ok) {
-      ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(verifyRes.reason || 'Bu menyu hozircha mavjud emas.')}</div>`);
-      return;
-    }
-    applyBrandColor(verifyRes.restaurant.brandColor);
-    setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
-    if (!verifyRes.personRegistered) {
-      renderPersonRegistrationScreen(() => renderCustomerApp(ownerId));
-      return;
-    }
-    customerState.ownerId = ownerId;
-    customerState.restaurant = verifyRes.restaurant;
-    customerState.favorites = verifyRes.customer.favorites || [];
-    customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
-    customerState.bonusEnabled = !!verifyRes.bonusEnabled;
-    customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
+      // Oshxonaga (egaga + oshpazlarga) xabar yuboriladi
+      const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
+      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`);
+      notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
+      notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
+      saveOwners(owners);
 
-    const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
-    customerState.menu = menuRes.ok ? menuRes.menu : [];
-    customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
-    customerState.promotions = menuRes.ok ? menuRes.promotions : [];
-
-    renderCustomerMenuTab();
-  }
-
-  function customerRestaurantPickerHtml(restaurants) {
-    return restaurants.map(r => `
-      <div class="owner-item" data-pick-restaurant-id="${escapeHtml(r.id)}" style="cursor:pointer;">
-        <div>
-          <div class="owner-id">${escapeHtml(r.name)}</div>
-          ${r.address ? `<div class="owner-username">${escapeHtml(r.address)}</div>` : ''}
-        </div>
-        <div style="font-size:20px;">›</div>
-      </div>
-    `).join('');
-  }
-
-  async function renderCustomerEntry() {
-    clearAppHeader();
-    resetBrandColor();
-    ekran(customerWelcomeLoadingHtml(readCachedBrand()));
-    const res = await apiPost('/api/customer-restaurants-list', { initData });
-    if (res.networkError) {
-      renderNetworkErrorScreen(res.reason, renderCustomerEntry);
-      return;
-    }
-    const restaurants = res.ok ? res.restaurants : [];
-
-    if (!restaurants.length) {
-      ekran('<div class="xato">Hozircha faol oshxona topilmadi.<br>Iltimos, keyinroq urinib ko\'ring.</div>');
-      return;
-    }
-    if (restaurants.length === 1) {
-      renderCustomerApp(restaurants[0].id);
-      return;
-    }
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Oshxonani tanlang</div>
-        <div class="owner-list" style="margin-top:14px;">${customerRestaurantPickerHtml(restaurants)}</div>
-      </div>
-    `);
-    document.querySelectorAll('[data-pick-restaurant-id]').forEach(el => {
-      el.addEventListener('click', () => renderCustomerApp(el.getAttribute('data-pick-restaurant-id')));
+      const successResponse = { ok: true, orderId: order.id, total };
+      setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
+      return sendJSON(res, 200, successResponse);
     });
+    return;
   }
 
-  // ==================== Bosh oynani ochish ====================
-  const urlParams = new URLSearchParams(location.search);
-  const customerOwnerId = urlParams.get('customer');
+  // ---- API: buyurtmalar ro'yxatini olish (oshpaz, kassir, egasi, kuryer — real-vaqtda polling uchun) ----
+  if (req.method === 'POST' && req.url === '/api/orders-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
-  if (!tg && !customerOwnerId) {
-    // Oddiy brauzerdan (Telegram tashqarisidan) ochilsa — oshxona egasi
-    // login/parol bilan kirishi mumkin (admin bergan login/parol orqali).
-    if (initData) {
-      bootstrapApp();
-    } else {
-      renderOwnerLoginScreen();
-    }
-  } else if (!tg) {
-    ekran('<div class="xato">Kirish rad etildi.<br>Bu havola faqat Telegram orqali ishlaydi.</div>');
-  } else {
-    tg.ready();
-    tg.expand();
-
-    if (customerOwnerId) {
-      renderCustomerApp(customerOwnerId);
-    } else {
-      bootstrapApp();
-    }
-  }
-
-  // ---- Login/parol orqali kirish ekrani (Telegram tashqarisida) ----
-  function renderOwnerLoginScreen(errorText) {
-    clearAppHeader();
-    resetBrandColor();
-    ekran(`
-      <div class="panel">
-        <div class="salom">Oshxona egasi kirishi</div>
-        <div class="bosh">Administrator sizga bergan login va parolni kiriting.</div>
-        <div class="kartochka">
-          <label class="field-label">Login</label>
-          <input type="text" id="ownerLoginInput" autocomplete="username" placeholder="Login">
-          <label class="field-label">Parol</label>
-          <input type="password" id="ownerPasswordInput" autocomplete="current-password" placeholder="Parol">
-          <button class="btn" id="ownerLoginBtn" style="margin-top:10px;">${icon('user', 'icon-xs')}<span>Kirish</span></button>
-          <div class="xabar ${errorText ? 'err' : ''}" id="ownerLoginMsg">${errorText ? escapeHtml(errorText) : ''}</div>
-        </div>
-      </div>
-    `);
-
-    const doLogin = async () => {
-      const login = document.getElementById('ownerLoginInput').value.trim();
-      const password = document.getElementById('ownerPasswordInput').value;
-      const msgEl = document.getElementById('ownerLoginMsg');
-      const btn = document.getElementById('ownerLoginBtn');
-      if (!login || !password) {
-        msgEl.textContent = 'Login va parolni kiriting.';
-        msgEl.className = 'xabar err';
-        return;
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz', 'dostavka'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
       }
-      btn.disabled = true;
-      msgEl.textContent = 'Tekshirilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/owner-login', { login, password });
-      btn.disabled = false;
-      if (res.networkError) {
-        msgEl.textContent = res.reason;
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Login yoki parol noto\'g\'ri.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      initData = res.sessionToken;
-      usingOwnerSession = true;
-      localStorage.setItem(OWNER_SESSION_STORAGE_KEY, res.sessionToken);
-      bootstrapApp();
-    };
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
 
-    document.getElementById('ownerLoginBtn').addEventListener('click', doLogin);
-    document.getElementById('ownerPasswordInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') doLogin();
+      let orders = (ctx.owner.orders || [])
+        .slice()
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      // Kuryerga faqat "Tayyor" bo'lgan, hali hech kim yetkazib bermagan dostavka buyurtmalari ko'rinadi
+      if (ctxHasRole(ctx, 'dostavka')) {
+        orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
+      }
+
+      orders = orders.slice(0, 100);
+      return sendJSON(res, 200, { ok: true, orders, role: ctx.role });
     });
+    return;
   }
 
-  // 3-4-bosqich: renderProfileForm() ichidagi "Xavfsizlik" bo'limi uchun
-  // event handlerlar — egasi (admin emas, o'zi) o'z parolini almashtiradi
-  // yoki butunlay o'chiradi. Parol o'zgarganda/o'chirilganda server barcha
-  // sess_ sessiyalarni bekor qiladi — shu sababli usingOwnerSession bo'lsa,
-  // muvaffaqiyatli almashtirishdan so'ng mahalliy sessiya ham tozalanib,
-  // qayta login ekraniga qaytariladi. Parolni o'chirish tugmasi faqat
-  // Telegram orqali kirilganda (tg mavjud bo'lganda) ko'rsatiladi — aks
-  // holda egasi (usingOwnerSession, Telegramsiz brauzer sessiyasi) parolni
-  // o'chirib, hech qanday kirish usulisiz qolib ketishi mumkin edi.
-  function attachOwnerPasswordSecurityHandlers() {
-    const toggleChangeBtn = document.getElementById('togglePwChangeBtn');
-    const changeForm = document.getElementById('pwChangeForm');
-    if (toggleChangeBtn && changeForm) {
-      toggleChangeBtn.addEventListener('click', () => changeForm.classList.toggle('hidden'));
-    }
+  // ---- API: buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
+  // Faqat oshxona egasiga ko'rinadi (boshqa moliyaviy hisobotlar — kuryer/Z-hisobot —
+  // bilan bir xil qoida). Sana oralig'i, xodim (kim yaratgan) va to'lov turi bo'yicha
+  // filtrlab, sahifalab (pagination) qaytaradi.
+  if (req.method === 'POST' && req.url === '/api/order-history') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
-    const changeCancelBtn = document.getElementById('pwChangeCancelBtn');
-    if (changeCancelBtn) {
-      changeCancelBtn.addEventListener('click', () => {
-        document.getElementById('pwCurrentInput').value = '';
-        document.getElementById('pwNewInput').value = '';
-        document.getElementById('pwNewRepeatInput').value = '';
-        const msgEl = document.getElementById('pwChangeMsg');
-        msgEl.textContent = '';
-        msgEl.className = 'xabar';
-        changeForm.classList.add('hidden');
-      });
-    }
-
-    const changeSaveBtn = document.getElementById('pwChangeSaveBtn');
-    if (changeSaveBtn) {
-      changeSaveBtn.addEventListener('click', async () => {
-        const currentPassword = document.getElementById('pwCurrentInput').value;
-        const newPassword = document.getElementById('pwNewInput').value;
-        const newPasswordRepeat = document.getElementById('pwNewRepeatInput').value;
-        const msgEl = document.getElementById('pwChangeMsg');
-        if (!currentPassword || !newPassword) {
-          msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        if (newPassword.length < 6) {
-          msgEl.textContent = 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        if (newPassword !== newPasswordRepeat) {
-          msgEl.textContent = 'Yangi parollar mos kelmadi.';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        changeSaveBtn.disabled = true;
-        msgEl.textContent = 'Saqlanmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/owner-change-password', { initData, currentPassword, newPassword });
-        changeSaveBtn.disabled = false;
-        if (res.networkError) {
-          msgEl.textContent = res.reason;
-          msgEl.className = 'xabar err';
-          return;
-        }
-        if (!res.ok) {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        if (usingOwnerSession) {
-          // Server bu sessiyani ham bekor qildi — qayta login qildiramiz
-          localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
-          initData = null;
-          renderOwnerLoginScreen('Parol muvaffaqiyatli o\'zgartirildi. Yangi parol bilan qayta kiring.');
-          return;
-        }
-        msgEl.textContent = 'Parol muvaffaqiyatli o\'zgartirildi.';
-        msgEl.className = 'xabar ok';
-        document.getElementById('pwCurrentInput').value = '';
-        document.getElementById('pwNewInput').value = '';
-        document.getElementById('pwNewRepeatInput').value = '';
-      });
-    }
-
-    const toggleRemoveBtn = document.getElementById('togglePwRemoveBtn');
-    const removeForm = document.getElementById('pwRemoveForm');
-    if (toggleRemoveBtn && removeForm) {
-      toggleRemoveBtn.addEventListener('click', () => removeForm.classList.toggle('hidden'));
-    }
-
-    const removeCancelBtn = document.getElementById('pwRemoveCancelBtn');
-    if (removeCancelBtn) {
-      removeCancelBtn.addEventListener('click', () => {
-        document.getElementById('pwRemoveCurrentInput').value = '';
-        const msgEl = document.getElementById('pwRemoveMsg');
-        msgEl.textContent = '';
-        msgEl.className = 'xabar';
-        removeForm.classList.add('hidden');
-      });
-    }
-
-    const removeConfirmBtn = document.getElementById('pwRemoveConfirmBtn');
-    if (removeConfirmBtn) {
-      removeConfirmBtn.addEventListener('click', async () => {
-        const currentPassword = document.getElementById('pwRemoveCurrentInput').value;
-        const msgEl = document.getElementById('pwRemoveMsg');
-        if (!currentPassword) {
-          msgEl.textContent = 'Joriy parolni kiriting.';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        removeConfirmBtn.disabled = true;
-        msgEl.textContent = 'Bajarilmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/owner-remove-password', { initData, currentPassword });
-        removeConfirmBtn.disabled = false;
-        if (res.networkError) {
-          msgEl.textContent = res.reason;
-          msgEl.className = 'xabar err';
-          return;
-        }
-        if (!res.ok) {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        // Parol o'chirilgach faqat Telegram orqali kirish qoladi — gate
-        // eslatmasi ham tozalanadi, shunda keyingi safar parol so'ralmaydi.
-        const gateKey = ownerTelegramGateKey();
-        if (gateKey) localStorage.removeItem(gateKey);
-        ownerHasTelegramLogin = false;
-        location.reload();
-      });
-    }
-  }
-
-  // Login/parol orqali kirilgan sessiyani tugatadi (owner profil ekranidagi "Chiqish" tugmasi)
-  async function ownerLogout() {
-    await apiPost('/api/owner-logout', { initData });
-    localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
-    location.reload();
-  }
-
-  const LAST_BRAND_STORAGE_KEY = 'kitchenOsLastBrand';
-  function readCachedBrand() {
-    try {
-      const raw = localStorage.getItem(LAST_BRAND_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
-  }
-  function writeCachedBrand(name, logoUrl) {
-    if (!name && !logoUrl) return;
-    try { localStorage.setItem(LAST_BRAND_STORAGE_KEY, JSON.stringify({ name, logoUrl })); } catch (e) { /* joy yetmasa e'tiborsiz qoldiramiz */ }
-  }
-
-  async function bootstrapApp() {
-    // Ilova oldin ochilgan bo'lsa, o'sha oshxonaning nomi/logotipi shu qurilmada
-    // eslab qolingan (localStorage) — shuning uchun /api/verify javob berishini
-    // kutmasdan ham darhol tanish "Xush kelibsiz" ekranini ko'rsatish mumkin.
-    ekran(customerWelcomeLoadingHtml(readCachedBrand()));
-    const data = await apiPost('/api/verify', { initData });
-    if (data.networkError) {
-      renderNetworkErrorScreen(data.reason, bootstrapApp);
-      return;
-    }
-    if (data.ok && data.ownerRestaurantName) {
-      writeCachedBrand(data.ownerRestaurantName, data.ownerLogoUrl);
-    }
-    if (!data.ok) {
-      if (usingOwnerSession) {
-        // Login/parol orqali kirilgan sessiya yaroqsiz/eskirgan — qaytadan kirishni so'raymiz
-        localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
-        initData = null;
-        renderOwnerLoginScreen(data.reason);
-        return;
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
       }
-      // Admin/egasi/xodim emas — asosiy "Ochish" tugmasi bilan kirgan oddiy mijoz deb hisoblanadi
-      renderCustomerEntry();
-      return;
-    }
-    if (!data.personRegistered) {
-      renderPersonRegistrationScreen(() => bootstrapApp());
-      return;
-    }
-    if (data.isAdmin) {
-      loadOwnersAndRender();
-    } else if (data.isOwner) {
-      maybeGateOwnerWithPassword(data);
-    } else if (data.role) {
-      // YANGI: bir nechta vakolatli xodim - avval qaysi bo'limda ishlashini
-      // so'raymiz (bu qurilmada avval tanlagan bo'lsa, localStorage'dan
-      // o'qib to'g'ridan-to'g'ri o'sha ekranga kiradi - qarang: staffChosenRoleKey).
-      if (Array.isArray(data.roles) && data.roles.length > 1) {
-        const key = staffChosenRoleKey();
-        const savedRole = key ? localStorage.getItem(key) : null;
-        if (savedRole && data.roles.includes(savedRole)) {
-          renderStaffScreen(savedRole, ROLE_LABELS[savedRole] || data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+
+      const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
+      let page = parseInt(payload.page, 10);
+      if (!Number.isFinite(page) || page < 1) page = 1;
+      const PAGE_SIZE = 30;
+
+      let orders = (ctx.owner.orders || []).slice();
+
+      if (dateFrom) {
+        const from = new Date(dateFrom + 'T00:00:00');
+        if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
+      }
+      if (dateTo) {
+        const to = new Date(dateTo + 'T23:59:59');
+        if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
+      }
+      if (employeeId) {
+        orders = orders.filter(o => String(o.createdBy) === String(employeeId));
+      }
+      if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+        orders = orders.filter(o => o.paymentType === paymentType);
+      }
+      if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+        orders = orders.filter(o => o.orderType === orderType);
+      }
+
+      orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      const totalCount = orders.length;
+      const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+      const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+      if (page > totalPages) page = totalPages;
+      const pageOrders = orders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+      // Xodim F.I.Sh — buyurtmani kim yaratgani (1-bosqich bilan bir xil qoida)
+      const nameCache = new Map();
+      const staffNameById = (id) => {
+        if (!id) return null;
+        if (nameCache.has(id)) return nameCache.get(id);
+        let name;
+        if (String(id) === String(ctx.owner.id)) {
+          name = 'Egasi';
         } else {
-          renderStaffRolePicker(data);
+          const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
+          name = staff ? staffDisplayName(staff) : `ID: ${id}`;
         }
+        nameCache.set(id, name);
+        return name;
+      };
+
+      const resultOrders = pageOrders.map(o => ({
+        id: o.id,
+        items: o.items,
+        total: o.total,
+        orderType: o.orderType,
+        tableNumber: o.tableNumber,
+        paymentType: o.paymentType,
+        status: o.status,
+        createdAt: o.createdAt,
+        createdBy: o.createdBy,
+        createdByName: staffNameById(o.createdBy)
+      }));
+
+      // Filtr uchun xodimlar ro'yxati (egasi + hozircha buyurtma yaratgan xodimlar)
+      const employees = [{ id: ctx.owner.id, name: 'Egasi' }];
+      (ctx.owner.staff || []).forEach(s => {
+        employees.push({ id: s.id, name: staffDisplayName(s) });
+      });
+
+      return sendJSON(res, 200, {
+        ok: true,
+        orders: resultOrders,
+        page, totalPages, totalCount, totalSum,
+        pageSize: PAGE_SIZE,
+        employees
+      });
+    });
+    return;
+  }
+
+  // ---- API: xodim uchun shaxsiy kunlik/haftalik/oylik statistika (45-bosqich) ----
+  // Har bir rol o'ziga tegishli ko'rsatkichni ko'radi: kassir — yaratgan
+  // buyurtmalari, oshpaz — tayyorlagan buyurtmalari, kuryer — yetkazgan
+  // buyurtmalari (va komissiyasi), sklad — kiritgan sklad harakatlari.
+  if (req.method === 'POST' && req.url === '/api/my-stats') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'dostavka', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat xodimlarga ko\'rinadi' });
+      }
+
+      const fromDate = resolvePeriodStart(period);
+      const orders = ctx.owner.orders || [];
+      const stats = { period: period || 'today' };
+
+      if (ctxHasRole(ctx, 'kassir')) {
+        const mine = orders.filter(o => String(o.createdBy) === userId && new Date(o.createdAt) >= fromDate);
+        stats.kassir = {
+          orderCount: mine.length,
+          totalAmount: mine.reduce((sum, o) => sum + (o.total || 0), 0)
+        };
+      }
+      if (ctxHasRole(ctx, 'oshpaz')) {
+        // "Tayyor" deb belgilagan (oxirgi holat o'zgartiruvchi shu xodim bo'lgan) buyurtmalar
+        const mine = orders.filter(o => o.status === 'tayyor' && String(o.updatedBy) === userId && o.readyAt && new Date(o.readyAt) >= fromDate);
+        stats.oshpaz = {
+          orderCount: mine.length
+        };
+      }
+      if (ctxHasRole(ctx, 'dostavka')) {
+        const mine = orders.filter(o => o.orderType === 'dostavka' && String(o.deliveredBy) === userId && new Date(o.deliveredAt || o.createdAt) >= fromDate);
+        const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
+        const commissionPercent = Number.isFinite(ctx.owner.courierCommissionPercent) ? ctx.owner.courierCommissionPercent : 10;
+        stats.dostavka = {
+          orderCount: mine.length,
+          totalAmount,
+          commission: Math.round(totalAmount * commissionPercent / 100)
+        };
+      }
+      if (ctxHasRole(ctx, 'sklad')) {
+        const movements = (ctx.owner.stockMovements || []).filter(m => String(m.userId) === userId && new Date(m.createdAt) >= fromDate);
+        stats.sklad = {
+          movementCount: movements.length,
+          kirimCount: movements.filter(m => m.type === 'kirim').length,
+          chiqimCount: movements.filter(m => m.type === 'chiqim').length
+        };
+      }
+
+      return sendJSON(res, 200, { ok: true, stats });
+    });
+    return;
+  }
+
+  // ---- API: 49-bosqich — kassir/oshpaz "smena" holatini olish ----
+  // Xodim ekranini ochganda joriy smena holatini (faol/faol emas, boshlangan
+  // vaqti) so'raydi — holat staff yozuvida saqlanadi, shuning uchun qaysi
+  // qurilmadan ochilsa ham bir xil ko'rinadi.
+  // 61-bosqich: xodim yo'q paytda egasi ham kassir/oshpaz o'rnida ishlashi
+  // mumkin bo'lishi kerak — shu sababli 'egasi' ham ruxsat etilgan rollarga
+  // qo'shildi. Egasi owner.staff ro'yxatida yo'q, shuning uchun uning smena
+  // holati to'g'ridan-to'g'ri owner yozuvining o'zida (owner.shiftActive /
+  // owner.shiftStartedAt) saqlanadi — xodimlarning alohida-alohida
+  // shiftActive maydonlari bilan aralashmaydi.
+  if (req.method === 'POST' && req.url === '/api/shift-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun' });
+      }
+      const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+
+      return sendJSON(res, 200, { ok: true, active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
+    });
+    return;
+  }
+
+  // ---- API: 49-bosqich — smena boshlash/tugatish ----
+  // Kassir yoki oshpaz ish boshlaganda/tugatganda bosadigan tugma. Holat
+  // xodim yozuvida saqlanadi (staff.shiftActive / staff.shiftStartedAt).
+  // Tugatilganda davomiylik owner.shiftHistory'ga yoziladi (kelajakda
+  // smena bo'yicha hisobot uchun) va umumiy amallar jurnaliga
+  // (logStaffAction) tushadi — egasi buni "Xodimlar nazorati" bo'limida
+  // ko'radi.
+  // 61-bosqich: egasi ham (xodim bo'lmagan paytda o'zi kassir/oshpaz
+  // o'rnida ishlaganda) smenani boshlashi/tugatishi mumkin — shift-status
+  // bilan bir xil mantiq (target: egasi bo'lsa owner yozuvining o'zi).
+  if (req.method === 'POST' && req.url === '/api/shift-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun' });
+      }
+      const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
+      if (!ownerCanUseFeature(ctx.owner, 'shift-toggle')) return sendJSON(res, 200, featureBlockedResult('shift-toggle'));
+
+      const now = new Date().toISOString();
+      if (target.shiftActive) {
+        if (!ctx.owner.shiftHistory) ctx.owner.shiftHistory = [];
+        ctx.owner.shiftHistory.unshift({
+          id: crypto.randomBytes(4).toString('hex'),
+          userId,
+          role: ctx.role,
+          startedAt: target.shiftStartedAt || now,
+          endedAt: now
+        });
+        if (ctx.owner.shiftHistory.length > 1000) ctx.owner.shiftHistory.length = 1000;
+        target.shiftActive = false;
+        target.shiftStartedAt = null;
+        logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_tugatdi', note: 'Ish smenasini tugatdi' });
       } else {
-        renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+        target.shiftActive = true;
+        target.shiftStartedAt = now;
+        logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_boshladi', note: 'Ish smenasini boshladi' });
       }
-    } else {
-      renderCustomerEntry();
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
+    });
+    return;
+  }
+
+  // ---- API: buyurtma holatini o'zgartirish (Yangi -> Tayyorlanmoqda -> Tayyor) ----
+  if (req.method === 'POST' && req.url === '/api/update-order-status') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId, status } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri holat.' });
+      }
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.status === status) {
+        return sendJSON(res, 200, { ok: true, order }); // allaqachon shu holatda
+      }
+      if (!canSetOrderStatus(ctx, order, status)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).' });
+      }
+
+      order.status = status;
+      order.updatedAt = new Date().toISOString();
+      order.updatedBy = userId;
+      if (status === 'tayyorlanmoqda' && !order.startedAt) order.startedAt = order.updatedAt;
+      if (status === 'tayyor' && !order.readyAt) order.readyAt = order.updatedAt;
+
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
+      saveOwners(owners);
+
+      // 15-bosqich: holat Mini App orqali (guruh tugmalarisiz) o'zgarganda ham
+      // dostavka/oshpazlar guruhidagi xabar tugmalari joriy holatga mos
+      // yangilanadi — aks holda guruh a'zolari eski "Qabul qilish"/"Tayyor"
+      // tugmasini bosib, chalkash javob olishlari mumkin edi.
+      syncGroupMessagesForOrder(ctx.owner, order);
+
+      // "Tayyor" bo'lganda kassir(lar)ga va (dostavka bo'lsa) kuryer(lar)ga avtomatik bildirishnoma
+      if (status === 'tayyor') {
+        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
+        const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
+
+        const staffList = ctx.owner.staff || [];
+        const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
+        const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
+        for (const targetId of new Set(targetIds)) {
+          if (String(targetId) === userId) continue; // o'zi belgilagan bo'lsa, o'ziga yubormaydi
+          sendMessage(targetId, readyText);
+        }
+      }
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
+  // ---- API: kuryer buyurtmani "Yetkazildi" deb belgilaydi (F/26-bosqich: kuryer hisoboti uchun asos) ----
+  if (req.method === 'POST' && req.url === '/api/deliver-order') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.orderType !== 'dostavka') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma dostavka turi emas.' });
+      }
+      if (order.deliveredBy) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
+      }
+
+      order.deliveredBy = userId;
+      order.deliveredAt = new Date().toISOString();
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
+      saveOwners(owners);
+
+      // Buyurtma "Yetkazildi" deb belgilangach, mijozdan xizmatni baholashini
+      // so'raymiz (1-5 yulduz, callback_data: rate:<ownerId>:<orderId>:<ball>).
+      // Javob callback_query bo'limida ('rate:' prefiksi) qayta ishlanadi.
+      if (order.customerId) {
+        const ratingKeyboard = {
+          inline_keyboard: [[
+            { text: '1⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:1` },
+            { text: '2⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:2` },
+            { text: '3⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:3` },
+            { text: '4⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:4` },
+            { text: '5⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:5` }
+          ]]
+        };
+        sendMessage(order.customerId,
+          '✅ Buyurtmangiz yetkazib berildi!\n\nXizmatimizni qanday baholaysiz?',
+          ratingKeyboard);
+      }
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
+  // ---- API: kuryer — mijoz buyurtmani qabul qilmadi (bekor qildi) ----
+  // Kuryer manzilga borgach mijoz eshikda buyurtmadan voz kechishi mumkin
+  // (fikr o'zgargan, telefon javob bermagan va h.k.). Bunday holatda buyurtma
+  // "Yetkazildi" deb belgilanmaydi — "Bekor qilindi" holatiga o'tadi, daromad
+  // hisobiga qo'shilmaydi (qarang: orderIncomeAmount()) va oshxona egasiga
+  // xabar boradi.
+  if (req.method === 'POST' && req.url === '/api/reject-delivery-order') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId, reason } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.orderType !== 'dostavka') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma dostavka turi emas.' });
+      }
+      if (order.deliveredBy) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
+      }
+      if (order.status === 'bekor_qilindi') {
+        return sendJSON(res, 200, { ok: true, order }); // allaqachon bekor qilingan
+      }
+
+      const trimmedReason = String(reason || '').trim();
+      if (!trimmedReason) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bekor qilish sababini yozish majburiy.' });
+      }
+
+      order.status = 'bekor_qilindi';
+      order.cancelReason = trimmedReason.slice(0, 200);
+      order.cancelledBy = userId;
+      order.cancelledAt = new Date().toISOString();
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'dostavka_bekor', orderId: order.id, note: order.cancelReason });
+      saveOwners(owners);
+
+      syncGroupMessagesForOrder(ctx.owner, order);
+
+      // Egasi va kassirlarga darhol xabar — kim, qaysi buyurtmani va nima
+      // sababdan bekor qilganini bilishlari uchun.
+      const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
+      const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
+      const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}`;
+      const staffList = ctx.owner.staff || [];
+      const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
+      for (const targetId of new Set([ctx.owner.id, ...targetIds])) {
+        if (String(targetId) === userId) continue;
+        sendMessage(targetId, alertText);
+      }
+
+      if (order.customerId) {
+        sendMessage(order.customerId, '❌ Kechirasiz, dostavka buyurtmangiz bekor qilindi (yetkazib berish amalga oshmadi). Savol bo\'lsa, oshxonaga murojaat qiling.');
+      }
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
+  // ---- API: egasi xato bosilgan "Yetkazildi" belgisini bekor qiladi ----
+  // (masalan, kuryer boshqa buyurtmani bosib yuborgan yoki hali yetkazmasdan
+  // tugmani bosib yuborgan holatlarni tuzatish uchun). Faqat "egasi" roliga ruxsat
+  // berilgan — kuryerning o'ziga bu huquq berilmagan, aks holda u o'z hisobotini
+  // (yetkazgan buyurtmalar sonini) o'zi o'zgartira olardi.
+  if (req.method === 'POST' && req.url === '/api/undo-deliver-order') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasRole(ctx, 'egasi')) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi bu amalni bajara oladi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (!order.deliveredBy) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma "Yetkazildi" deb belgilanmagan.' });
+      }
+
+      const previousDeliveredBy = order.deliveredBy;
+      order.deliveredBy = null;
+      order.deliveredAt = null;
+      logStaffAction(ctx.owner, {
+        userId, role: ctx.role, action: 'yetkazish_bekor',
+        orderId: order.id,
+        note: `"Yetkazildi" belgisi bekor qilindi (avval: ${previousDeliveredBy})`
+      });
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
+  // ---- API: sklad ro'yxatini olish (egasi, sklad mas'uli) ----
+  if (req.method === 'POST' && req.url === '/api/stock-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveStockPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const stock = (pool.stock || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+      return sendJSON(res, 200, { ok: true, stock, units: STOCK_UNITS, branches: ctx.owner.branches || [], branchId });
+    });
+    return;
+  }
+
+  // ---- API: skladga mahsulot kiritish (yangi mahsulot yoki mavjudiga kirim qo'shish) ----
+  if (req.method === 'POST' && req.url === '/api/stock-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, qty, unit, price, minQty } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
+
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveStockPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const nameTrim = String(name || '').trim();
+      const qtyNum = Number(qty);
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Mahsulot nomini kiriting.' });
+      if (!Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Birlikni tanlang (kg, g, l, ml, dona).' });
+      }
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
+      }
+      // 6-bosqich: narx endi MAJBURIY — bo'sh/0 bo'lsa xatolik qaytariladi,
+      // chunki har bir kirim uchun avtomatik xarajat yozuvi shu narxdan hisoblanadi.
+      if (price === undefined || price === null || price === '') {
+        return sendJSON(res, 200, { ok: false, reason: 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.' });
+      }
+      const priceNum = Number(price);
+      if (!Number.isFinite(priceNum) || priceNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+      }
+      let minQtyNum = null;
+      if (minQty !== undefined && minQty !== null && minQty !== '') {
+        minQtyNum = Number(minQty);
+        if (!Number.isFinite(minQtyNum) || minQtyNum < 0) return sendJSON(res, 200, { ok: false, reason: 'Kam qolish chegarasi musbat son bo\'lishi kerak.' });
+      }
+
+      if (!pool.stock) pool.stock = [];
+      let item = pool.stock.find(s => s.name.toLowerCase() === nameTrim.toLowerCase() && s.unit === unit);
+
+      if (item) {
+        item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
+        if (priceNum) item.price = priceNum;
+        if (minQtyNum !== null) item.minQty = minQtyNum;
+      } else {
+        item = {
+          id: crypto.randomBytes(4).toString('hex'),
+          name: nameTrim,
+          qty: qtyNum,
+          unit,
+          price: priceNum,
+          minQty: minQtyNum,
+          lowStockAlertSent: false,
+          addedAt: new Date().toISOString()
+        };
+        pool.stock.push(item);
+      }
+
+      addStockMovement(pool, {
+        stockId: item.id, stockName: item.name, type: 'kirim',
+        qty: qtyNum, unit, note: 'Qo\'lda kiritildi', userId
+      });
+      checkLowStockAlert(ctx.owner, item, userId, branchId);
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
+
+      // 7-8-bosqich: sklad kirimi uchun avtomatik xarajat yozuvi — narx endi
+      // majburiy bo'lgani uchun har bir kirim to'g'ridan-to'g'ri moliyaga
+      // (owner.expenses) "sklad_xarid" kategoriyasi bilan tushadi. note
+      // maydonida qaysi mahsulot/miqdor ekani ko'rsatiladi (masalan "Un — 10 kg").
+      if (!ctx.owner.expenses) ctx.owner.expenses = [];
+      ctx.owner.expenses.unshift({
+        id: crypto.randomBytes(4).toString('hex'),
+        amount: Math.round(qtyNum * priceNum * 100) / 100,
+        category: 'sklad_xarid',
+        note: `${item.name} — ${qtyNum} ${unit}`,
+        createdAt: new Date().toISOString(),
+        createdBy: userId,
+        source: 'stock',
+        stockId: item.id
+      });
+      if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, item });
+    });
+    return;
+  }
+
+  // ---- API: sklad mahsulotini butunlay o'chirish (faqat egasi) ----
+  // 9-bosqich (hujjat): mahsulotni sklad ro'yxatidan o'chirish avvalgi
+  // /api/stock-add chaqiruvlarida yozilgan "sklad_xarid" xarajatlarini
+  // ORQAGA QAYTARMAYDI/o'chirmaydi — bu ataylab shunday, chunki xarid haqiqatan
+  // ham amalga oshgan (pul sarflangan), mahsulot esa keyinchalik ro'yxatdan
+  // olib tashlanishi (masalan boshqa nom bilan qayta kiritish uchun) buni
+  // o'zgartirmaydi. Xato kiritilgan xarajatni tuzatish kerak bo'lsa, buni
+  // Moliya ekranidan qo'lda (/api/expense-remove) qilish kerak.
+  if (req.method === 'POST' && req.url === '/api/stock-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const pool = resolveStockPool(owner, branchId || null);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      pool.stock = (pool.stock || []).filter(s => s.id !== id);
+      // Markaziy skladdagi mahsulot bo'lsa — bog'langan retseptlardan ham olib tashlanadi
+      if (!branchId) {
+        (owner.menu || []).forEach(m => {
+          if (Array.isArray(m.recipe)) m.recipe = m.recipe.filter(r => r.stockId !== id);
+        });
+      }
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: sklad harakatlari tarixi (kim, qachon, nima kiritdi/chiqardi) ----
+  if (req.method === 'POST' && req.url === '/api/stock-movements') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveStockPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const movements = (pool.stockMovements || []).slice(0, 200);
+      return sendJSON(res, 200, { ok: true, movements });
+    });
+    return;
+  }
+
+  // ---- API: markaziy skladdan filialga mahsulot o'tkazish (transfer) — faqat egasi ----
+  // 9-bosqich (hujjat): transfer yangi xarid emas — mahsulot allaqachon
+  // markaziy skladga /api/stock-add orqali kirganda "sklad_xarid" xarajati
+  // yozilgan bo'ladi. Shu sababli bu yerda YANGI xarajat yozuvi QO'SHILMAYDI —
+  // aks holda bir xil xarid ikki marta hisoblangan bo'lardi (markaziy sklad +
+  // filial). Transfer faqat miqdorni bir joydan ikkinchisiga ko'chiradi.
+  if (req.method === 'POST' && req.url === '/api/stock-transfer') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, stockId, branchId, qty } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi transfer qila oladi'));
+
+      if (!branchId) return sendJSON(res, 200, { ok: false, reason: 'Qaysi filialga o\'tkazishni tanlang.' });
+      const branch = findBranch(owner, branchId);
+      if (!branch) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+
+      const centralItem = findStockItem(owner, stockId);
+      if (!centralItem) return sendJSON(res, 200, { ok: false, reason: 'Markaziy skladda bunday mahsulot topilmadi.' });
+
+      const qtyNum = Number(qty);
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
+      }
+      if (qtyNum > centralItem.qty) {
+        return sendJSON(res, 200, { ok: false, reason: `Markaziy skladda yetarli emas (bor: ${centralItem.qty} ${centralItem.unit}).` });
+      }
+
+      // Markaziy skladdan kamaytiriladi
+      centralItem.qty = Math.round((centralItem.qty - qtyNum) * 1000) / 1000;
+      addStockMovement(owner, {
+        stockId: centralItem.id, stockName: centralItem.name, type: 'chiqim',
+        qty: qtyNum, unit: centralItem.unit,
+        note: `Filialga o'tkazildi: ${branch.name}`, userId
+      });
+      checkLowStockAlert(owner, centralItem, userId, null);
+
+      // Filial skladiga qo'shiladi (nomi+birligi mos kelsa — ustiga, bo'lmasa — yangi yozuv)
+      if (!branch.stock) branch.stock = [];
+      let branchItem = branch.stock.find(s => s.name.toLowerCase() === centralItem.name.toLowerCase() && s.unit === centralItem.unit);
+      if (branchItem) {
+        branchItem.qty = Math.round((branchItem.qty + qtyNum) * 1000) / 1000;
+      } else {
+        branchItem = {
+          id: crypto.randomBytes(4).toString('hex'),
+          name: centralItem.name,
+          qty: qtyNum,
+          unit: centralItem.unit,
+          price: centralItem.price || 0,
+          minQty: null,
+          lowStockAlertSent: false,
+          addedAt: new Date().toISOString()
+        };
+        branch.stock.push(branchItem);
+      }
+      addStockMovement(branch, {
+        stockId: branchItem.id, stockName: branchItem.name, type: 'kirim',
+        qty: qtyNum, unit: branchItem.unit,
+        note: 'Markaziy skladdan transfer', userId
+      });
+      checkLowStockAlert(owner, branchItem, userId, branchId);
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, centralItem, branchItem });
+    });
+    return;
+  }
+
+  // ---- API: taom uchun retsept (ingredientlar) belgilash (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/menu-set-recipe') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, menuId, recipe } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi retsept belgilay oladi'));
+
+      const menuItem = (owner.menu || []).find(m => m.id === menuId);
+      if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
+      if (!Array.isArray(recipe)) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri retsept formati.' });
+      // 12-bosqich: "to'g'ridan skladdan" turdagi taomga (directStockId
+      // belgilangan) alohida retsept qo'shib bo'lmaydi — ikkalasi bir vaqtda
+      // bo'lishi mumkin emas. Retseptni tozalash (bo'sh massiv yuborish) esa
+      // ruxsat etiladi.
+      if (menuItem.directStockId && recipe.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu taom "to\'g\'ridan skladdan" turida — unga alohida retsept qo\'shib bo\'lmaydi.' });
+      }
+
+      const cleanRecipe = [];
+      for (const r of recipe) {
+        const stockItem = findStockItem(owner, r.stockId);
+        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Retseptda mavjud bo\'lmagan sklad mahsuloti bor.' });
+        const qtyNum = Number(r.qty);
+        if (!Number.isFinite(qtyNum) || qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Retsept miqdori musbat son bo\'lishi kerak.' });
+        cleanRecipe.push({ stockId: r.stockId, qty: qtyNum });
+      }
+
+      menuItem.recipe = cleanRecipe;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, menuItem });
+    });
+    return;
+  }
+
+  // ---- API: kunlik audit topshirish (rejadagi vs haqiqiy qoldiq, farqlar avtomatik hisoblanadi) ----
+  if (req.method === 'POST' && req.url === '/api/audit-submit') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, entries } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendJSON(res, 200, featureBlockedResult('audit'));
+      if (!Array.isArray(entries) || !entries.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Audit uchun kamida bitta mahsulot kiriting.' });
+      }
+
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveStockPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const auditEntries = [];
+      for (const e of entries) {
+        const stockItem = findStockItem(pool, e.stockId);
+        if (!stockItem) continue;
+        const actualNum = Number(e.actualQty);
+        if (!Number.isFinite(actualNum) || actualNum < 0) {
+          return sendJSON(res, 200, { ok: false, reason: `${stockItem.name} uchun haqiqiy qoldiqni to\'g\'ri kiriting.` });
+        }
+        const systemQty = stockItem.qty;
+        const diff = Math.round((actualNum - systemQty) * 1000) / 1000;
+        auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: actualNum, diff });
+
+        if (diff !== 0) {
+          addStockMovement(pool, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
+            qty: diff, unit: stockItem.unit,
+            note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
+            userId
+          });
+        }
+        stockItem.qty = actualNum;
+        checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
+      }
+
+      if (!auditEntries.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Hech qanday mos mahsulot topilmadi.' });
+      }
+
+      if (!pool.audits) pool.audits = [];
+      const audit = {
+        id: crypto.randomBytes(4).toString('hex'),
+        date: new Date().toISOString().slice(0, 10),
+        branchId,
+        entries: auditEntries,
+        createdBy: userId,
+        createdAt: new Date().toISOString()
+      };
+      pool.audits.unshift(audit);
+      if (pool.audits.length > 60) pool.audits.length = 60;
+
+      const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
+      const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
+      logStaffAction(ctx.owner, {
+        userId, role: ctx.role, action: 'audit_topshirdi',
+        note: `${auditEntries.length} mahsulot tekshirildi${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
+        errorCount: kamomadCount
+      });
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, audit });
+    });
+    return;
+  }
+
+  // ---- API: audit tarixini olish ----
+  if (req.method === 'POST' && req.url === '/api/audit-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendJSON(res, 200, featureBlockedResult('audit'));
+
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveStockPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      return sendJSON(res, 200, { ok: true, audits: (pool.audits || []).slice(0, 30) });
+    });
+    return;
+  }
+
+  // ====== F. Moliya (Cashflow) — kirim (buyurtmalar savdosi) / chiqim (xarajatlar), kunlik/haftalik/oylik ======
+  //
+  // TUZATISH: ilgari "bugungi kun" ikki xil, bir-biriga mos kelmaydigan
+  // usul bilan hisoblanardi — ba'zi joylarda serverning MAHALLIY vaqti
+  // (`setHours(0,0,0,0)`), ba'zi joylarda esa (Z-hisobot, dailySeries
+  // grafik kalitlari) UTC sanasi (`iso.slice(0,10)`). Server UTC vaqt
+  // zonasida ishlab turganda bular sonlar jihatidan tasodifan mos tushib
+  // qolardi-yu, ikkalasi ham haqiqiy Toshkent (UTC+5) mahalliy kuniga mos
+  // KELMASDI (kun almashinuvi soat 00:00 emas, ~05:00da bo'lardi) — server
+  // boshqa vaqt zonasida ishga tushirilsa esa ikkalasi bir-biriga zid
+  // natija berishi mumkin edi.
+  //
+  // Endi BUTUN hisob-kitob shu bitta yordamchi to'plam orqali, doim
+  // Toshkent (UTC+5, yil davomida DST'siz) mahalliy kuniga nisbatan
+  // hisoblanadi — natija serverning qaysi vaqt zonasida ishga
+  // tushirilishidan mustaqil bo'ladi, chunki hammasi mutlaq (UTC) lahza
+  // sifatida qaytariladi va shu holda solishtiriladi.
+  const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+  // Berilgan payt (Date | ISO-satr) Toshkent taqvimida qaysi kunga to'g'ri
+  // kelishini "YYYY-MM-DD" qilib qaytaradi.
+  function tzDateKey(input) {
+    const d = (input instanceof Date) ? input : new Date(input);
+    return new Date(d.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
+  }
+
+  // Berilgan "YYYY-MM-DD" Toshkent sanasining soat 00:00 (mahalliy) lahzasini
+  // mutlaq (UTC) Date sifatida qaytaradi.
+  function tzDayStartFromKey(dateKey) {
+    return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - TASHKENT_OFFSET_MS);
+  }
+
+  // Berilgan paytning Toshkent kuni boshlanish lahzasi.
+  function tzDayStart(input) {
+    return tzDayStartFromKey(tzDateKey(input));
+  }
+
+  // Toshkent haftasining boshlanishi (Dushanba, soat 00:00 mahalliy).
+  function tzWeekStart(input) {
+    const d = (input instanceof Date) ? input : new Date(input);
+    const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
+    const day = shifted.getUTCDay(); // 0=yakshanba,1=dushanba,...
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+    const mondayKey = new Date(shifted.getTime() + diffToMonday * 86400000).toISOString().slice(0, 10);
+    return tzDayStartFromKey(mondayKey);
+  }
+
+  // Toshkent oyining boshlanishi (1-kun, soat 00:00 mahalliy).
+  function tzMonthStart(input) {
+    const d = (input instanceof Date) ? input : new Date(input);
+    const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
+    const monthKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-01`;
+    return tzDayStartFromKey(monthKey);
+  }
+
+  // Berilgan sanadan (fromDate) buyon bo'lgan kirim/chiqim/foyda, buyurtmalar soni va xarajat kategoriyalari bo'yicha taqsimotni hisoblaydi
+  // Kirim ikkiga ajratiladi: kassaIncome (stolga/olib ketish — kassada turgan pul) va dostavkaIncome (dostavka orqali — kuryer qo'lida, kassadan alohida)
+  function cashflowBucket(owner, fromDate) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+    const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
+
+    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
+    const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
+    const kassaIncome = kassaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
+    const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
+    const income = kassaIncome + dostavkaIncome;
+    const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
+    const byCategory = {};
+    for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
+    for (const e of expenses) {
+      const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+      byCategory[cat] = (byCategory[cat] || 0) + (e.amount || 0);
     }
-  }
 
-  // ---- Telegram orqali kirgan egasi uchun bir martalik parol darvozasi ----
-  // Admin shu egasiga login/parol o'rnatgan bo'lsa (data.hasOwnerLogin), birinchi
-  // marta parol so'raladi. To'g'ri kiritilsa, shu qurilmada (localStorage'da)
-  // eslab qolinadi — Telegram ilovasi yopilib qayta ochilsa ham qayta so'ralmaydi,
-  // faqat foydalanuvchi "Chiqish" tugmasini bossa yoki brauzer ma'lumotlari
-  // tozalansa, keyingi safar yana parol so'raladi.
-  function ownerTelegramGateKey() {
-    const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
-    return tgUserId ? `kitchenOsOwnerPwOk:${tgUserId}` : null;
-  }
-
-  function maybeGateOwnerWithPassword(data) {
-    ownerHasTelegramLogin = !!data.hasOwnerLogin;
-    if (!data.hasOwnerLogin) { loadOwnProfileAndRender(); return; }
-    const gateKey = ownerTelegramGateKey();
-    if (gateKey && localStorage.getItem(gateKey) === '1') { loadOwnProfileAndRender(); return; }
-    renderOwnerTelegramPasswordGate(gateKey);
-  }
-
-  function renderOwnerTelegramPasswordGate(gateKey, errorText) {
-    clearAppHeader();
-    resetBrandColor();
-    ekran(`
-      <div class="panel">
-        <div class="salom">Parolni kiriting</div>
-        <div class="bosh">Xavfsizlik uchun administrator o'rnatgan parolni kiriting. Bu faqat shu qurilmada bir marta so'raladi.</div>
-        <div class="kartochka">
-          <label class="field-label">Parol</label>
-          <input type="password" id="ownerGatePasswordInput" autocomplete="current-password" placeholder="Parol">
-          <button class="btn" id="ownerGateBtn" style="margin-top:10px;">${icon('user', 'icon-xs')}<span>Tasdiqlash</span></button>
-          <div class="xabar ${errorText ? 'err' : ''}" id="ownerGateMsg">${errorText ? escapeHtml(errorText) : ''}</div>
-        </div>
-      </div>
-    `);
-
-    const doConfirm = async () => {
-      const password = document.getElementById('ownerGatePasswordInput').value;
-      const msgEl = document.getElementById('ownerGateMsg');
-      const btn = document.getElementById('ownerGateBtn');
-      if (!password) {
-        msgEl.textContent = 'Parolni kiriting.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      btn.disabled = true;
-      msgEl.textContent = 'Tekshirilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/owner-confirm-password', { initData, password });
-      btn.disabled = false;
-      if (res.networkError) {
-        msgEl.textContent = res.reason;
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (!res.ok) {
-        msgEl.textContent = res.reason || 'Parol noto\'g\'ri.';
-        msgEl.className = 'xabar err';
-        return;
-      }
-      if (gateKey) localStorage.setItem(gateKey, '1');
-      loadOwnProfileAndRender();
+    return {
+      income, expense, net: income - expense, orderCount: orders.length, byCategory,
+      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length
     };
+  }
 
-    document.getElementById('ownerGateBtn').addEventListener('click', doConfirm);
-    document.getElementById('ownerGatePasswordInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') doConfirm();
+  // Egaga tegishli to'liq cashflow hisobotini shakllantiradi: bugun/hafta/oy + oxirgi 14 kunlik seriya
+  function computeCashflow(owner) {
+    const now = new Date();
+    const todayStart = tzDayStart(now);
+    const weekStart = tzWeekStart(now);
+    const monthStart = tzMonthStart(now);
+
+    const orders = owner.orders || [];
+    const expenses = owner.expenses || [];
+    const dailySeries = [];
+    // 14 kunlik seriya endi serverning mahalliy sana arifmetikasiga umuman
+    // tayanmaydi — har bir kunning Toshkent yarim tuni lahzasi to'g'ridan-to'g'ri
+    // `todayStart`dan aniq 86400000 ms qadamlar bilan hisoblanadi, shu bilan
+    // grafik kalitlari yuqoridagi bugun/hafta/oy chegaralari bilan doim mos keladi.
+    for (let i = 13; i >= 0; i--) {
+      const dayStart = new Date(todayStart.getTime() - i * 86400000);
+      const dayEnd = new Date(dayStart.getTime() + 86400000);
+      const key = tzDateKey(dayStart);
+      const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + orderIncomeAmount(o), 0);
+      const dayExpense = expenses.filter(e => { const t = new Date(e.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, e) => s + (e.amount || 0), 0);
+      dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
+    }
+
+    return {
+      today: cashflowBucket(owner, todayStart),
+      week: cashflowBucket(owner, weekStart),
+      month: cashflowBucket(owner, monthStart),
+      dailySeries
+    };
+  }
+
+  // ---- API: xarajat (chiqim) qo'shish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/expense-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, amount, note, category } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xarajat kirita oladi'));
+      if (!ownerCanUseFeature(owner, 'expense-manage')) return sendJSON(res, 200, featureBlockedResult('expense-manage'));
+
+      const amountNum = Number(amount);
+      if (!Number.isFinite(amountNum) || amountNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Summani to\'g\'ri kiriting.' });
+      }
+      const categoryKey = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, category) ? category : 'boshqa';
+      const noteStr = String(note || '').trim().slice(0, 200);
+
+      if (!owner.expenses) owner.expenses = [];
+      const expense = {
+        id: crypto.randomBytes(4).toString('hex'),
+        amount: amountNum,
+        category: categoryKey,
+        note: noteStr,
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      };
+      owner.expenses.unshift(expense);
+      if (owner.expenses.length > 500) owner.expenses.length = 500;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, expense });
+    });
+    return;
+  }
+
+  // ---- API: xarajat yozuvini o'chirish (faqat egasi, xato kiritilganda tuzatish uchun) ----
+  if (req.method === 'POST' && req.url === '/api/expense-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const before = (owner.expenses || []).length;
+      owner.expenses = (owner.expenses || []).filter(e => e.id !== id);
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, removed: before !== owner.expenses.length });
+    });
+    return;
+  }
+
+  // ---- API: umumiy cashflow — kirim (savdo) / chiqim (xarajat), kunlik/haftalik/oylik hisobot (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/cashflow') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'cashflow')) return sendJSON(res, 200, featureBlockedResult('cashflow'));
+
+      const cashflow = computeCashflow(owner);
+      const recentExpenses = (owner.expenses || []).slice(0, 30);
+
+      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES });
+    });
+    return;
+  }
+
+  // ---- API: KitchenOS bosh sahifa uchun kunlik xulosa (4-bosqich) —
+  // bugungi savdo / sof foyda / buyurtmalar / kuryer yetkazishlari va
+  // shularni kechagi kunga solishtirish uchun kechagi qiymatlar (faqat
+  // egasi). Foizni hisoblash frontend tomonda (7-8-bosqich) qilinadi — bu
+  // yerda faqat xom raqamlar qaytariladi. (6-bosqich: "o'rtacha chek" maydoni
+  // olib tashlandi — Dashboard kartochkasi 3-bosqichda "Kuryer hisoboti"ga
+  // almashtirilgani uchun endi hech qayerda ishlatilmas edi.) ----
+  if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
+
+      const now = new Date();
+      const todayStart = tzDayStart(now);
+      const yesterdayStart = new Date(todayStart.getTime() - 86400000);
+
+      // Bugun: mavjud cashflowBucket'dan foydalanamiz (yuqori chegarasiz —
+      // kelajakdagi sanali buyurtma bo'lmagani uchun bu xavfsiz).
+      const today = cashflowBucket(owner, todayStart);
+
+      // Kecha: FAQAT kecha kuni (bugungi kunni kiritmaslik uchun ikki
+      // tomonlama chegara kerak) — shu sababli alohida hisoblanadi.
+      const yesterdayOrders = (owner.orders || []).filter(o => {
+        const d = new Date(o.createdAt);
+        return d >= yesterdayStart && d < todayStart;
+      });
+      const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+      const yesterdayExpense = (owner.expenses || []).filter(e => {
+        const d = new Date(e.createdAt);
+        return d >= yesterdayStart && d < todayStart;
+      }).reduce((s, e) => s + (e.amount || 0), 0);
+
+      // 3-bosqich: Dashboarddagi "Kuryer hisoboti" KPI kartochkasi uchun —
+      // bugun va kecha KURYER TOMONIDAN YETKAZIB BERILGAN dostavka
+      // buyurtmalari soni. To'liq (har bir kuryer bo'yicha) hisobot allaqachon
+      // /api/courier-report'da bor — bu yerda faqat kartochkaga bitta
+      // umumlashtirilgan son kerak.
+      const todayCourierDeliveries = (owner.orders || []).filter(o =>
+        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart).length;
+      const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
+        if (o.orderType !== 'dostavka' || !o.deliveredBy) return false;
+        const d = new Date(o.deliveredAt || o.createdAt);
+        return d >= yesterdayStart && d < todayStart;
+      }).length;
+
+      const summary = {
+        todaySales: today.income,
+        yesterdaySales: yesterdayIncome,
+        todayNetProfit: today.net,
+        yesterdayNetProfit: yesterdayIncome - yesterdayExpense,
+        todayOrderCount: today.orderCount,
+        yesterdayOrderCount: yesterdayOrders.length,
+        todayCourierDeliveries,
+        yesterdayCourierDeliveries
+      };
+
+      return sendJSON(res, 200, { ok: true, summary });
+    });
+    return;
+  }
+
+  // ---- API: KitchenOS bosh sahifa uchun buyurtma holat-sonlari (5-bosqich) —
+  // "Bugungi holat" bannerida ko'rsatiladigan Yangi / Tayyorlanmoqda / Tayyor /
+  // Kechikayotgan sonlari (faqat egasi). "Kechikayotgan" alohida saqlangan
+  // status emas — ORDER_DELAY_THRESHOLD_MINUTES'dan hisoblab chiqariladi va
+  // shu daqiqadan o'tib ketgan "yangi"/"tayyorlanmoqda" buyurtmalar
+  // Yangi/Tayyorlanmoqda sonidan chiqarilib, shu yerga qo'shiladi (ikki marta
+  // hisoblanmasligi uchun). ----
+  if (req.method === 'POST' && req.url === '/api/order-status-counts') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
+
+      const now = new Date();
+      const todayStart = tzDayStart(now);
+      const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
+
+      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
+
+      let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
+      for (const o of todaysOrders) {
+        if (o.status === 'bekor_qilindi') continue;
+        if (o.status === 'tayyor') { tayyor += 1; continue; }
+        const ageMs = now - new Date(o.createdAt);
+        if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
+        if (o.status === 'tayyorlanmoqda') tayyorlanmoqda += 1;
+        else yangi += 1; // status hali belgilanmagan yoki 'yangi'
+      }
+
+      return sendJSON(res, 200, {
+        ok: true,
+        counts: { yangi, tayyorlanmoqda, tayyor, kechikayotgan },
+        delayThresholdMinutes: ORDER_DELAY_THRESHOLD_MINUTES
+      });
+    });
+    return;
+  }
+
+  // ---- API: KitchenOS bosh sahifa uchun "Muhim ogohlantirishlar" (6-bosqich,
+  // faqat egasi). Uchta narsa BITTALAB tekshiriladi va faqat DOLZARB
+  // bo'lganlari (count > 0 yoki holat true) ro'yxatga qo'shiladi, shu
+  // sababli natija har doim mockupdagi kabi 0 dan 3 tagacha element:
+  //   1) tugayotgan ombor mahsulotlari — item.qty <= item.minQty (markaziy
+  //      sklad + BARCHA filiallar birga, chunki egasi uchun bittagina umumiy
+  //      ogohlantirish kifoya - qaysi joyda ekanini "Ombor" ekranining o'zi
+  //      ko'rsatadi)
+  //   2) kechikayotgan buyurtmalar — /api/order-status-counts'dagi bilan
+  //      AYNAN BIR XIL hisoblash mantig'i (ORDER_DELAY_THRESHOLD_MINUTES)
+  //   3) bugungi Z-hisobot hali yopilmagan — owner.zReports'da bugungi
+  //      sana (YYYY-MM-DD) uchun yozuv yo'qligi
+  // `screen` maydoni - 13-bosqichda bosilganda qaysi ekranga o'tish
+  // kerakligini bildiradi uchun oldindan qo'shib qo'yildi.
+  if (req.method === 'POST' && req.url === '/api/dashboard-alerts') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
+
+      const alerts = [];
+
+      // 1) Tugayotgan ombor mahsulotlari (markaziy sklad + barcha filiallar)
+      const stockPools = [owner, ...(owner.branches || [])];
+      let lowStockCount = 0;
+      for (const pool of stockPools) {
+        for (const item of (pool.stock || [])) {
+          if (item.minQty === null || item.minQty === undefined) continue;
+          if (item.qty <= item.minQty) lowStockCount += 1;
+        }
+      }
+      if (lowStockCount > 0) {
+        alerts.push({
+          type: 'low_stock', level: 'error', text: 'Tugayotgan mahsulotlar bor',
+          count: lowStockCount, screen: 'ombor'
+        });
+      }
+
+      // 2) Kechikayotgan buyurtmalar (bugungi, /api/order-status-counts bilan bir xil mantiq)
+      const now = new Date();
+      const todayStart = tzDayStart(now);
+      const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
+      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
+      let delayedCount = 0;
+      for (const o of todaysOrders) {
+        if (o.status === 'tayyor') continue;
+        if ((now - new Date(o.createdAt)) > thresholdMs) delayedCount += 1;
+      }
+      if (delayedCount > 0) {
+        alerts.push({
+          type: 'delayed_orders', level: 'warning', text: 'Kechikayotgan buyurtmalar',
+          count: delayedCount, screen: 'buyurtmalar_kechikkan'
+        });
+      }
+
+      // 3) Bugungi Z-hisobot (kunlik yakuniy hisobot) hali yopilmaganmi.
+      // TUZATISH: ilgari bu yerda `now.toISOString().slice(0,10)` (UTC sana)
+      // ishlatilardi — yuqoridagi "bugun" (todayStart, endi tzDayStart orqali)
+      // bilan bir xil funksiya ichida ikki xil kun tushunchasi aralashib
+      // ketardi. Endi ikkalasi ham bir xil tzDateKey manbaidan keladi.
+      const todayDateKey = tzDateKey(now);
+      const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey);
+      if (!dailyReportClosed) {
+        alerts.push({
+          type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
+          count: null, screen: 'zreport'
+        });
+      }
+
+      return sendJSON(res, 200, { ok: true, alerts });
+    });
+    return;
+  }
+
+  // Davr nomidan (bugun/hafta/oy/hammasi) boshlanish sanasini qaytaradi — cashflow va kuryerlar hisoboti uchun umumiy
+  function resolvePeriodStart(period) {
+    const now = new Date();
+    if (period === 'week') return tzWeekStart(now);
+    if (period === 'month') return tzMonthStart(now);
+    if (period === 'all') return new Date(0);
+    return tzDayStart(now);
+  }
+
+  // ---- API: filiallar kesimida solishtiruv hisobot — qaysi filial ko'proq sotmoqda (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/branch-report') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const fromDate = resolvePeriodStart(period);
+      const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+
+      const buckets = new Map();
+      buckets.set(null, { branchId: null, branchName: 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+      for (const b of (owner.branches || [])) {
+        buckets.set(b.id, { branchId: b.id, branchName: b.name, orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+      }
+
+      for (const o of orders) {
+        const key = buckets.has(o.branchId || null) ? (o.branchId || null) : null;
+        const bucket = buckets.get(key);
+        bucket.orderCount += 1;
+        bucket.income += orderIncomeAmount(o);
+        if (o.orderType === 'dostavka') bucket.dostavkaIncome += orderIncomeAmount(o);
+        else bucket.kassaIncome += orderIncomeAmount(o);
+      }
+
+      const report = Array.from(buckets.values())
+        .map(b => Object.assign({}, b, { avgCheck: b.orderCount ? Math.round(b.income / b.orderCount) : 0 }))
+        .sort((a, b) => b.income - a.income);
+
+      return sendJSON(res, 200, { ok: true, report });
+    });
+    return;
+  }
+
+  // ---- API: kuryerlar bo'yicha hisobot — nechta buyurtma, qancha pul, komissiya (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/courier-report') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      const owner = ctx.owner;
+      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
+
+      const fromDate = resolvePeriodStart(period);
+      const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
+
+      const couriers = (owner.staff || []).filter(s => staffHasRole(s, 'dostavka'));
+      const deliveredOrders = (owner.orders || []).filter(o =>
+        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= fromDate);
+
+      const report = couriers.map(c => {
+        const mine = deliveredOrders.filter(o => String(o.deliveredBy) === String(c.id));
+        const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
+        // Kuryerning qo'lida hali topshirilmagan naqd/dostavka orqali pul —
+        // egasi "Pulni oldim" tugmasini bosmaguncha shu summa daromadga qo'shilmaydi.
+        const pendingAmount = mine
+          .filter(o => o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false)
+          .reduce((sum, o) => sum + (o.total || 0), 0);
+        return {
+          id: c.id,
+          username: c.username || null,
+          orderCount: mine.length,
+          totalAmount,
+          pendingAmount,
+          commission: Math.round(totalAmount * commissionPercent / 100)
+        };
+      });
+      report.sort((a, b) => b.orderCount - a.orderCount);
+
+      const recentMovements = (owner.cashMovements || [])
+        .filter(m => m.type === 'kuryer_kassaga_qaytarish')
+        .slice(0, 20);
+
+      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements });
+    });
+    return;
+  }
+
+  // ---- API: kuryerlar komissiya foizini o'zgartirish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/set-courier-commission') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, percent } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
+
+      const p = Number(percent);
+      if (!Number.isFinite(p) || p < 0 || p > 100) {
+        return sendJSON(res, 200, { ok: false, reason: 'Komissiya foizi 0 dan 100 gacha bo\'lishi kerak.' });
+      }
+      owner.courierCommissionPercent = p;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, commissionPercent: p });
+    });
+    return;
+  }
+
+  // ---- API: kuryerdan naqd pulni "oldim" deb belgilash (faqat egasi) ----
+  // Kuryer "dostavka orqali" to'lovda mijozdan naqd pulni o'zi qo'lida
+  // ushlab turadi. Egasi shu pulni jismonan kuryerdan olganda shu API
+  // chaqiriladi — shundan keyingina bu buyurtmalar summasi daromad
+  // hisobotlariga (Z-hisobot, cashflow, filiallar hisoboti) qo'shiladi.
+  // Karta orqali to'langan buyurtmalarga bu umuman tegishli emas — ular
+  // har doim darhol daromadga qo'shilgan bo'ladi.
+  if (req.method === 'POST' && req.url === '/api/courier-collect-cash') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, courierId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
+      const owner = ctx.owner;
+      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
+
+      if (!courierId) return sendJSON(res, 200, { ok: false, reason: 'Kuryer tanlanmagan.' });
+
+      let collected = 0;
+      let count = 0;
+      for (const o of (owner.orders || [])) {
+        if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali' &&
+            String(o.deliveredBy) === String(courierId) && o.courierCashCollected === false) {
+          o.courierCashCollected = true;
+          o.courierCashCollectedAt = new Date().toISOString();
+          collected += (o.total || 0);
+          count++;
+        }
+      }
+
+      // Har bir "kassaga qaytarish" amalini alohida jurnalga yozib boramiz —
+      // kim, qachon, qaysi kuryerdan, qancha pul qaytarganini keyin ko'rish uchun.
+      if (count > 0) {
+        if (!Array.isArray(owner.cashMovements)) owner.cashMovements = [];
+        const courierStaff = (owner.staff || []).find(s => String(s.id) === String(courierId));
+        owner.cashMovements.unshift({
+          id: crypto.randomBytes(6).toString('hex'),
+          type: 'kuryer_kassaga_qaytarish',
+          courierId: String(courierId),
+          courierUsername: (courierStaff && courierStaff.username) || null,
+          amount: collected,
+          orderCount: count,
+          confirmedBy: userId,
+          createdAt: new Date().toISOString()
+        });
+        // Jurnal cheksiz o'smasligi uchun oxirgi 200 tasini saqlaymiz
+        if (owner.cashMovements.length > 200) owner.cashMovements.length = 200;
+      }
+
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, collected, count });
+    });
+    return;
+  }
+
+  // ---- API: "Karta orqali to'lov"ga cheklangan mijozlar ro'yxati (faqat egasi) ----
+  // Ketma-ket bir necha marta dostavkani bekor qildirgan mijozlarga tizim
+  // avtomatik ravishda "naqd/dostavka orqali" to'lovni yopib qo'yadi (qarang:
+  // customerIsCardOnlyRestricted()). Bu ekran egasiga: (1) kimlar shu holatda
+  // ekanini, (2) har birining oxirgi bekor qilingan buyurtmalari va sababini
+  // ko'rsatadi — chunki bekor qilish har doim ham mijozning aybi bo'lmasligi
+  // mumkin (masalan, kuryer o'zi yetkaza olmagan holatlar ham shu ro'yxatga
+  // tushadi), shu sababli egasi holatni ko'rib chiqib, kerak bo'lsa cheklovni
+  // qo'lda olib tashlashi mumkin (/api/toggle-customer-restriction).
+  if (req.method === 'POST' && req.url === '/api/restricted-customers') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const customers = [];
+      for (const c of (owner.customers || [])) {
+        const cancelledCount = customerCancelledDeliveryCount(owner, c.id);
+        if (cancelledCount < CARD_ONLY_AFTER_CANCELLED_DELIVERIES) continue;
+        const recentCancellations = (owner.orders || [])
+          .filter(o => String(o.customerId) === String(c.id) && o.orderType === 'dostavka' && o.status === 'bekor_qilindi')
+          .sort((a, b) => new Date(b.cancelledAt || b.createdAt) - new Date(a.cancelledAt || a.createdAt))
+          .slice(0, 5)
+          .map(o => ({ reason: o.cancelReason || null, cancelledAt: o.cancelledAt || o.createdAt, total: o.total || 0 }));
+        customers.push({
+          id: c.id,
+          name: c.firstName || c.username || `ID: ${c.id}`,
+          username: c.username || null,
+          cancelledCount,
+          restricted: customerIsCardOnlyRestricted(owner, c.id),
+          recentCancellations
+        });
+      }
+      customers.sort((a, b) => b.cancelledCount - a.cancelledCount);
+
+      return sendJSON(res, 200, { ok: true, customers });
+    });
+    return;
+  }
+
+  // ---- API: egasi mijozning "Faqat karta" cheklovini qo'lda olib tashlaydi/qaytaradi ----
+  if (req.method === 'POST' && req.url === '/api/toggle-customer-restriction') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, customerId, action } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
+      if (!Array.isArray(owner.cardOnlyOverrides)) owner.cardOnlyOverrides = [];
+
+      if (action === 'clear') {
+        if (!owner.cardOnlyOverrides.some(id => String(id) === String(customerId))) {
+          owner.cardOnlyOverrides.push(String(customerId));
+        }
+      } else if (action === 'restore') {
+        owner.cardOnlyOverrides = owner.cardOnlyOverrides.filter(id => String(id) !== String(customerId));
+      } else {
+        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
+      }
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, restricted: customerIsCardOnlyRestricted(owner, customerId) });
+    });
+    return;
+  }
+
+  // ====== Kunlik yakuniy hisobot (Z-hisobot) — savdo, xarajat, sof foyda, to'lov turlari bo'yicha ======
+  function buildZReport(owner, dateKey) {
+    const dayStart = tzDayStartFromKey(dateKey);
+    const dayEnd = new Date(dayStart.getTime() + 86400000);
+
+    const orders = (owner.orders || []).filter(o => {
+      const t = new Date(o.createdAt);
+      return t >= dayStart && t < dayEnd;
+    });
+    const expenses = (owner.expenses || []).filter(e => {
+      const t = new Date(e.createdAt);
+      return t >= dayStart && t < dayEnd;
+    });
+
+    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
+    const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
+    const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+    const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+    const income = kassaIncome + dostavkaIncome;
+
+    const paymentBreakdown = {};
+    for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
+    for (const o of orders) {
+      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
+    }
+
+    const expenseByCategory = {};
+    for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
+    for (const e of expenses) {
+      const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+      expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
+    }
+    const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+
+    return {
+      date: dateKey,
+      income, kassaIncome, dostavkaIncome, orderCount: orders.length,
+      paymentBreakdown, expense, expenseByCategory, net: income - expense
+    };
+  }
+
+  // ---- API: bugungi kunlik Z-hisobotni yaratish/yopish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/z-report-create') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
+
+      const dateKey = tzDateKey(new Date());
+      const built = buildZReport(owner, dateKey);
+
+      if (!owner.zReports) owner.zReports = [];
+      const existing = owner.zReports.find(z => z.date === dateKey);
+      const report = Object.assign({
+        id: existing ? existing.id : crypto.randomBytes(4).toString('hex'),
+        createdAt: new Date().toISOString(),
+        createdBy: userId
+      }, built);
+
+      if (existing) {
+        Object.assign(existing, report); // shu kun uchun qayta yopilsa — yangilanadi
+      } else {
+        owner.zReports.unshift(report);
+      }
+      if (owner.zReports.length > 90) owner.zReports.length = 90;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, report, wasUpdate: !!existing });
+    });
+    return;
+  }
+
+  // ---- API: saqlangan Z-hisobotlar tarixini olish (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/z-report-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const reports = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+      return sendJSON(res, 200, { ok: true, reports });
+    });
+    return;
+  }
+
+  // ====== H. AI analitika (32-34-bosqich): top taomlar, pik vaqtlar, ertangi sklad ehtiyoji, AI savol-javob ======
+  const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+
+  // Eng ko'p sotilgan taomlar — miqdor va tushum bo'yicha (berilgan sanadan buyon)
+  function computeTopItems(owner, fromDate, limit) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+    const byId = new Map();
+    for (const o of orders) {
+      for (const it of (o.items || [])) {
+        const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
+        cur.qty += it.qty;
+        cur.revenue += it.price * it.qty;
+        byId.set(it.id, cur);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => b.qty - a.qty).slice(0, limit || 5);
+  }
+
+  // Soatlik pik vaqtlar (0-23) va haftalik pik kunlar (0=Yakshanba..6=Shanba) — buyurtmalar soni bo'yicha
+  function computePeakTimes(owner, fromDate) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+    const byHour = new Array(24).fill(0);
+    const byDay = new Array(7).fill(0);
+    for (const o of orders) {
+      const d = new Date(o.createdAt);
+      byHour[d.getHours()]++;
+      byDay[d.getDay()]++;
+    }
+    const hours = byHour.map((count, hour) => ({ hour, count })).sort((a, b) => b.count - a.count);
+    const days = byDay.map((count, day) => ({ day, dayLabel: UZ_WEEKDAYS[day], count })).sort((a, b) => b.count - a.count);
+    return { byHour, byDay, topHours: hours.filter(h => h.count > 0).slice(0, 3), topDays: days.filter(d => d.count > 0).slice(0, 3) };
+  }
+
+  // Ertangi kun uchun taxminiy sklad ehtiyoji — oxirgi 7 kunlik "chiqim" (buyurtma orqali sarflangan) harakatlar o'rtachasi asosida
+  function computeStockForecast(owner, branchId) {
+    const pool = resolveStockPool(owner, branchId || null);
+    if (!pool) return [];
+    const since = new Date(Date.now() - 7 * 86400000);
+    const usageById = new Map();
+    for (const m of (pool.stockMovements || [])) {
+      if (m.type !== 'chiqim') continue;
+      if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
+      if (new Date(m.createdAt) < since) continue;
+      usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
+    }
+    const forecast = [];
+    for (const item of (pool.stock || [])) {
+      const used7d = usageById.get(item.id) || 0;
+      if (used7d <= 0) continue; // ishlatilmagan mahsulot uchun prognoz chiqarmaymiz
+      const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
+      const predictedNeed = Math.round(avgDaily * 1000) / 1000;
+      forecast.push({
+        stockId: item.id, name: item.name, unit: item.unit,
+        currentQty: item.qty, avgDailyUsage: avgDaily, predictedNeed,
+        shortage: item.qty < predictedNeed
+      });
+    }
+    forecast.sort((a, b) => (b.shortage - a.shortage) || (b.avgDailyUsage - a.avgDailyUsage));
+    return forecast;
+  }
+
+  // Anthropic (Claude) API orqali erkin savolga javob — faqat ANTHROPIC_API_KEY sozlangan bo'lsa ishlaydi
+  function callAnthropicApi(systemPrompt, userText) {
+    return new Promise((resolve, reject) => {
+      if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY sozlanmagan'));
+      const body = JSON.stringify({
+        model: AI_MODEL,
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userText }]
+      });
+      const reqOptions = {
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      };
+      const apiReq = https.request(reqOptions, apiRes => {
+        let data = '';
+        apiRes.on('data', chunk => { data += chunk; });
+        apiRes.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            const text = (parsed.content || []).map(c => c.text || '').join('\n').trim();
+            if (!text) return reject(new Error('AI javob bo\'sh qaytdi'));
+            resolve(text);
+          } catch (e) { reject(e); }
+        });
+      });
+      apiReq.on('error', reject);
+      apiReq.write(body);
+      apiReq.end();
     });
   }
 
-  // Telegram-gate eslatmasini shu qurilmadan o'chiradi — keyingi ochishda yana parol so'raladi
-  function ownerTelegramGateLogout() {
-    const gateKey = ownerTelegramGateKey();
-    if (gateKey) localStorage.removeItem(gateKey);
-    location.reload();
+  // AI kaliti sozlanmagan (yoki xato bergan) holatda ishlaydigan, tayyor qoidalar asosidagi javob generatori
+  function ruleBasedAiAnswer(question, ctx) {
+    const q = String(question || '').toLowerCase();
+
+    if (/bugun/.test(q) && /foyda|savdo|kirim/.test(q)) {
+      return `Bugungi kirim: ${fmtNum(ctx.cashflow.today.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.today.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.today.net)} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
+    }
+    if (/hafta/.test(q) && /foyda|savdo|kirim/.test(q)) {
+      return `Shu hafta kirim: ${fmtNum(ctx.cashflow.week.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.week.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.week.net)} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
+    }
+    if (/oy/.test(q) && /foyda|savdo|kirim/.test(q)) {
+      return `Shu oy kirim: ${fmtNum(ctx.cashflow.month.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.month.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.month.net)} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
+    }
+    if (/top|eng ko'p sotilgan|mashhur|qaysi taom/.test(q)) {
+      if (!ctx.topItems.length) return 'Hozircha (so\'nggi 30 kunda) buyurtma tarixi yo\'q.';
+      const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`).join('\n');
+      return `Eng ko'p sotilgan taomlar (so'nggi 30 kun):\n${list}`;
+    }
+    if (/pik|band vaqt|qaysi soat|eng gavjum/.test(q)) {
+      if (!ctx.peak.topHours.length) return 'Hozircha buyurtma tarixi yo\'q.';
+      const h = ctx.peak.topHours[0];
+      return `Eng band soat: ${h.hour}:00 atrofida (${h.count} ta buyurtma, so'nggi 30 kun). Eng band kun: ${ctx.peak.topDays[0] ? ctx.peak.topDays[0].dayLabel : 'ma\'lumot yo\'q'}.`;
+    }
+    if (/kam qolgan|tugab qolayotgan|sklad|zaxira/.test(q)) {
+      const low = (ctx.forecast || []).filter(f => f.shortage);
+      if (!low.length) return 'Hozircha ertangi kunga yetarli zaxira bor ko\'rinadi (oxirgi 7 kunlik iste\'mol bo\'yicha).';
+      const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${fmtNum(f.currentQty)} ${f.unit}, kunlik o'rtacha sarf ${fmtNum(f.avgDailyUsage)} ${f.unit}`).join('\n');
+      return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
+    }
+
+    // Umumiy so'rovlarga qisqa umumiy hisobot bilan javob beramiz
+    const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
+    return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${fmtNum(ctx.cashflow.today.net)} so'm, shu hafta ${fmtNum(ctx.cashflow.week.net)} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
   }
+
+  // ---- API: AI analitika — top taomlar, pik vaqtlar, ertangi sklad ehtiyoji (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/ai-analytics') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
+
+      const fromDate = resolvePeriodStart(period || 'week');
+      const topItems = computeTopItems(owner, fromDate, 8);
+      const peak = computePeakTimes(owner, fromDate);
+      const forecast = computeStockForecast(owner, branchId || null);
+
+      return sendJSON(res, 200, {
+        ok: true,
+        period: period || 'week',
+        topItems,
+        peakHours: peak.byHour,
+        peakDays: peak.byDay,
+        topHours: peak.topHours,
+        topDays: peak.topDays,
+        forecast
+      });
+    });
+    return;
+  }
+
+  // ---- API: AI Direktor - hozirgi holatga qarab hisobotni OLDINDAN KO'RISH
+  // (Mini App'da matn sifatida ko'rsatish uchun, Telegram'ga yubormasdan) ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-preview') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
+
+      return sendJSON(res, 200, {
+        ok: true,
+        text: buildAiDirectorText(owner),
+        enabled: owner.aiDirectorEnabled !== false,
+        sentToday: owner.aiDirectorLastSent === aiDirDateKey(new Date()),
+        hour: AI_DIRECTOR_HOUR
+      });
+    });
+    return;
+  }
+
+  // ---- API: AI Direktor hisobotini HOZIR (Telegram'ga) yuborish ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-send-now') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
+
+      sendAiDirectorDigest(owner, true).then(() => {
+        saveOwners(owners);
+        sendJSON(res, 200, { ok: true });
+      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
+    });
+    return;
+  }
+
+  // ---- API: AI Direktorning har tongi (soat 08:00, Toshkent) avtomatik
+  // xabarini yoqish/o'chirish ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, enabled } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
+
+      owner.aiDirectorEnabled = !!enabled;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, enabled: owner.aiDirectorEnabled });
+    });
+    return;
+  }
+
+  // ---- API: AI orqali erkin savolga qisqa javob (faqat egasi). ANTHROPIC_API_KEY bo'lmasa — qoidaviy javob beradi ----
+  if (req.method === 'POST' && req.url === '/api/ai-ask') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, question } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
+
+      const qTrim = String(question || '').trim();
+      if (!qTrim) return sendJSON(res, 200, { ok: false, reason: 'Savolingizni kiriting.' });
+      if (qTrim.length > 300) return sendJSON(res, 200, { ok: false, reason: 'Savol juda uzun (300 belgigacha).' });
+
+      const monthAgo = new Date(Date.now() - 30 * 86400000);
+      const ctx = {
+        cashflow: computeCashflow(owner),
+        topItems: computeTopItems(owner, monthAgo, 10),
+        peak: computePeakTimes(owner, monthAgo),
+        forecast: computeStockForecast(owner, null)
+      };
+
+      if (!ANTHROPIC_API_KEY) {
+        return sendJSON(res, 200, { ok: true, answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+      }
+
+      const systemPrompt = 'Sen oshxona (restoran) egasiga o\'zbek tilida yordam beruvchi qisqa AI tahlilchisan. ' +
+        'Faqat berilgan JSON ma\'lumotlar asosida javob ber, o\'ylab topma. 2-4 gaplik, aniq raqamlar bilan qisqa javob yoz.\n' +
+        'Ma\'lumotlar (JSON):\n' + JSON.stringify(ctx);
+
+      try {
+        const answer = await callAnthropicApi(systemPrompt, qTrim);
+        return sendJSON(res, 200, { ok: true, answer, source: 'ai' });
+      } catch (e) {
+        return sendJSON(res, 200, { ok: true, answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+      }
+    });
+    return;
+  }
+
+  // ---- API: xodimning amallar jurnali — kim, qachon, nima qildi (faqat egasi, so'nggi yozuvlar) ----
+  if (req.method === 'POST' && req.url === '/api/staff-activity-log') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, staffId, limit } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const staffById = new Map((owner.staff || []).map(s => [String(s.id), s]));
+      let log = owner.staffActionLog || [];
+      if (staffId) log = log.filter(e => String(e.userId) === String(staffId));
+
+      const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+      const entries = log.slice(0, lim).map(e => {
+        const isOwnerEntry = String(e.userId) === String(owner.id);
+        const staff = staffById.get(String(e.userId));
+        return Object.assign({}, e, {
+          displayName: isOwnerEntry ? 'Egasi' : (staff ? staffDisplayName(staff) : `ID: ${e.userId}`),
+          roleLabel: isOwnerEntry ? 'Egasi' : (STAFF_ROLES[e.role] || e.role)
+        });
+      });
+
+      return sendJSON(res, 200, { ok: true, entries, staff: owner.staff || [] });
+    });
+    return;
+  }
+
+  // ---- API: 17-bosqich — Telegramga yuborilmagan bildirishnomalar jurnali
+  // (masalan: xodim botga /start bosmagan yoki uni block qilgan) — faqat
+  // egasi ko'radi. owner.notificationErrors notifyStaffList() tomonidan
+  // to'ldiriladi (qarang: sendMessage/notifyStaffList yuqorida). ----
+  if (req.method === 'POST' && req.url === '/api/notification-error-log') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'notification-log')) return sendJSON(res, 200, featureBlockedResult('notification-log'));
+
+      return sendJSON(res, 200, { ok: true, entries: owner.notificationErrors || [] });
+    });
+    return;
+  }
+
+  // ---- API: bildirishnoma xatolari jurnalini tozalash (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/notification-error-log-clear') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'notification-log')) return sendJSON(res, 200, featureBlockedResult('notification-log'));
+
+      owner.notificationErrors = [];
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: 30 kunlik (yoki tanlangan davr) xodimlar faoliyati hisoboti + reyting (faqat egasi) ----
+  if (req.method === 'POST' && req.url === '/api/staff-performance-report') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, period } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'staff-performance')) return sendJSON(res, 200, featureBlockedResult('staff-performance'));
+
+      const fromDate = resolvePeriodStart(period || 'month');
+      const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
+
+      const report = (owner.staff || []).map(staff => {
+        const mine = log.filter(e => String(e.userId) === String(staff.id));
+        const actionCount = mine.length;
+        const errorCount = mine.reduce((sum, e) => sum + (e.errorCount || 0), 0);
+        const lastActiveAt = mine.length ? mine.reduce((max, e) => e.createdAt > max ? e.createdAt : max, mine[0].createdAt) : null;
+        return {
+          id: staff.id,
+          username: staff.username || null,
+          fullName: staffDisplayName(staff),
+          role: staff.role,
+          roles: normalizeStaffRoles(staff),
+          roleLabel: rolesLabel(normalizeStaffRoles(staff)),
+          actionCount, errorCount, lastActiveAt,
+          score: actionCount - errorCount * 2
+        };
+      });
+
+      report.sort((a, b) => b.score - a.score);
+      if (report.length && report[0].actionCount > 0) report[0].isTop = true;
+
+      return sendJSON(res, 200, { ok: true, report, period: period || 'month' });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasining o'z profilini olish ----
+  if (req.method === 'POST' && req.url === '/api/my-profile') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
+
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+
+      // 58-bosqich: do'kon egasi o'z profilida joriy tarifini ko'rishi uchun
+      // tariff nomi ham shu javobga qo'shiladi (tariffId bo'lmasa yoki
+      // o'chirilgan bo'lsa — null).
+      let tariffInfo = null;
+      if (owner.tariffId) {
+        const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+        if (tariff) tariffInfo = { id: tariff.id, name: tariff.name };
+      }
+
+      return sendJSON(res, 200, { ok: true, profile: owner.profile || null, tariff: tariffInfo });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasi o'z profilini to'ldiradi/yangilaydi ----
+  if (req.method === 'POST' && req.url === '/api/save-profile') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, address, phone, workHours, logoUrl, brandColor } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
+
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+
+      const nameTrim = String(name || '').trim();
+      const addressTrim = String(address || '').trim();
+      const phoneTrim = String(phone || '').trim();
+      const workHoursTrim = String(workHours || '').trim();
+      const logoTrim = String(logoUrl || '').trim();
+      const brandColorTrim = String(brandColor || '').trim();
+
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Oshxona nomini kiriting.' });
+      if (!addressTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzilni kiriting.' });
+      if (!phoneTrim || !/^[\d+\-\s()]{6,20}$/.test(phoneTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini to\'g\'ri kiriting.' });
+      }
+      if (logoTrim && !isValidImageValue(logoTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.' });
+      }
+      if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #E4232A).' });
+      }
+
+      // 19-bosqich: 'restaurant-brand' faqat logo/brend rangini o'zgartirishni
+      // cheklaydi — nom/manzil/telefon/ish vaqti asosiy profil ma'lumoti bo'lgani
+      // uchun tarifdan qat'i nazar har doim saqlanadi. Owner logo/rangni
+      // o'zgartirmoqchi bo'lganda (mavjud qiymatdan farqli yangi qiymat
+      // yuborsa) va tarifda bu funksiya yopiq bo'lsa — bloklanadi; oldingi
+      // qiymatni o'zgartirmasdan qayta yuborish (masalan forma qayta
+      // saqlanganda) esa xatoga olib kelmaydi.
+      if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
+        const existingLogo = (owner.profile && owner.profile.logoUrl) || '';
+        const existingBrandColor = (owner.profile && owner.profile.brandColor) || '';
+        if (logoTrim !== existingLogo || brandColorTrim !== existingBrandColor) {
+          return sendJSON(res, 200, featureBlockedResult('restaurant-brand'));
+        }
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, userId);
+      const wasCompleted = !!(target.profile && target.profile.completedAt);
+      target.profile = {
+        name: nameTrim,
+        address: addressTrim,
+        phone: phoneTrim,
+        workHours: workHoursTrim || null,
+        logoUrl: logoTrim || null,
+        brandColor: brandColorTrim || null,
+        completedAt: wasCompleted ? target.profile.completedAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, { ok: true, profile: target.profile });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egalari ro'yxatini olish (faqat admin) ----
+  // MUHIM: passwordHash/sessionToken kabi maxfiy maydonlar frontendga hech qachon
+  // yuborilmaydi — faqat login mavjudligini bildiruvchi hasLogin bayrog'i qaytariladi.
+  // ==================== F. Obuna (tarif) tizimi (51-70-bosqich) ====================
+  // 51-bosqich: admin tariflar sonini va nomini o'zi belgilaydi — tariflar
+  // umumiy katalog sifatida (tariffs.json) saqlanadi, keyingi bosqichlarda
+  // (52-narx va 53-54-funksiyalar bosqichlari bajarildi; 57-do'kon
+  // egasiga biriktirish) shu
+  // yozuvlar kengaytiriladi.
+
+  // ---- API: tizimdagi barcha funksiyalar ro'yxati (faqat admin, 53-bosqich) ----
+  // 54-bosqichda shu ro'yxat asosida "Funksiya × Tarif" jadvali chiziladi;
+  // hozircha faqat guruhlangan katalogni qaytaradi.
+  if (req.method === 'POST' && req.url === '/api/feature-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      return sendJSON(res, 200, { ok: true, groups: getFeatureCatalogGrouped() });
+    });
+    return;
+  }
+
+  // ---- API: tariflar ro'yxati (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/tariff-list') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      // 68-bosqich: tarif bo'yicha statistika — har bir tarifda nechta
+      // do'kon egasi borligini ham shu yerda hisoblab qo'shamiz, frontend
+      // qayta so'rov yubormasligi uchun.
+      const owners = loadOwners();
+      const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map(t => ({ ...t, ownerCount: owners.filter(o => o.tariffId === t.id).length }));
+      return sendJSON(res, 200, { ok: true, tariffs });
+    });
+    return;
+  }
+
+  // ---- API: yangi tarif qo'shish (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/tariff-add') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name, price } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
+
+      let priceVal = 0;
+      if (price !== undefined && price !== null && String(price).trim() !== '') {
+        priceVal = Number(price);
+        if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
+      }
+
+      const tariffs = loadTariffs();
+      if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
+        return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
+      }
+      const tariff = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: nameTrim,
+        order: tariffs.length,
+        price: priceVal,
+        // 65-bosqich: muddat tugashiga necha kun qolganda eslatma yuborilishi —
+        // har bir tarif o'zining qiymatini belgilashi mumkin (standart: 1 kun,
+        // eski, tarif tizimidan oldingi umumiy xulq bilan bir xil).
+        reminderDays: 1,
+        features: {},
+        createdAt: new Date().toISOString()
+      };
+      tariffs.push(tariff);
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true, tariff });
+    });
+    return;
+  }
+
+  // ---- API: tarif nomi va narxini o'zgartirish (faqat admin) ----
+  // 52-bosqich: narx ham shu endpoint orqali yangilanadi — name har doim
+  // yuboriladi, price ixtiyoriy (yuborilmasa eski narx saqlanib qoladi).
+  if (req.method === 'POST' && req.url === '/api/tariff-rename') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, name, price, reminderDays } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+
+      const nameTrim = String(name || '').trim();
+      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
+
+      const tariffs = loadTariffs();
+      const tariff = tariffs.find(t => t.id === id);
+      if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+      if (tariffs.some(t => t.id !== id && t.name.toLowerCase() === nameTrim.toLowerCase())) {
+        return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
+      }
+      if (price !== undefined && price !== null && String(price).trim() !== '') {
+        const priceVal = Number(price);
+        if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
+        tariff.price = priceVal;
+      }
+      // 65-bosqich: shu tarifdagi egalar uchun muddat tugashi eslatmasi
+      // necha kun oldin yuborilishi (checkOwnerExpirations() shundan foydalanadi).
+      if (reminderDays !== undefined && reminderDays !== null && String(reminderDays).trim() !== '') {
+        const reminderVal = parseInt(reminderDays, 10);
+        if (!Number.isInteger(reminderVal) || reminderVal <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Eslatma kunlari musbat butun son bo\'lishi kerak.' });
+        }
+        tariff.reminderDays = reminderVal;
+      }
+      tariff.name = nameTrim;
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true, tariff });
+    });
+    return;
+  }
+
+  // ---- API: tarifni o'chirish (faqat admin, 55-bosqich) ----
+  // Agar tarif biror do'kon egasiga biriktirilgan bo'lsa (owner.tariffId),
+  // oddiy so'rovda o'chirishga yo'l qo'yilmaydi — admin avval buni bilishi
+  // kerak. force:true yuborilsa, biriktirilgan egalar tarifsiz (tariffId:null)
+  // qoldiriladi va tarif shunday ham o'chiriladi.
+  if (req.method === 'POST' && req.url === '/api/tariff-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, force } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+
+      const tariffs = loadTariffs();
+      const idx = tariffs.findIndex(t => t.id === id);
+      if (idx === -1) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+
+      const owners = loadOwners();
+      const assignedOwners = owners.filter(o => o.tariffId === id);
+      if (assignedOwners.length && !force) {
+        return sendJSON(res, 200, {
+          ok: false,
+          reason: `Bu tarifga ${assignedOwners.length} ta do'kon egasi biriktirilgan. Avval ularni boshqa tarifga o'tkazing, yoki tasdiqlab, ularni tarifsiz qoldirib o'chiring.`,
+          blockedCount: assignedOwners.length
+        });
+      }
+      if (assignedOwners.length && force) {
+        assignedOwners.forEach(o => { o.tariffId = null; });
+        saveOwners(owners);
+      }
+
+      tariffs.splice(idx, 1);
+      // Qolgan tariflarning order'ini qayta tekislaydi (ro'yxatda bo'shliq qolmasin)
+      tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: tarifga funksiyalarni ✅/❌ belgilash (faqat admin, 54-bosqich) ----
+  // features — { featureId: true|false } ko'rinishidagi to'liq xarita;
+  // faqat FEATURE_CATALOG'da mavjud id'lar qabul qilinadi, qolgani e'tiborsiz
+  // qoldiriladi. Yuborilgan xarita tarifning eski features'ini TO'LIQ
+  // almashtiradi (checkbox'lar UI'da hammasi birga saqlanadi).
+  if (req.method === 'POST' && req.url === '/api/tariff-set-features') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, features } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
+
+      const tariffs = loadTariffs();
+      const tariff = tariffs.find(t => t.id === id);
+      if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
+
+      const validIds = new Set(FEATURE_CATALOG.map(f => f.id));
+      const cleaned = {};
+      if (features && typeof features === 'object') {
+        for (const fid of Object.keys(features)) {
+          if (validIds.has(fid)) cleaned[fid] = !!features[fid];
+        }
+      }
+      tariff.features = cleaned;
+      saveTariffs(tariffs);
+
+      return sendJSON(res, 200, { ok: true, tariff });
+    });
+    return;
+  }
+  // Serverning umumiy holatini (ishlash vaqti, xotira, xodimlar/buyurtmalar
+  // soni, ma'lumot fayllari hajmi, webhook statistikasi) bitta so'rovda
+  // qaytaradi — faqat admin ko'ra oladi.
+  if (req.method === 'POST' && req.url === '/api/system-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const owners = loadOwners();
+      const activeOwners = owners.filter(isOwnerAccessValid);
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      let totalStaff = 0, totalOrders = 0, todayOrders = 0, totalNotifErrors = 0;
+      owners.forEach(o => {
+        totalStaff += (o.staff || []).length;
+        const orders = o.orders || [];
+        totalOrders += orders.length;
+        todayOrders += orders.filter(ord => ord.createdAt && new Date(ord.createdAt) >= todayStart).length;
+        totalNotifErrors += (o.notificationErrors || []).length;
+      });
+
+      function fileInfo(file) {
+        try {
+          const st = fs.statSync(file);
+          return { exists: true, sizeKb: Math.round(st.size / 1024 * 10) / 10 };
+        } catch (e) {
+          return { exists: false, sizeKb: 0 };
+        }
+      }
+
+      const mem = process.memoryUsage();
+
+      return sendJSON(res, 200, {
+        ok: true,
+        status: {
+          uptimeSeconds: Math.floor(process.uptime()),
+          serverStartedAt: SERVER_STARTED_AT,
+          nodeVersion: process.version,
+          memoryRssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
+          owners: { total: owners.length, active: activeOwners.length, expired: owners.length - activeOwners.length },
+          totalStaff,
+          totalOrders,
+          todayOrders,
+          notificationErrors: totalNotifErrors,
+          webhook: webhookStats,
+          botConfigured: !!BOT_TOKEN && BOT_TOKEN !== 'BOT_TOKEN_BU_YERGA',
+          publicUrlConfigured: !!PUBLIC_URL,
+          dataFiles: {
+            owners: fileInfo(OWNERS_FILE),
+            invites: fileInfo(INVITES_FILE),
+            requests: fileInfo(REQUESTS_FILE),
+            profiles: fileInfo(PROFILES_FILE)
+          }
+        }
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/owners') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const owners = pruneExpiredOwners().map(o => {
+        const clean = Object.assign({}, o);
+        delete clean.passwordHash;
+        delete clean.sessionToken;
+        delete clean.sessionExpiresAt;
+        clean.hasLogin = !!(o.login && o.passwordHash);
+        return clean;
+      });
+      // 67-bosqich: umumiy daromad — payments.json (to'liq tarix) asosida,
+      // joriy owners.json holatining oddiy yig'indisi emas. Shu bilan owner
+      // o'chirilgan/tarifi o'zgargan taqdirda ham o'tmishdagi to'lovlar
+      // hisobdan tushib qolmaydi (69-bosqich talabiga mos).
+      const payments = loadPayments();
+      const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+      const revenue = {
+        totalLifetime: payments.reduce((s, p) => s + (Number(p.amount) || 0), 0),
+        thisMonth: payments.filter(p => new Date(p.at).getTime() >= monthStart).reduce((s, p) => s + (Number(p.amount) || 0), 0),
+        paymentCount: payments.length
+      };
+      return sendJSON(res, 200, { ok: true, owners, revenue });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasiga tarif biriktirish (faqat admin, 57-bosqich) ----
+  // tariffId — tariffs.json'dagi bitta yozuvning id'si, yoki null/bo'sh —
+  // egani tarifsiz qoldirish uchun (masalan tarif o'chirilganda ham shu
+  // holatga tushadi, qarang: /api/tariff-remove).
+  if (req.method === 'POST' && req.url === '/api/owner-set-tariff') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, tariffId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      if (tariffId) {
+        const tariffs = loadTariffs();
+        if (!tariffs.some(t => t.id === tariffId)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Bunday tarif topilmadi.' });
+        }
+        owner.tariffId = tariffId;
+      } else {
+        owner.tariffId = null;
+      }
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, tariffId: owner.tariffId });
+    });
+    return;
+  }
+  // ====== 63/64-bosqich + 76-bosqich tuzatishi: obuna muddatini uzaytirish/qisqartirish/bekor qilish ======
+  // action:
+  //  - 'extend'    : joriy muddatga (yoki u tugagan/yo'q bo'lsa hozirgi vaqtga)
+  //                  `days` kun qo'shadi.
+  //  - 'setDate'   : `date` (YYYY-MM-DD) ga aniq belgilaydi — kelajakdagi sana
+  //                  uzaytirish, o'tmishdagi/bugungi sana esa DARHOL BLOKLASH
+  //                  bilan bir xil (pastga qarang).
+  //  - 'unlimited' : muddatni tozalaydi (doimiy ruxsat).
+  //  - 'cancelNow' : obunani darhol bloklaydi.
+  //
+  // 76-BOSQICH TUZATISHI: ilgari 'setDate' (o'tmish sana) va 'cancelNow'
+  // ownerni owners.json'dan BUTUNLAY O'CHIRIB YUBORARDI (checkOwnerExpirations()
+  // bilan bir xil xato). Endi ikkalasi ham FAQAT bloklaydi (subscriptionStatus:
+  // 'blocked') — menyu, xodimlar, buyurtmalar tarixi saqlanib qoladi, admin
+  // istalgan vaqt qayta uzaytirishi mumkin. Ownerni HAQIQATAN butunlay
+  // o'chirish kerak bo'lsa, buning uchun alohida /api/remove-owner mavjud
+  // (u ataylab, admin ongli ravishda "ro'yxatdan chiqarish"ni tanlaganda
+  // ishlatiladi — bu yerdagi kabi obuna muddati sabab emas).
+  //
+  // Barcha amallarda ham subscriptionUntil (yangi sxema) VA expiresAt (eski,
+  // frontend hali shuni o'qiydigan bo'lishi mumkin — moslik uchun) birga
+  // yangilanadi. owner.reminderSentAt/blockedNotifiedAt ham tozalanadi —
+  // muddat o'zgargach, eslatma/bloklanish xabari yangi holatga nisbatan
+  // to'g'ri vaqtda qayta hisoblansin uchun.
+  if (req.method === 'POST' && req.url === '/api/owner-set-expiry') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, action, days, date } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      if (action === 'extend') {
+        const n = parseInt(days, 10);
+        if (!Number.isInteger(n) || n <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak.' });
+        }
+        const currentMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
+        const base = Number.isFinite(currentMs) && currentMs > Date.now() ? currentMs : Date.now();
+        const untilIso = new Date(base + n * 86400000).toISOString();
+        owner.subscriptionUntil = untilIso;
+        owner.expiresAt = untilIso;
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+        owner.graceUntil = null;
+        owner.reminderSentAt = null;
+        owner.blockedNotifiedAt = null;
+        saveOwners(owners);
+        return sendJSON(res, 200, { ok: true, owner });
+      }
+
+      if (action === 'setDate') {
+        const d = new Date(date);
+        if (!date || isNaN(d.getTime())) {
+          return sendJSON(res, 200, { ok: false, reason: 'Sana noto\'g\'ri.' });
+        }
+        // Kun boshidan emas, kun oxiridan (23:59:59) hisoblanadi — admin
+        // "shu kungacha" deb tanlagan kun to'liq amal qilishi uchun.
+        d.setHours(23, 59, 59, 999);
+        if (d.getTime() <= Date.now()) {
+          owner.subscriptionUntil = d.toISOString();
+          owner.expiresAt = d.toISOString();
+          owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+          owner.graceUntil = null;
+          owner.blockedNotifiedAt = new Date().toISOString();
+          saveOwners(owners);
+          await sendMessage(ADMIN_ID,
+            `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
+          await sendMessage(owner.id,
+            `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti. Davom ettirish uchun administrator bilan bog'laning.`);
+          return sendJSON(res, 200, { ok: true, owner, blocked: true });
+        }
+        owner.subscriptionUntil = d.toISOString();
+        owner.expiresAt = d.toISOString();
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+        owner.graceUntil = null;
+        owner.reminderSentAt = null;
+        owner.blockedNotifiedAt = null;
+        saveOwners(owners);
+        return sendJSON(res, 200, { ok: true, owner });
+      }
+
+      if (action === 'unlimited') {
+        owner.subscriptionUntil = null;
+        owner.expiresAt = null;
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+        owner.graceUntil = null;
+        owner.reminderSentAt = null;
+        owner.blockedNotifiedAt = null;
+        saveOwners(owners);
+        return sendJSON(res, 200, { ok: true, owner });
+      }
+
+      if (action === 'cancelNow') {
+        const nowIso = new Date().toISOString();
+        owner.subscriptionUntil = nowIso;
+        owner.expiresAt = nowIso;
+        owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+        owner.graceUntil = null;
+        owner.blockedNotifiedAt = nowIso;
+        saveOwners(owners);
+        await sendMessage(ADMIN_ID,
+          `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
+        await sendMessage(owner.id,
+          `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti.`);
+        return sendJSON(res, 200, { ok: true, owner, blocked: true });
+      }
+
+      return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
+    });
+    return;
+  }
+  // Shu login/parol bilan owner Mini App'ni Telegram tashqarisida (brauzerdan)
+  // ham ochib, o'z panelига kira oladi (qarang: pastdagi /api/owner-login).
+  if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, login, password } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      const loginNorm = normalizeLogin(login);
+      if (!/^[a-z0-9_.]{3,32}$/.test(loginNorm)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Login 3-32 belgi, faqat lotin harflari/raqam/._ bo\'lishi mumkin.' });
+      }
+      const passwordStr = String(password || '');
+      if (passwordStr.length < 6) {
+        return sendJSON(res, 200, { ok: false, reason: 'Parol kamida 6 belgidan iborat bo\'lishi kerak.' });
+      }
+      const clash = owners.find(o => normalizeLogin(o.login) === loginNorm && String(o.id) !== String(owner.id));
+      if (clash) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu login band, boshqasini tanlang.' });
+      }
+
+      owner.login = loginNorm;
+      owner.passwordHash = hashPassword(passwordStr);
+      // Parol yangilansa, oldingi barcha sessiyalar bekor qilinadi (xavfsizlik uchun)
+      owner.sessionToken = null;
+      owner.sessionExpiresAt = null;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, login: owner.login });
+    });
+    return;
+  }
+
+  // ---- API: admin do'kon egasidan login/parolni olib tashlaydi (Telegram orqali kirish ishlayveradi) ----
+  if (req.method === 'POST' && req.url === '/api/remove-owner-credentials') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      owner.login = null;
+      owner.passwordHash = null;
+      owner.sessionToken = null;
+      owner.sessionExpiresAt = null;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: Telegram orqali kirgan egasi uchun bir martalik parol tasdig'i ----
+  // (Telegram initData o'zi kimligini tasdiqlaydi, lekin admin login/parol
+  // o'rnatib qo'ygan bo'lsa, qurilmada eslab qolinmaguncha parol so'raladi —
+  // qarang: frontend'dagi renderOwnerTelegramPasswordGate.)
+  if (req.method === 'POST' && req.url === '/api/owner-confirm-password') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, password } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+
+      if (!owner.login || !owner.passwordHash) {
+        // Admin bu egasiga login/parol o'rnatmagan — tekshirishning hojati yo'q
+        return sendJSON(res, 200, { ok: true, skipped: true });
+      }
+      if (!verifyPassword(password, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Parol noto\'g\'ri.' });
+      }
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: egasi (admin emas, o'zi) o'z parolini o'zgartiradi ----
+  // Login o'zgarmaydi — faqat parol. Joriy parol tasdiqlanadi, so'ng
+  // /api/set-owner-credentials'dagi bilan bir xil uzunlik validatsiyasi
+  // qo'llaniladi. Xavfsizlik uchun barcha eski sessiyalar (sess_ tokenlar)
+  // bekor qilinadi — shu qatordagi so'rov o'zi ham sess_ token orqali kirgan
+  // bo'lsa, keyingi so'rovlar uchun qayta login qilishi kerak bo'ladi.
+  if (req.method === 'POST' && req.url === '/api/owner-change-password') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, currentPassword, newPassword } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+
+      if (!owner.login || !owner.passwordHash) {
+        return sendJSON(res, 200, { ok: false, reason: 'Sizga hali login/parol biriktirilmagan. Administrator bilan bog\'laning.' });
+      }
+      if (!verifyPassword(currentPassword, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
+      }
+
+      // set-owner-credentials'dagi bilan bir xil parol validatsiyasi
+      const newPasswordStr = String(newPassword || '');
+      if (newPasswordStr.length < 6) {
+        return sendJSON(res, 200, { ok: false, reason: 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.' });
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, owner.id);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      target.passwordHash = hashPassword(newPasswordStr);
+      // Parol o'zgarganda, oldingi barcha sessiyalar bekor qilinadi (xavfsizlik uchun)
+      target.sessionToken = null;
+      target.sessionExpiresAt = null;
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: egasi (admin emas, o'zi) login+parolini butunlay o'chiradi ----
+  // Shundan keyin faqat Telegram orqali kirish qoladi (xuddi admin
+  // /api/remove-owner-credentials orqali o'chirganidagi kabi natija),
+  // lekin bu yerda amalni egasining o'zi, joriy parolini tasdiqlab bajaradi.
+  if (req.method === 'POST' && req.url === '/api/owner-remove-password') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, currentPassword } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+
+      if (!owner.login || !owner.passwordHash) {
+        // Login/parol allaqachon yo'q — o'chiradigan narsa yo'q
+        return sendJSON(res, 200, { ok: true, alreadyRemoved: true });
+      }
+      if (!verifyPassword(currentPassword, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, owner.id);
+      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      target.login = null;
+      target.passwordHash = null;
+      target.sessionToken = null;
+      target.sessionExpiresAt = null;
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: oshxona egasi login+parol bilan kiradi (Telegram tashqarisidan, masalan oddiy brauzerdan) ----
+  // Muvaffaqiyatli bo'lsa "sess_<token>" beriladi — frontend buni initData o'rniga ishlatadi.
+  if (req.method === 'POST' && req.url === '/api/owner-login') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { login, password } = payload;
+      const loginNorm = normalizeLogin(login);
+      if (!loginNorm || !password) {
+        return sendJSON(res, 200, { ok: false, reason: 'Login va parolni kiriting.' });
+      }
+
+      const owners = pruneExpiredOwners();
+      const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
+      if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Login yoki parol noto\'g\'ri.' });
+      }
+      if (!isOwnerAccessValid(owner)) {
+        return sendJSON(res, 200, subscriptionBlockedJSON(owners, owner.id, 'Obuna muddati tugagan. Administrator bilan bog\'laning.'));
+      }
+
+      const owners2 = loadOwners();
+      const target = findOwner(owners2, owner.id);
+      const token = crypto.randomBytes(24).toString('hex');
+      target.sessionToken = token;
+      target.sessionExpiresAt = new Date(Date.now() + SESSION_TOKEN_TTL_MS).toISOString();
+      saveOwners(owners2);
+
+      return sendJSON(res, 200, {
+        ok: true,
+        sessionToken: `sess_${token}`,
+        restaurantName: (target.profile && target.profile.name) || null
+      });
+    });
+    return;
+  }
+
+  // ---- API: oshxona egasi chiqadi (joriy sessiyani bekor qiladi) ----
+  if (req.method === 'POST' && req.url === '/api/owner-logout') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      if (typeof initData === 'string' && initData.startsWith('sess_')) {
+        const token = initData.slice('sess_'.length);
+        const owners = loadOwners();
+        const owner = owners.find(o => o.sessionToken === token);
+        if (owner) {
+          owner.sessionToken = null;
+          owner.sessionExpiresAt = null;
+          saveOwners(owners);
+        }
+      }
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // ---- API: yangi do'kon egasini qo'shish (faqat admin, tasdiqdan keyin frontend chaqiradi) ----
+  if (req.method === 'POST' && req.url === '/api/add-owner') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, input, days, price, paid } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
+
+      const resolved = await resolveUserInput(input);
+      if (resolved.error) return sendJSON(res, 200, { ok: false, reason: resolved.error });
+
+      let expiresAt = null;
+      if (days !== undefined && days !== null && days !== '') {
+        const n = parseInt(days, 10);
+        if (!Number.isInteger(n) || n <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (doimiy).' });
+        }
+        expiresAt = new Date(Date.now() + n * 86400000).toISOString();
+      }
+
+      // Obuna narxi — ixtiyoriy, kiritilmasa 0 deb saqlanadi
+      let priceVal = 0;
+      if (price !== undefined && price !== null && price !== '') {
+        const p = Number(price);
+        if (!Number.isFinite(p) || p < 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+        }
+        priceVal = p;
+      }
+
+      const owners = loadOwners();
+      if (isAdminId(resolved.id)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi allaqachon administrator' });
+      }
+      if (findOwner(owners, resolved.id)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi ro\'yxatda allaqachon bor' });
+      }
+
+      const newOwner = {
+        id: resolved.id,
+        username: resolved.username || null,
+        addedAt: new Date().toISOString(),
+        expiresAt,
+        price: priceVal,
+        paid: !!paid,
+        paidAt: paid ? new Date().toISOString() : null,
+        // 71-bosqich: admin qo'lda qo'shgan owner ham darhol yangi obuna
+        // sxemasiga mos keladi — expiresAt bilan sinxron holda 'active'
+        // sifatida boshlanadi (o'zi ro'yxatdan o'tgan pending_trial holati
+        // 10-bosqichda qo'shiladi, bu yerga tegishli emas).
+        subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+        subscriptionUntil: expiresAt,
+        graceUntil: null,
+        trialGivenAt: null
+      };
+      owners.push(newOwner);
+      saveOwners(owners);
+      if (newOwner.paid) recordPayment(newOwner, priceVal);
+
+      return sendJSON(res, 200, { ok: true, owner: newOwner });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasining obuna narxi / to'lov holatini yangilash (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/update-owner-billing') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, price, paid } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, id);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+
+      if (price !== undefined && price !== null && price !== '') {
+        const p = Number(price);
+        if (!Number.isFinite(p) || p < 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
+        }
+        owner.price = p;
+      }
+
+      let justPaid = false;
+      if (paid !== undefined && paid !== null) {
+        const wasPaid = !!owner.paid;
+        owner.paid = !!paid;
+        if (owner.paid && !wasPaid) { owner.paidAt = new Date().toISOString(); justPaid = true; }
+        if (!owner.paid) owner.paidAt = null;
+      }
+
+      saveOwners(owners);
+      // Faqat "to'lanmagan" -> "to'langan" haqiqiy o'tishida ledger'ga
+      // yozamiz (narx shu paytdagi owner.price bo'yicha — yuqorida
+      // yangilangan bo'lishi mumkin) — paid:true qayta yuborilsa qayta
+      // yozilmaydi.
+      if (justPaid) {
+        recordPayment(owner, owner.price);
+      }
+      return sendJSON(res, 200, { ok: true, owner });
+    });
+    return;
+  }
+
+  // ---- API: do'kon egasini ro'yxatdan o'chirish (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/remove-owner') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+
+      let owners = loadOwners();
+      const before = owners.length;
+      const target = findOwner(owners, id);
+      // 69-bosqich: owner o'chirilishidan OLDIN uning buyurtmalar tarixini
+      // arxivga ko'chiramiz — aks holda owner.orders owner bilan birga
+      // butunlay yo'qolib ketardi.
+      if (target) archiveOwnerOrders(target);
+      owners = owners.filter(o => String(o.id) !== String(id));
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, removed: before !== owners.length });
+    });
+    return;
+  }
+
+  // ---- API: bir martalik taklif havolasi yaratish (faqat admin) ----
+  if (req.method === 'POST' && req.url === '/api/create-invite') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin havola yarata oladi' });
+
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+
+      const token = createInvite();
+      const link = `https://t.me/${BOT_USERNAME}?start=inv_${token}`;
+      return sendJSON(res, 200, { ok: true, link });
+    });
+    return;
+  }
+
+  // ---- Telegram webhook: bot xabarlari va tugma bosishlari shu yerga keladi ----
+  if (req.method === 'POST' && req.url === '/webhook') {
+    if (WEBHOOK_SECRET) {
+      const got = req.headers['x-telegram-bot-api-secret-token'];
+      if (got !== WEBHOOK_SECRET) {
+        res.writeHead(401); res.end(); return;
+      }
+    }
+    readBody(req, async (err, update) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+      if (err) return;
+      webhookStats.received++;
+      webhookStats.lastAt = new Date().toISOString();
+      try { await handleTelegramUpdate(update); } catch (e) { webhookStats.errors++; console.error('Webhook xatosi:', e); }
+    });
+    return;
+  }
+
+  // ---- Statik fayllarni berish (faqat public papkasidan) ----
+  const urlPathOnly = req.url.split('?')[0];
+  let filePath = (urlPathOnly === '/' || urlPathOnly === '') ? '/index.html' : urlPathOnly;
+  filePath = path.join(__dirname, 'public', path.normalize(filePath).replace(/^(\.\.[\/\\])+/, ''));
+
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      return res.end('404');
+    }
+    const ext = path.extname(filePath);
+    const type = ext === '.html' ? 'text/html'
+      : ext === '.js' ? 'application/javascript'
+      : ext === '.css' ? 'text/css'
+      : ext === '.json' ? 'application/json'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.png' ? 'image/png'
+      : 'text/plain';
+    res.writeHead(200, { 'Content-Type': type + '; charset=utf-8' });
+    res.end(data);
+  });
+});
+
+server.listen(PORT, async () => {
+  console.log(`Server ${PORT}-portda ishga tushdi`);
+
+  // 78-BOSQICH: admins.json'dagi qo'shimcha adminlarni xotiraga yuklash
+  // (isAdminId() shu xotiradagi ro'yxatdan foydalanadi).
+  reloadAdminsCache();
+  console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
+
+  // Obuna muddatlarini tekshirish — darhol bir marta, keyin har soatda
+  checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
+  setInterval(() => {
+    checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
+  }, EXPIRY_CHECK_INTERVAL_MS);
+
+  if (PUBLIC_URL) {
+    try {
+      const params = { url: `${PUBLIC_URL.replace(/\/$/, '')}/webhook` };
+      if (WEBHOOK_SECRET) params.secret_token = WEBHOOK_SECRET;
+      const result = await telegramApi('setWebhook', params);
+      console.log('Telegram webhook o\'rnatildi:', result.ok ? 'muvaffaqiyatli' : JSON.stringify(result));
+    } catch (e) {
+      console.error('Webhook o\'rnatishda xatolik:', e.message);
+    }
+  } else {
+    console.log('Eslatma: PUBLIC_URL sozlanmagan — webhook avtomatik o\'rnatilmadi. README\'dagi qo\'lda sozlash bo\'limiga qarang.');
+  }
+});
