@@ -2990,6 +2990,26 @@ function aiDirTashkentHour(input) {
   const d = (input instanceof Date) ? input : new Date(input);
   return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCHours();
 }
+// Haftalik hisobot (30-bosqich) qaysi kuni yuborilishi — 1 = Dushanba
+// (JS getUTCDay(): 0=Yakshanba..6=Shanba). Kunlik hisobot bilan bir xil
+// soatda (AI_DIRECTOR_HOUR) yuboriladi, faqat haftada bir marta.
+const AI_DIRECTOR_WEEKLY_DAY = 1;
+function aiDirTashkentWeekday(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCDay();
+}
+// Haftalik hisobot qayta yuborilmasligi uchun "kalit" — joriy haftaning
+// Dushanba sanasi (Toshkent vaqti bo'yicha), masalan "2026-07-20". ISO
+// hafta raqamlash kutubxonasiz, yil chegarasida ham xato bermaydi.
+function aiDirWeekKey(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  const tashkent = new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS);
+  const day = tashkent.getUTCDay();
+  const diffToMonday = (day === 0) ? -6 : (1 - day);
+  const monday = new Date(tashkent.getTime());
+  monday.setUTCDate(monday.getUTCDate() + diffToMonday);
+  return monday.toISOString().slice(0, 10);
+}
 
 // [fromDate, toDate) oralig'idagi kirim/xarajat/foyda/buyurtmalar soni.
 function aiDirCashBucket(owner, fromDate, toDate) {
@@ -3139,20 +3159,95 @@ async function sendAiDirectorDigest(owner, force) {
   return true;
 }
 
+// 30-bosqich (2-yarmi): "Haftalik hisobot" — kunlik hisobotdagi bilan bir
+// xil ma'lumot manbalaridan (aiDirCashBucket/aiDirItemStats/aiDirStockRunway/
+// aiDirDecliningItems) foydalanadi, faqat oxirgi 7 kunni BUTUNLIGICHA
+// (kechagi bitta kun emas) umumlashtiradi — shu sababli alohida funksiya
+// emas, mavjudlarning ustiga qurilgan.
+function buildAiWeeklyDirectorText(owner) {
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 86400000);
+  const prevWeekAgo = new Date(now.getTime() - 14 * 86400000);
+
+  const thisWeek = aiDirCashBucket(owner, weekAgo, now);
+  const prevWeek = aiDirCashBucket(owner, prevWeekAgo, weekAgo);
+  const incomeChangePercent = prevWeek.income > 0
+    ? Math.round(((thisWeek.income - prevWeek.income) / prevWeek.income) * 100)
+    : null;
+
+  const itemStats = Array.from(aiDirItemStats(owner, weekAgo, now).values())
+    .sort((a, b) => b.revenue - a.revenue).slice(0, 3);
+
+  const runway = aiDirStockRunway(owner);
+  const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 5);
+  const declining = aiDirDecliningItems(owner);
+
+  const lines = ['📅 <b>Haftalik hisobot</b>', ''];
+  lines.push(`Haftalik tushum: <b>${fmtNum(thisWeek.income)} so'm</b>` +
+    (incomeChangePercent !== null ? ` (${incomeChangePercent > 0 ? '+' : ''}${incomeChangePercent}%)` : ''));
+  lines.push(`Haftalik foyda: <b>${fmtNum(thisWeek.net)} so'm</b> (${thisWeek.orderCount} ta buyurtma)`);
+
+  if (itemStats.length) {
+    lines.push('');
+    lines.push('🏆 <b>Eng ko\'p sotilgan taomlar (7 kun):</b>');
+    itemStats.forEach((it, i) => lines.push(`${i + 1}. ${escapeHtmlServer(it.name)} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`));
+  }
+
+  if (urgentStock.length) {
+    lines.push('');
+    lines.push('⚠️ <b>Tez tugaydigan mahsulotlar:</b>');
+    for (const s of urgentStock) {
+      lines.push(s.daysLeft < 1
+        ? `• ${escapeHtmlServer(s.name)} — bugun-erta tugashi mumkin`
+        : `• ${escapeHtmlServer(s.name)} — taxminan ${Math.floor(s.daysLeft)} kunga yetadi`);
+    }
+  }
+
+  if (declining.length) {
+    const d = declining[0];
+    lines.push('');
+    lines.push(`Oxirgi 7 kunda <b>${escapeHtmlServer(d.name)}</b> savdosi ${Math.abs(d.changePercent)}% kamaygan.`);
+    lines.push(`💡 <b>Tavsiya:</b> ${escapeHtmlServer(d.name)} uchun aksiya qiling yoki keyingi haftaga xaridni kamaytiring.`);
+  }
+
+  return lines.join('\n');
+}
+
+// sendAiDirectorDigest'ga o'xshaydi, faqat haftada BIR MARTA (aiDirWeekKey
+// asosida) yuboradi va owner.aiWeeklyLastSent'ga yozadi.
+async function sendAiWeeklyDirectorDigest(owner, force) {
+  const weekKey = aiDirWeekKey(new Date());
+  if (!force && owner.aiWeeklyLastSent === weekKey) return false;
+  const text = buildAiWeeklyDirectorText(owner);
+  await sendMessage(owner.id, text);
+  owner.aiWeeklyLastSent = weekKey;
+  return true;
+}
+
 // Har 10 daqiqada bir marta tekshiradi: Toshkent vaqti bilan soat
 // AI_DIRECTOR_HOUR bo'lgan (va bugun hali yuborilmagan) har bir egaga
 // avtomatik yuboradi. `aiDirectorEnabled` egasi tomonidan o'chirilgan
 // bo'lsa (=== false), o'sha egaga yuborilmaydi (standart holat - yoqilgan).
+// Xuddi shu tekshiruv ichida — agar bugun AI_DIRECTOR_WEEKLY_DAY (Dushanba)
+// bo'lsa — haftalik hisobot ham (alohida `aiWeeklyEnabled` bayrog'i bilan)
+// yuboriladi. Ikkalasi bitta intervalda birlashtirilgan — ikkita alohida
+// setInterval o'rniga.
 setInterval(() => {
   if (aiDirTashkentHour(new Date()) !== AI_DIRECTOR_HOUR) return;
+  const isWeeklyDay = aiDirTashkentWeekday(new Date()) === AI_DIRECTOR_WEEKLY_DAY;
   const owners = pruneExpiredOwners();
   let changed = false;
   (async () => {
     for (const owner of owners) {
       if (!isOwnerAccessValid(owner)) continue;
-      if (owner.aiDirectorEnabled === false) continue;
-      const sent = await sendAiDirectorDigest(owner, false);
-      if (sent) changed = true;
+      if (owner.aiDirectorEnabled !== false) {
+        const sent = await sendAiDirectorDigest(owner, false);
+        if (sent) changed = true;
+      }
+      if (isWeeklyDay && owner.aiWeeklyEnabled !== false) {
+        const sentWeekly = await sendAiWeeklyDirectorDigest(owner, false);
+        if (sentWeekly) changed = true;
+      }
     }
     if (changed) saveOwners(owners);
   })().catch(() => {});
@@ -6746,13 +6841,21 @@ const server = http.createServer((req, res) => {
       if (used7d <= 0) continue; // ishlatilmagan mahsulot uchun prognoz chiqarmaymiz
       const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
       const predictedNeed = Math.round(avgDaily * 1000) / 1000;
+      // 26-bosqich: "necha kunda tugaydi" — joriy qoldiq / kunlik o'rtacha sarf.
+      // 27-bosqich: daysLeft <= 3 bo'lgan mahsulotlar "tez tugaydigan" deb belgilanadi.
+      const daysLeft = avgDaily > 0 ? Math.round((item.qty / avgDaily) * 10) / 10 : null;
       forecast.push({
         stockId: item.id, name: item.name, unit: item.unit,
         currentQty: item.qty, avgDailyUsage: avgDaily, predictedNeed,
-        shortage: item.qty < predictedNeed
+        shortage: item.qty < predictedNeed,
+        daysLeft, urgent: daysLeft !== null && daysLeft <= 3
       });
     }
-    forecast.sort((a, b) => (b.shortage - a.shortage) || (b.avgDailyUsage - a.avgDailyUsage));
+    forecast.sort((a, b) => {
+      const aLeft = a.daysLeft === null ? Infinity : a.daysLeft;
+      const bLeft = b.daysLeft === null ? Infinity : b.daysLeft;
+      return aLeft - bLeft;
+    });
     return forecast;
   }
 
@@ -6927,6 +7030,75 @@ const server = http.createServer((req, res) => {
       owner.aiDirectorEnabled = !!enabled;
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true, enabled: owner.aiDirectorEnabled });
+    });
+    return;
+  }
+
+  // ---- API: AI Direktor HAFTALIK hisobotini OLDINDAN KO'RISH (30-bosqich) ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-weekly-preview') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
+
+      return sendJSON(res, 200, {
+        ok: true,
+        text: buildAiWeeklyDirectorText(owner),
+        enabled: owner.aiWeeklyEnabled !== false,
+        sentThisWeek: owner.aiWeeklyLastSent === aiDirWeekKey(new Date()),
+        weekday: AI_DIRECTOR_WEEKLY_DAY,
+        hour: AI_DIRECTOR_HOUR
+      });
+    });
+    return;
+  }
+
+  // ---- API: AI Direktor HAFTALIK hisobotini HOZIR (Telegram'ga) yuborish ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-weekly-send-now') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
+
+      sendAiWeeklyDirectorDigest(owner, true).then(() => {
+        saveOwners(owners);
+        sendJSON(res, 200, { ok: true });
+      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
+    });
+    return;
+  }
+
+  // ---- API: AI Direktorning haftalik (Dushanba, soat 08:00 Toshkent)
+  // avtomatik xabarini yoqish/o'chirish — kunlik bayrog'idan (aiDirectorEnabled)
+  // MUSTAQIL, owner ikkalasini alohida yoqib/o'chira oladi ----
+  if (req.method === 'POST' && req.url === '/api/ai-director-weekly-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, enabled } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
+
+      owner.aiWeeklyEnabled = !!enabled;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, enabled: owner.aiWeeklyEnabled });
     });
     return;
   }
