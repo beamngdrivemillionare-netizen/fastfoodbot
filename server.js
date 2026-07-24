@@ -322,7 +322,7 @@ async function sendObunaPlansMenu(owner, chatId) {
 // Admin ✅/❌ bosganda (bot callback'dan) VA admin panelidan (Mini App API'dan)
 // bir xil natija chiqishi uchun qaror mantiqi shu YAGONA joyda. Chaqiruvchi
 // tomon saveOwners(owners)ni O'ZI qiladi (bu funksiya faylga yozmaydi).
-function decideSubscriptionPayment(owner, action, decidedByUserId) {
+function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
   const reqData = owner && owner.subscriptionPaymentRequest;
   if (!reqData || reqData.status !== 'kutilmoqda_tasdiq') {
     return { ok: false, reason: 'So\'rov topilmadi yoki allaqachon ko\'rib chiqilgan.' };
@@ -371,8 +371,13 @@ function decideSubscriptionPayment(owner, action, decidedByUserId) {
     reqData.status = 'rad_etildi';
     reqData.decidedAt = new Date().toISOString();
     reqData.decidedBy = decidedByUserId;
+    const trimmedReason = reasonText ? String(reasonText).trim() : '';
+    reqData.rejectReason = trimmedReason || null;
+    const reasonLine = trimmedReason
+      ? `Sabab: ${escapeHtmlServer(trimmedReason)}`
+      : 'Skrinshot noto\'g\'ri yoki summa mos emas bo\'lishi mumkin.';
     sendMessage(owner.id,
-      `❌ <b>Obuna to'lovingiz rad etildi.</b>\nSkrinshot noto'g'ri yoki summa mos emas bo'lishi mumkin. ` +
+      `❌ <b>Obuna to'lovingiz rad etildi.</b>\n${reasonLine}\n` +
       `Qaytadan tarif tanlab urinib ko'ring yoki administrator bilan bog'laning.`);
     return { ok: true };
   }
@@ -2017,7 +2022,15 @@ function getAwaitingCustom() {
 }
 
 function setAwaitingCustom(reqId, promptMessageId) {
-  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ reqId, promptMessageId }), 'utf8');
+  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ kind: 'approve_days', reqId, promptMessageId }), 'utf8');
+}
+
+// 10-bosqich: admin obuna to'lovini rad etayotganda sababni yozib yuborishini
+// kutish uchun (yuqoridagi setAwaitingCustom bilan bir xil AWAITING_FILE'ni
+// ishlatadi, lekin `kind` orqali ajratiladi — bir vaqtda faqat bitta admin
+// amali "kutilayotgan" bo'lishi mumkin, bu butun botdagi umumiy naqshga mos).
+function setAwaitingSubRejectReason(ownerId, chatId, messageId, hasPhoto, originalContent) {
+  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ kind: 'sub_reject_reason', ownerId, chatId, messageId, hasPhoto, originalContent }), 'utf8');
 }
 
 function clearAwaitingCustom() {
@@ -2381,7 +2394,7 @@ async function handleTelegramUpdate(update) {
     // Admin "Boshqa son" tugmasini bosgandan keyin, keyingi xabarini kun soni sifatida kutamiz
     if (isAdminId(from.id) && !text.startsWith('/')) {
       const awaiting = getAwaitingCustom();
-      if (awaiting && awaiting.reqId) {
+      if (awaiting && awaiting.kind === 'approve_days' && awaiting.reqId) {
         const reqInfo = findRequest(awaiting.reqId);
         if (!reqInfo) {
           clearAwaitingCustom();
@@ -2403,6 +2416,34 @@ async function handleTelegramUpdate(update) {
         }
         await sendMessage(reqInfo.userId,
           `✅ So'rovingiz tasdiqlandi! Sizga <b>${label}</b> muddatga kirish huquqi berildi.\nMini App tugmasi orqali oching.`);
+        return;
+      }
+
+      // 10-bosqich: admin obuna to'lovini rad etish sababini yozmoqda
+      if (awaiting && awaiting.kind === 'sub_reject_reason' && awaiting.ownerId) {
+        const owners = loadOwners();
+        const owner = findOwner(owners, awaiting.ownerId);
+        clearAwaitingCustom();
+        if (!owner || !owner.subscriptionPaymentRequest || owner.subscriptionPaymentRequest.status !== 'kutilmoqda_tasdiq') {
+          await sendMessage(chatId, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
+          return;
+        }
+        const reasonText = text.trim();
+        decideSubscriptionPayment(owner, 'reject', from.id, reasonText);
+        saveOwners(owners);
+
+        const restaurantName = ownerLabel(owner);
+        const extraLine = `❌ Rad etildi — ${displayName(from)}\nSabab: ${escapeHtmlServer(reasonText)}`;
+        if (awaiting.chatId && awaiting.messageId) {
+          const mergedContent = `${awaiting.originalContent || ''}\n\n${extraLine}`;
+          if (awaiting.hasPhoto) {
+            await editMessageCaption(awaiting.chatId, awaiting.messageId, mergedContent, null);
+          } else {
+            await editMessageText(awaiting.chatId, awaiting.messageId, mergedContent, null);
+          }
+        } else {
+          await sendMessage(chatId, `❌ Rad etildi. Oshxona: ${escapeHtmlServer(restaurantName)}\nSabab: ${escapeHtmlServer(reasonText)}`);
+        }
         return;
       }
     }
@@ -2987,16 +3028,23 @@ async function handleTelegramUpdate(update) {
         return;
       }
 
-      const result = decideSubscriptionPayment(owner, action === 'subok' ? 'approve' : 'reject', from.id);
+      if (action === 'subrej') {
+        // 10-bosqich: darhol rad etish o'rniga, avval adminning sababini kutamiz
+        const hasPhoto = !!(cq.message && cq.message.photo);
+        const originalContent = hasPhoto ? (cq.message.caption || '') : (cq.message.text || '');
+        setAwaitingSubRejectReason(owner.id, chatId, messageId, hasPhoto, originalContent);
+        await answerCallbackQuery(cq.id, 'Rad etish sababini yozing');
+        await sendMessage(from.id,
+          `✏️ <b>${escapeHtmlServer(ownerLabel(owner))}</b> uchun rad etish sababini yozib yuboring ` +
+          `(masalan: "Skrinshot noaniq" yoki "Summa mos emas"). Bekor qilish uchun /bekor yozing.`);
+        return;
+      }
+
+      const result = decideSubscriptionPayment(owner, 'approve', from.id);
       saveOwners(owners);
 
-      if (action === 'subok') {
-        await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
-        await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
-      } else {
-        await editConfirmMessage(`❌ Rad etildi — ${displayName(from)}`);
-        await answerCallbackQuery(cq.id, 'Rad etildi ❌');
-      }
+      await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
+      await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
       return;
     }
 
@@ -9552,7 +9600,7 @@ const server = http.createServer((req, res) => {
       const action = payload.action === 'approve' ? 'approve' : (payload.action === 'reject' ? 'reject' : null);
       if (!action) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
 
-      const result = decideSubscriptionPayment(owner, action, userId);
+      const result = decideSubscriptionPayment(owner, action, userId, payload.reason);
       if (!result.ok) return sendJSON(res, 200, result);
       saveOwners(owners);
 
