@@ -128,8 +128,31 @@
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
+  /* =========================================================================
+     31-35-bosqich: Responsive mini-app (mobil/planshet/kompyuter).
+     Avval #app cheksiz kenglikda edi (faqat .app-header va .ko-bottom-nav
+     480px'da markazlashgan edi) — planshet/kompyuterda bu tarqoq va
+     nomutanosib ko'rinishga sabab bo'lardi. Endi UCHALASI HAM bitta
+     --app-max-width o'zgaruvchisidan foydalanadi, shu bilan header/
+     kontent/pastki-navigatsiya doim bir xil kenglikda, markazda turadi.
+     --app-vh — mobil brauzerlarda 100vh manzil-panel tufayli "sakrab"
+     turishining o'rniga, JS orqali (app.js, resize/orientationchange'da)
+     yangilanadigan haqiqiy balandlik (34-bosqich: avtomatik moslashish). */
+  :root {
+    --app-max-width: 480px;
+    --app-vh: 1vh;
+  }
+  @media (min-width: 768px) {
+    :root { --app-max-width: 700px; }
+  }
+  @media (min-width: 1024px) {
+    :root { --app-max-width: 960px; }
+  }
   #app {
-    min-height: 100vh;
+    min-height: calc(var(--app-vh, 1vh) * 100);
+    width: 100%;
+    max-width: var(--app-max-width);
+    margin: 0 auto;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -137,6 +160,23 @@
     text-align: left;
     padding: var(--sp-6);
     padding-bottom: calc(var(--sp-6) + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+  }
+  /* Planshet/kompyuterda sahifa foni (#app'dan tashqarida) va markazdagi
+     "ilova" o'rtasida vizual farq bo'lishi uchun. Oddiy brauzerda ochilganda
+     (kompyuterda demo/test uchun) chekka fon biroz to'qroq bo'ladi, shu bilan
+     markazdagi ilova aniq "karta" ko'rinishida ajralib turadi. */
+  @media (min-width: 768px) {
+    body { background: var(--surface-1); }
+    #app {
+      background: var(--surface-0);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-card);
+      margin-top: var(--sp-5);
+      margin-bottom: var(--sp-5);
+      min-height: 0;
+    }
+    #app:has(> .xato) { min-height: calc(var(--app-vh, 1vh) * 100 - var(--sp-5) * 2); }
   }
   /* TUZATISH: oldin #app har doim vertikal MARKAZGA tekislangan edi.
      Bu qisqa ro'yxatlarda (masalan bir nechta taom) butun panelni
@@ -289,6 +329,12 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-3);
+  }
+  /* 31-33-bosqich: planshet/kompyuterda #app kengroq (700/960px) bo'lgani
+     uchun 2x2 grid katta bo'sh joy qoldiradi — shu kenglikda 4 ta
+     kartochka bitta qatorga sig'adi. */
+  @media (min-width: 768px) {
+    .ko-kpi-grid { grid-template-columns: repeat(4, 1fr); }
   }
   .ko-kpi-card {
     background: var(--surface-0);
@@ -589,7 +635,7 @@
     grid-template-columns: repeat(5, 1fr);
     align-items: end;
     width: 100%;
-    max-width: 480px;
+    max-width: var(--app-max-width);
     margin: 0 auto;
     background: var(--bottom-nav-bg);
     border-top: 1px solid var(--border-color);
@@ -1314,7 +1360,7 @@
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 30;
-    max-width: 480px;
+    max-width: var(--app-max-width);
     margin: 0 auto;
     display: flex;
     align-items: center;
@@ -1570,6 +1616,15 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-3);
+  }
+  /* 31-33-bosqich: planshet (700px konteyner)da 3 ustun, kompyuterda
+     (960px konteyner)da 4 ustun — taom kartochkalari torayib
+     cho'zilib qolmasligi uchun. */
+  @media (min-width: 768px) {
+    .catalog-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (min-width: 1024px) {
+    .catalog-grid { grid-template-columns: repeat(4, 1fr); }
   }
   .catalog-grid .bosh { grid-column: 1 / -1; }
   .catalog-item {
@@ -1852,7 +1907,7 @@
     align-items: center;
     gap: var(--sp-3);
     width: 100%;
-    max-width: 480px;
+    max-width: var(--app-max-width);
     margin: 0 auto;
     padding: var(--sp-2) var(--sp-4);
     padding-top: calc(var(--sp-2) + env(safe-area-inset-top, 0px));
