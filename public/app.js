@@ -559,6 +559,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
           ${adminMenuItemHtml({ key: 'tolovlar', icon: 'card', label: "Kutilayotgan to'lovlar" })}
           ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
+          ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
           ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
         </div>
       </div>
@@ -573,6 +574,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
         if (key === 'tolovlar') { renderAdminPendingPaymentsScreen(goBack); return; }
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
+        if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
         if (key === 'tizim') { loadAndShowSystemStatus(); return; }
       });
     });
@@ -1239,6 +1241,67 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
       </div>
     `;
+  }
+
+  // =========================================================================
+  // Admin bo'limi: "To'lov sozlamalari" — egalarga "💳 Obuna" bo'limida
+  // ko'rsatiladigan to'lov rekvizitlarini (karta raqami/egasi, Click/Payme)
+  // tahrirlash. Ilgari bu ma'lumotlar faqat serverda standart ("***") qiymat
+  // bilan turardi va admin ularni HECH QAYERDAN o'zgartira olmasdi.
+  // =========================================================================
+  async function renderPaymentSettingsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">To'lov sozlamalari</div>
+        <button class="btn ikkinchi" id="paySettingsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('card', 'icon-xs')} To'lov rekvizitlari</h2>
+          <div class="bosh">Do'kon egalari "💳 Obuna" bo'limida tarif tanlaganda shu ma'lumotlarni ko'radi.</div>
+          <label class="field-label" style="margin-top:10px;">Karta raqami</label>
+          <input type="text" id="payCardNumberInput" placeholder="8600 **** **** ****">
+          <label class="field-label">Karta egasining F.I.Sh</label>
+          <input type="text" id="payCardHolderInput" placeholder="Masalan: ISMOILOV FAYZULLA">
+          <label class="field-label">Click raqami</label>
+          <input type="text" id="payClickNumberInput" placeholder="+998 90 000 00 00">
+          <label class="field-label">Payme raqami</label>
+          <input type="text" id="payPaymeNumberInput" placeholder="+998 90 000 00 00">
+          <button class="btn" id="paySettingsSaveBtn" style="margin-top:10px;">Saqlash</button>
+          <div class="xabar" id="paySettingsMsg"></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('paySettingsBackBtn').addEventListener('click', () => onBack());
+
+    const msgEl = document.getElementById('paySettingsMsg');
+    const res = await apiPost('/api/admin-payment-requisites-get', { initData });
+    if (res.ok) {
+      document.getElementById('payCardNumberInput').value = res.requisites.cardNumber || '';
+      document.getElementById('payCardHolderInput').value = res.requisites.cardHolder || '';
+      document.getElementById('payClickNumberInput').value = res.requisites.clickNumber || '';
+      document.getElementById('payPaymeNumberInput').value = res.requisites.paymeNumber || '';
+    } else {
+      msgEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      msgEl.className = 'xabar err';
+    }
+
+    document.getElementById('paySettingsSaveBtn').addEventListener('click', async () => {
+      const cardNumber = document.getElementById('payCardNumberInput').value.trim();
+      const cardHolder = document.getElementById('payCardHolderInput').value.trim();
+      const clickNumber = document.getElementById('payClickNumberInput').value.trim();
+      const paymeNumber = document.getElementById('payPaymeNumberInput').value.trim();
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const saveRes = await apiPost('/api/admin-payment-requisites-set', {
+        initData, cardNumber, cardHolder, clickNumber, paymeNumber
+      });
+      if (saveRes.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+      } else {
+        msgEl.textContent = saveRes.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
   }
 
   async function renderTariffsScreen(onBack) {
