@@ -560,6 +560,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'tolovlar', icon: 'card', label: "Kutilayotgan to'lovlar" })}
           ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
           ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
+          ${adminMenuItemHtml({ key: 'savatcha', icon: 'trash', label: 'Savatcha' })}
           ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
         </div>
       </div>
@@ -575,6 +576,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (key === 'tolovlar') { renderAdminPendingPaymentsScreen(goBack); return; }
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
         if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
+        if (key === 'savatcha') { renderTrashScreen(goBack); return; }
         if (key === 'tizim') { loadAndShowSystemStatus(); return; }
       });
     });
@@ -1302,6 +1304,103 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
       }
     });
+  }
+
+  // =========================================================================
+  // Admin bo'limi: "Savatcha" (16-22-bosqich) — o'chirilgan do'kon egalari
+  // 3 kun davomida shu yerda turadi, admin ularni tiklashi yoki muddatidan
+  // oldin butunlay o'chirishi mumkin. Pastda — shu bilan bog'liq loglar.
+  // =========================================================================
+  function trashRowHtml(t) {
+    return `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(t.restaurantName || t.ownerLabel)}</div>
+          <div class="owner-username">${escapeHtml(t.ownerLabel)} · ${t.daysLeft} kun qoldi
+            ${t.restoreStatus === 'pending' ? ' · 🕓 tiklash so\'ralgan' : ''}
+            ${t.restoreStatus === 'rejected' ? ' · ❌ so\'rov rad etilgan' : ''}
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
+          <button class="row-action-btn brand" data-trash-restore="${escapeHtml(t.id)}">Tiklash</button>
+          <button class="row-action-btn danger" data-trash-purge="${escapeHtml(t.id)}">Butunlay o'chirish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderTrashScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${icon('trash', 'icon-sm')} Savatcha</div>
+        <button class="btn ikkinchi" id="trashBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="bosh" style="margin-bottom:10px;">O'chirilgan do'kon egalari shu yerda 3 kun saqlanadi (menyu, xodimlar, sozlamalari bilan birga). 3 kundan keyin avtomatik, butunlay o'chiriladi.</div>
+        <div class="kartochka">
+          <h2>${icon('users', 'icon-xs')} Savatchadagilar</h2>
+          <div class="owner-list" id="trashList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('clipboard', 'icon-xs')} Loglar</h2>
+          <div id="trashLogList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('trashBackBtn').addEventListener('click', () => onBack());
+    await loadTrashListAndRender(onBack);
+    await loadTrashLogAndRender();
+  }
+
+  async function loadTrashListAndRender(onBack) {
+    const listEl = document.getElementById('trashList');
+    if (!listEl) return;
+    const res = await apiPost('/api/trash-list', { initData });
+    if (!res.ok) { listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+    if (!res.trash.length) { listEl.innerHTML = `<div class="bosh">Savatcha bo'sh.</div>`; return; }
+    listEl.innerHTML = res.trash.map(trashRowHtml).join('');
+
+    listEl.querySelectorAll('[data-trash-restore]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm("Bu do'kon egasini tiklaysizmi? Barcha ma'lumotlari qaytariladi.")) return;
+        btn.disabled = true;
+        const r = await apiPost('/api/trash-restore', { initData, trashId: btn.getAttribute('data-trash-restore') });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        await loadTrashListAndRender(onBack);
+        await loadTrashLogAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-trash-purge]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm("DIQQAT: bu do'kon egasi BUTUNLAY, qaytarib bo'lmaydigan tarzda o'chiriladi. Davom etasizmi?")) return;
+        btn.disabled = true;
+        const r = await apiPost('/api/trash-purge-now', { initData, trashId: btn.getAttribute('data-trash-purge') });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        await loadTrashListAndRender(onBack);
+        await loadTrashLogAndRender();
+      });
+    });
+  }
+
+  async function loadTrashLogAndRender() {
+    const listEl = document.getElementById('trashLogList');
+    if (!listEl) return;
+    const res = await apiPost('/api/trash-log', { initData });
+    if (!res.ok) { listEl.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`; return; }
+    if (!res.log.length) { listEl.innerHTML = `<div class="bosh">Hali loglar yo'q.</div>`; return; }
+    const actionLabels = {
+      trashed: '🗑 Savatchaga ko\'chirildi',
+      restore_requested: '🔄 Tiklash so\'ralgan',
+      restored: '✅ Tiklandi',
+      restore_rejected: '❌ Tiklash rad etildi',
+      purged: '⛔ Butunlay o\'chirildi'
+    };
+    listEl.innerHTML = res.log.map(l => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(actionLabels[l.action] || l.action)}</div>
+          <div class="owner-username">${escapeHtml(l.ownerLabel || l.ownerId || '—')} · ${new Date(l.at).toLocaleString('uz-UZ')}</div>
+        </div>
+      </div>
+    `).join('');
   }
 
   async function renderTariffsScreen(onBack) {
