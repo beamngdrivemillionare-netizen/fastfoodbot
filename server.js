@@ -4549,6 +4549,54 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/api/customer-queue-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, orderId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const allOrders = owner.orders || [];
+      const order = allOrders.find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (String(order.customerId) !== userId) return sendJSON(res, 200, { ok: false, reason: 'Bu sizning buyurtmangiz emas.' });
+
+      const completed = allOrders
+        .filter(o => o.status === 'tayyor' && o.readyAt && o.createdAt)
+        .sort((a, b) => new Date(b.readyAt) - new Date(a.readyAt))
+        .slice(0, 20);
+      let avgMs = 10 * 60 * 1000;
+      if (completed.length) {
+        const totalMs = completed.reduce((sum, o) => sum + (new Date(o.readyAt) - new Date(o.createdAt)), 0);
+        avgMs = Math.max(60000, totalMs / completed.length);
+      }
+      const avgMinutes = Math.max(1, Math.round(avgMs / 60000));
+
+      if (order.status === 'tayyor' || order.status === 'bekor_qilindi') {
+        return sendJSON(res, 200, { ok: true, status: order.status, aheadCount: 0, avgMinutes, etaMinutes: 0 });
+      }
+
+      const active = allOrders.filter(o => o.status === 'yangi' || o.status === 'tayyorlanmoqda');
+      const aheadCount = active.filter(o => o.id !== order.id && new Date(o.createdAt) < new Date(order.createdAt)).length;
+
+      const isStarted = order.status === 'tayyorlanmoqda' && order.startedAt;
+      const elapsedMs = Date.now() - new Date(isStarted ? order.startedAt : order.createdAt).getTime();
+      const ordersAheadOfReady = isStarted ? 1 : (aheadCount + 1);
+      let etaMs = ordersAheadOfReady * avgMs - elapsedMs;
+      if (etaMs < 0) etaMs = Math.min(avgMs, 60000);
+      const etaMinutes = Math.max(1, Math.round(etaMs / 60000));
+
+      return sendJSON(res, 200, { ok: true, status: order.status, aheadCount, avgMinutes, etaMinutes });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/customer-notifications') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
