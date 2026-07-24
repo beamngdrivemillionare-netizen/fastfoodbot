@@ -1933,6 +1933,35 @@
   }
   .customer-link-hint { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: var(--sp-2); line-height: var(--lh-body); }
 
+  /* H64-bosqich: "AI ofitsiant" — mijozning o'z xarid tarixi asosidagi
+     shaxsiy tavsiyalar qatori. Gorizontal suriladigan kartalar — asosiy
+     katalog to'ridan (grid) ajralib turishi uchun. */
+  .ai-reco-wrap { margin-top: 12px; }
+  .ai-reco-block + .ai-reco-block { margin-top: 14px; }
+  .ai-reco-title {
+    font-size: var(--fs-sm); font-weight: 700; color: var(--text-primary);
+    margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+  }
+  .ai-reco-row {
+    display: flex; gap: var(--sp-3); overflow-x: auto; padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+  }
+  .ai-reco-row::-webkit-scrollbar { display: none; }
+  .ai-reco-row .catalog-item { flex: 0 0 auto; width: 150px; scroll-snap-align: start; }
+
+  /* H63-bosqich: tezkor qo'llab-quvvatlash chat — mijoz va xodim tomonidagi
+     xabar pufakchalari (WhatsApp/Telegram uslubidagi oddiy chat ko'rinishi). */
+  .support-msg { display: flex; flex-direction: column; margin-bottom: 10px; max-width: 80%; }
+  .support-msg.mine { margin-left: auto; align-items: flex-end; }
+  .support-msg.staff { margin-right: auto; align-items: flex-start; }
+  .support-msg-bubble {
+    padding: 9px 13px; border-radius: var(--radius-lg); font-size: var(--fs-body);
+    line-height: var(--lh-body); word-break: break-word; white-space: pre-wrap;
+  }
+  .support-msg.mine .support-msg-bubble { background: var(--brand-primary); color: var(--brand-on-primary); border-bottom-right-radius: 4px; }
+  .support-msg.staff .support-msg-bubble { background: var(--surface-2); color: var(--text-primary); border-bottom-left-radius: 4px; }
+  .support-msg-time { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 3px; padding: 0 4px; }
+
   /* =========================================================================
      YANGI BAZAVIY KOMPONENTLAR (1-bosqichda qo'shildi, hozircha JS ularni
      ishlatmaydi — 3-bosqichda ekranlarga joriy qilinadi)
