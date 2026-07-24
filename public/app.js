@@ -3189,6 +3189,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
     { key: 'stollarQR', icon: 'clipboard', label: 'Stollar uchun QR' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'obuna', icon: 'card', label: 'Obuna' },
     { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
@@ -3244,6 +3245,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       },
       stollarQR: () => renderTableQrScreen(profile, goBack),
       hisobotlar: () => renderZReportScreen(profile, goBack),
+      yordam: () => renderSupportInboxScreen(profile, goBack),
       aiTavsiyalar: () => renderAiScreen(profile, goBack),
       bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
       profil: () => renderOwnerProfileScreen(profile, goBack),
@@ -3287,6 +3289,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
     { key: 'stollarQR', icon: 'clipboard', label: 'Stollar uchun QR' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
     { key: 'profil', icon: 'user', label: 'Profil' },
@@ -6983,6 +6986,110 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
+  // ==================== H63-bosqich: Tezkor qo'llab-quvvatlash chat (xodim/egasi tomoni) ====================
+  let supportStaffPollTimer = null;
+
+  function supportStaffMsgTime(iso) {
+    return new Date(iso).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function renderSupportInboxScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Yordam so'rovlari</div>
+        <button class="btn ikkinchi" id="supBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div id="supInboxList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('supBackBtn').addEventListener('click', () => {
+      if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; }
+      onBack && onBack();
+    });
+    loadSupportInbox(profile, onBack);
+    supportStaffPollTimer = setInterval(() => loadSupportInbox(profile, onBack, true), 5000);
+  }
+
+  async function loadSupportInbox(profile, onBack, isBackgroundRefresh) {
+    const listEl = document.getElementById('supInboxList');
+    if (!listEl) { if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; } return; }
+    const res = await apiPost('/api/support-inbox', { initData });
+    if (res.networkError) { if (!isBackgroundRefresh) renderNetworkErrorInline(listEl, res.reason, () => loadSupportInbox(profile, onBack)); return; }
+    if (!res.ok) {
+      if (!isBackgroundRefresh) { handleFeatureBlocked(res); renderFeatureBlockedInline(listEl, res.reason); }
+      return;
+    }
+    if (!res.threads.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha yordam so'rovlari yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.threads.map(t => `
+      <div class="kartochka" data-thread-customer="${escapeHtml(t.customerId)}" style="cursor:pointer; display:flex; align-items:center; gap:10px;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; display:flex; align-items:center; gap:6px;">
+            ${escapeHtml(t.customerName)}
+            ${t.unreadCount > 0 ? `<span class="badge danger">${t.unreadCount}</span>` : ''}
+          </div>
+          <div class="owner-username" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${t.lastFrom === 'staff' ? "Siz: " : ''}${escapeHtml(t.lastText)}</div>
+        </div>
+        <div style="font-size:var(--fs-xs); color:var(--text-secondary); flex-shrink:0;">${supportStaffMsgTime(t.lastAt)}</div>
+      </div>
+    `).join('');
+    listEl.querySelectorAll('[data-thread-customer]').forEach(el => {
+      el.addEventListener('click', () => {
+        if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; }
+        renderSupportThreadScreen(profile, el.getAttribute('data-thread-customer'), () => renderSupportInboxScreen(profile, onBack));
+      });
+    });
+  }
+
+  function renderSupportThreadScreen(profile, customerId, onBack) {
+    ekran(`
+      <div class="panel" style="display:flex; flex-direction:column; height:calc(100vh - 32px);">
+        <div class="salom" style="font-size:20px;">Suhbat</div>
+        <button class="btn ikkinchi" id="supThreadBackBtn" style="margin-bottom:12px;">← Ro'yxatga</button>
+        <div id="supThreadMsgs" style="flex:1; overflow-y:auto; margin-bottom:10px;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="supThreadInput" placeholder="Javob yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="supThreadSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('supThreadBackBtn').addEventListener('click', () => {
+      if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; }
+      onBack && onBack();
+    });
+
+    const msgsEl = document.getElementById('supThreadMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/support-thread-staff', { initData, customerId });
+      if (!document.getElementById('supThreadMsgs')) { if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; } return; }
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+    loadThread(true);
+    supportStaffPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = document.getElementById('supThreadInput');
+    const sendBtn = document.getElementById('supThreadSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/support-reply', { initData, customerId, text });
+      sendBtn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
   function renderZReportScreen(profile, onBack) {
     ekran(`
       <div class="panel">
@@ -7302,7 +7409,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     lastOrderRequestId: null,
     searchQuery: '',
     sortBy: 'default',
-    notifUnseenCount: 0
+    notifUnseenCount: 0,
+    aiRecommendations: null
   };
 
   // ---- 39-bosqich: mijoz uchun bildirishnomalar markazi ----
@@ -7374,6 +7482,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
         <button type="button" class="cust-notif-bell-btn" id="custAddrBookBtn" title="Manzillarim" aria-label="Manzillarim" style="margin-right:6px;">
           ${icon('pin', 'icon-sm')}
+        </button>
+        <button type="button" class="cust-notif-bell-btn" id="custSupportBtn" title="Yordam" aria-label="Yordam" style="margin-right:6px;">
+          ${icon('message-circle', 'icon-sm')}
         </button>
         <button type="button" class="cust-notif-bell-btn" id="custNotifBellBtn" title="Bildirishnomalar" aria-label="Bildirishnomalar">
           ${icon('bell', 'icon-sm')}
@@ -7612,12 +7723,57 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (modalTotalEl) modalTotalEl.textContent = fmtNum(customerCartTotal()) + " so'm";
   }
 
+  // ---- H64-bosqich: "AI ofitsiant" — mijozni tanigan holda uning doim
+  // yoqtiradigan taomlarini va shularga o'xshash (bir toifadagi, hali
+  // sinamagan) taomlarni yuqorida alohida qator qilib ko'rsatadi.
+  // customerState.aiRecommendations — /api/customer-menu-list orqali keladi
+  // (qarang: buildAiWaiterRecommendations() server.js'da).
+  function customerAiRecommendationsHtml() {
+    const reco = customerState.aiRecommendations;
+    if (!reco || (!reco.favorites.length && !reco.similar.length)) return '';
+    const block = (title, items) => !items.length ? '' : `
+      <div class="ai-reco-block">
+        <div class="ai-reco-title">🤖 ${escapeHtml(title)}</div>
+        <div class="ai-reco-row">${items.map(customerItemCardHtml).join('')}</div>
+      </div>
+    `;
+    return `
+      <div class="ai-reco-wrap" id="aiRecoSection">
+        ${block('Sizga tavsiya — doim yoqtiradiganlaringiz', reco.favorites)}
+        ${block('Bular ham sizga yoqishi mumkin', reco.similar)}
+      </div>
+    `;
+  }
+
+  function attachAiRecoHandlers() {
+    const wrap = document.getElementById('aiRecoSection');
+    if (!wrap) return;
+    wrap.querySelectorAll('[data-cqty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-plus');
+      customerState.cart[id] = (customerState.cart[id] || 0) + 1;
+      renderCustomerMenuTab();
+    });
+    wrap.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-minus');
+      customerState.cart[id] = Math.max(0, (customerState.cart[id] || 0) - 1);
+      renderCustomerMenuTab();
+    });
+    wrap.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute('data-fav-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
+      if (res.ok) customerState.favorites = res.favorites;
+      renderCustomerMenuTab();
+    });
+  }
+
   function renderCustomerMenuTab() {
     ekran(`
       <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
         ${customerHeaderHtml()}
         ${customerAdBannerHtml()}
         ${customerTabRowHtml()}
+        ${customerAiRecommendationsHtml()}
         ${customerPromoBannerHtml()}
         ${customerSearchSortBarHtml()}
         <div id="customerCatRowWrap">${customerCategoriesHtml()}</div>
@@ -7631,6 +7787,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCartFabHandler();
     attachCustomerSearchSortHandlers();
     attachCustomerAdBannerHandlers();
+    attachAiRecoHandlers();
     if (!(customerState.searchQuery || '').trim()) {
       attachSectionedMenuTabHandlers('customerCatRow');
       attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
@@ -7729,6 +7886,85 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <button type="button" class="btn" id="cSendOrderBtn">Buyurtma berish</button>
       </div>
     `;
+  }
+
+  // ==================== H63-bosqich: Tezkor qo'llab-quvvatlash chat (mijoz tomoni) ====================
+  let customerSupportPollTimer = null;
+
+  function customerSupportMsgTime(iso) {
+    return new Date(iso).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function customerSupportMessagesHtml(messages) {
+    if (!messages.length) {
+      return `<div class="bosh" style="padding:24px 8px;">Hali xabar yo'q. Savolingiz yoki muammoingiz bo'lsa, pastdan yozing — oshxona tez orada javob beradi.</div>`;
+    }
+    return messages.map(m => `
+      <div class="support-msg ${m.from === 'customer' ? 'mine' : 'staff'}">
+        <div class="support-msg-bubble">${escapeHtml(m.text)}</div>
+        <div class="support-msg-time">${customerSupportMsgTime(m.at)}</div>
+      </div>
+    `).join('');
+  }
+
+  function openCustomerSupportChat() {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:85vh; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+        <div style="padding:16px 16px 10px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
+          ${icon('message-circle', 'icon-sm')}
+          <div style="font-weight:700; flex:1;">Tezkor yordam</div>
+          <button type="button" id="custSupportCloseBtn" style="background:none; border:none; cursor:pointer; padding:4px; display:flex;">${icon('x', 'icon-sm')}</button>
+        </div>
+        <div id="custSupportMsgs" style="flex:1; overflow-y:auto; padding:14px 16px; min-height:200px; max-height:50vh;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border-color);">
+          <input type="text" id="custSupportInput" placeholder="Xabar yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="custSupportSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomerSupportChat(overlay); });
+    overlay.querySelector('#custSupportCloseBtn').addEventListener('click', () => closeCustomerSupportChat(overlay));
+
+    const msgsEl = overlay.querySelector('#custSupportMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/support-thread', { initData, ownerId: customerState.ownerId });
+      if (handleFeatureBlocked(res)) { closeCustomerSupportChat(overlay); return; }
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+
+    loadThread(true);
+    customerSupportPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = overlay.querySelector('#custSupportInput');
+    const sendBtn = overlay.querySelector('#custSupportSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/support-send', { initData, ownerId: customerState.ownerId, text });
+      sendBtn.disabled = false;
+      if (handleFeatureBlocked(res)) { closeCustomerSupportChat(overlay); return; }
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
+  function closeCustomerSupportChat(overlay) {
+    if (customerSupportPollTimer) { clearInterval(customerSupportPollTimer); customerSupportPollTimer = null; }
+    overlay.remove();
   }
 
   function openCustomerCheckoutModal() {
@@ -7865,6 +8101,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
           else renderCustomerMenuTab();
         });
       });
+    }
+    const supportBtn = document.getElementById('custSupportBtn');
+    if (supportBtn) {
+      supportBtn.addEventListener('click', () => openCustomerSupportChat());
     }
   }
 
@@ -8513,6 +8753,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
     customerState.promotions = menuRes.ok ? menuRes.promotions : [];
     customerState.banners = menuRes.ok ? (menuRes.banners || []) : [];
+    customerState.aiRecommendations = menuRes.ok ? (menuRes.recommendations || null) : null;
 
     renderCustomerMenuTab();
     // 39-bosqich: qo'ng'iroqcha ustidagi son ekran chizilgach fonda yuklanadi
