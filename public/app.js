@@ -1425,14 +1425,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // xizmatchi) matn+rasm+tugma bilan umumiy xabar yuboradi. Pastda —
   // avval yuborilgan e'lonlar tarixi va yetkazilganlik statistikasi.
   // =========================================================================
-  const BROADCAST_TARGET_LABELS = { customer: 'Mijozlar', owner: "Oshxona egalari", staff: 'Xizmatchilar (xodimlar)' };
+  const BROADCAST_TARGET_LABELS = { all: 'Hammaga', customer: 'Mijozlar', owner: "Oshxona egalari", staff: 'Xizmatchilar (xodimlar)' };
 
   function broadcastHistoryRowHtml(b) {
     const dateLabel = new Date(b.sentAt).toLocaleString('uz-UZ');
     return `
       <div class="owner-item" style="align-items:flex-start;">
         <div style="flex:1; min-width:0;">
-          <div class="owner-id">${escapeHtml(BROADCAST_TARGET_LABELS[b.targetType] || b.targetType)}</div>
+          <div class="owner-id">${escapeHtml(BROADCAST_TARGET_LABELS[b.targetType] || b.targetType)}${b.hadImage ? ' · 🖼' : ''}</div>
           <div class="owner-username" style="white-space:pre-wrap;">${escapeHtml(b.text.length > 140 ? b.text.slice(0, 140) + '…' : b.text)}</div>
           <div class="owner-username">${dateLabel} · ✅ ${b.deliveredCount} ${b.failedCount ? `· ❌ ${b.failedCount}` : ''} / ${b.totalTargets}</div>
         </div>
@@ -1462,14 +1462,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="bosh">Xabar tanlangan toifadagi BARCHA foydalanuvchilarga (barcha oshxonalar bo'yicha) yuboriladi.</div>
           <label class="field-label" style="margin-top:10px;">Qabul qiluvchi</label>
           <select id="broadcastTargetInput">
+            <option value="all">Hammaga</option>
             <option value="customer">Mijozlar</option>
             <option value="owner">Oshxona egalari</option>
             <option value="staff">Xizmatchilar (xodimlar)</option>
           </select>
           <label class="field-label">Xabar matni *</label>
           <textarea id="broadcastTextInput" placeholder="E'lon matnini kiriting..." rows="4"></textarea>
-          <label class="field-label">Rasm havolasi (ixtiyoriy, https://...)</label>
-          <input type="text" id="broadcastImageInput" placeholder="https://...">
+          <label class="field-label">Rasm (ixtiyoriy)</label>
+          <input type="file" id="broadcastImageFileInput" accept="image/*">
+          <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang, YOKI pastga havola qo'yishingiz mumkin</div>
+          <img id="broadcastImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
+          <input type="text" id="broadcastImageInput" placeholder="https://..." style="margin-top:8px;">
           <label class="field-label">Tugma matni (ixtiyoriy)</label>
           <input type="text" id="broadcastBtnTextInput" placeholder="Masalan: Batafsil">
           <label class="field-label">Tugma havolasi (ixtiyoriy, https://...)</label>
@@ -1485,6 +1489,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `);
     document.getElementById('broadcastBackBtn').addEventListener('click', () => onBack());
 
+    // Galereyadan rasm tanlansa — kichraytirib (max 800px) base64 data URL
+    // shaklida yashirin inputga yoziladi va oldindan ko'rsatiladi. Agar
+    // shu bilan bir vaqtda havola inputiga ham qo'lda matn kiritilgan bo'lsa,
+    // galereyadan tanlangani ustunlik qiladi (chunki keyinroq tanlangan).
+    document.getElementById('broadcastImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('broadcastMsg');
+      const preview = document.getElementById('broadcastImagePreview');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('broadcastImageInput').value = dataUrl || '';
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
+    // Havola inputiga qo'lda yozilsa — galereyadan tanlangan (base64) rasm
+    // bekor qilinadi, aks holda ikkalasi ziddiyatga kelib qolishi mumkin.
+    document.getElementById('broadcastImageInput').addEventListener('input', (e) => {
+      if (!e.target.value.startsWith('data:image/')) {
+        document.getElementById('broadcastImageFileInput').value = '';
+        document.getElementById('broadcastImagePreview').style.display = 'none';
+      }
+    });
+
     document.getElementById('broadcastSendBtn').addEventListener('click', async () => {
       const targetType = document.getElementById('broadcastTargetInput').value;
       const text = document.getElementById('broadcastTextInput').value.trim();
@@ -1497,7 +1531,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
         return;
       }
-      if (!confirm(`${BROADCAST_TARGET_LABELS[targetType]} toifasidagi BARCHA foydalanuvchilarga shu xabarni yuborishni tasdiqlaysizmi?`)) return;
+      const confirmWho = targetType === 'all' ? 'platformadagi BARCHA foydalanuvchilarga (mijoz, oshxona egasi va xizmatchilar)' : `${BROADCAST_TARGET_LABELS[targetType]} toifasidagi BARCHA foydalanuvchilarga`;
+      if (!confirm(`${confirmWho} shu xabarni yuborishni tasdiqlaysizmi?`)) return;
 
       const btn = document.getElementById('broadcastSendBtn');
       btn.disabled = true;
@@ -1511,6 +1546,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar ok';
         document.getElementById('broadcastTextInput').value = '';
         document.getElementById('broadcastImageInput').value = '';
+        document.getElementById('broadcastImageFileInput').value = '';
+        document.getElementById('broadcastImagePreview').style.display = 'none';
         document.getElementById('broadcastBtnTextInput').value = '';
         document.getElementById('broadcastBtnUrlInput').value = '';
         loadBroadcastHistoryAndRender();
