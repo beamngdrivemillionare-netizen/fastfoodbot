@@ -613,6 +613,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
           ${adminMenuItemHtml({ key: 'obunaRejalari', icon: 'card', label: 'Obuna rejalari' })}
           ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
+          ${adminMenuItemHtml({ key: 'elon', icon: 'send', label: "E'lon yuborish" })}
           ${adminMenuItemHtml({ key: 'savatcha', icon: 'trash', label: 'Savatcha' })}
           ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
         </div>
@@ -630,6 +631,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
         if (key === 'obunaRejalari') { renderSubscriptionPlansScreen(goBack); return; }
         if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
+        if (key === 'elon') { renderBroadcastScreen(goBack); return; }
         if (key === 'savatcha') { renderTrashScreen(goBack); return; }
         if (key === 'tizim') { loadAndShowSystemStatus(); return; }
       });
@@ -1359,6 +1361,110 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
       }
     });
+  }
+
+  // =========================================================================
+  // Admin bo'limi: "E'lon yuborish" (48-51-bosqich) — admin platformadagi
+  // barcha oshxonalar bo'yicha bitta toifaga (mijoz / oshxona egasi /
+  // xizmatchi) matn+rasm+tugma bilan umumiy xabar yuboradi. Pastda —
+  // avval yuborilgan e'lonlar tarixi va yetkazilganlik statistikasi.
+  // =========================================================================
+  const BROADCAST_TARGET_LABELS = { customer: 'Mijozlar', owner: "Oshxona egalari", staff: 'Xizmatchilar (xodimlar)' };
+
+  function broadcastHistoryRowHtml(b) {
+    const dateLabel = new Date(b.sentAt).toLocaleString('uz-UZ');
+    return `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div style="flex:1; min-width:0;">
+          <div class="owner-id">${escapeHtml(BROADCAST_TARGET_LABELS[b.targetType] || b.targetType)}</div>
+          <div class="owner-username" style="white-space:pre-wrap;">${escapeHtml(b.text.length > 140 ? b.text.slice(0, 140) + '…' : b.text)}</div>
+          <div class="owner-username">${dateLabel} · ✅ ${b.deliveredCount} ${b.failedCount ? `· ❌ ${b.failedCount}` : ''} / ${b.totalTargets}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadBroadcastHistoryAndRender() {
+    const listEl = document.getElementById('broadcastHistoryList');
+    if (!listEl) return;
+    const res = await apiPost('/api/broadcast-history', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBroadcastHistoryAndRender); return; }
+    if (!res.ok || !res.broadcasts.length) {
+      listEl.innerHTML = `<div class="bosh">Hali e'lon yuborilmagan.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.broadcasts.map(broadcastHistoryRowHtml).join('');
+  }
+
+  async function renderBroadcastScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">E'lon yuborish</div>
+        <button class="btn ikkinchi" id="broadcastBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('send', 'icon-xs')} Yangi e'lon</h2>
+          <div class="bosh">Xabar tanlangan toifadagi BARCHA foydalanuvchilarga (barcha oshxonalar bo'yicha) yuboriladi.</div>
+          <label class="field-label" style="margin-top:10px;">Qabul qiluvchi</label>
+          <select id="broadcastTargetInput">
+            <option value="customer">Mijozlar</option>
+            <option value="owner">Oshxona egalari</option>
+            <option value="staff">Xizmatchilar (xodimlar)</option>
+          </select>
+          <label class="field-label">Xabar matni *</label>
+          <textarea id="broadcastTextInput" placeholder="E'lon matnini kiriting..." rows="4"></textarea>
+          <label class="field-label">Rasm havolasi (ixtiyoriy, https://...)</label>
+          <input type="text" id="broadcastImageInput" placeholder="https://...">
+          <label class="field-label">Tugma matni (ixtiyoriy)</label>
+          <input type="text" id="broadcastBtnTextInput" placeholder="Masalan: Batafsil">
+          <label class="field-label">Tugma havolasi (ixtiyoriy, https://...)</label>
+          <input type="text" id="broadcastBtnUrlInput" placeholder="https://...">
+          <button class="btn" id="broadcastSendBtn" style="margin-top:10px;">Yuborish</button>
+          <div class="xabar" id="broadcastMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Yuborilganlar tarixi</h2>
+          <div class="owner-list" id="broadcastHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('broadcastBackBtn').addEventListener('click', () => onBack());
+
+    document.getElementById('broadcastSendBtn').addEventListener('click', async () => {
+      const targetType = document.getElementById('broadcastTargetInput').value;
+      const text = document.getElementById('broadcastTextInput').value.trim();
+      const imageUrl = document.getElementById('broadcastImageInput').value.trim();
+      const buttonText = document.getElementById('broadcastBtnTextInput').value.trim();
+      const buttonUrl = document.getElementById('broadcastBtnUrlInput').value.trim();
+      const msgEl = document.getElementById('broadcastMsg');
+      if (!text) {
+        msgEl.textContent = 'Xabar matnini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!confirm(`${BROADCAST_TARGET_LABELS[targetType]} toifasidagi BARCHA foydalanuvchilarga shu xabarni yuborishni tasdiqlaysizmi?`)) return;
+
+      const btn = document.getElementById('broadcastSendBtn');
+      btn.disabled = true;
+      msgEl.textContent = 'Yuborilmoqda... (bu bir necha soniya vaqt olishi mumkin)';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/broadcast-send', { initData, targetType, text, imageUrl, buttonText, buttonUrl });
+      btn.disabled = false;
+      if (res.ok) {
+        const r = res.result;
+        msgEl.textContent = `Yuborildi: ✅ ${r.deliveredCount} ta yetdi${r.failedCount ? `, ❌ ${r.failedCount} ta yetmadi` : ''} (jami ${r.totalTargets}).`;
+        msgEl.className = 'xabar ok';
+        document.getElementById('broadcastTextInput').value = '';
+        document.getElementById('broadcastImageInput').value = '';
+        document.getElementById('broadcastBtnTextInput').value = '';
+        document.getElementById('broadcastBtnUrlInput').value = '';
+        loadBroadcastHistoryAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadBroadcastHistoryAndRender();
   }
 
   // =========================================================================
