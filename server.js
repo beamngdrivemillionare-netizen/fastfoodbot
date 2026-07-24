@@ -3021,6 +3021,26 @@ setInterval(() => {
   })().catch(() => {});
 }, 10 * 60 * 1000);
 
+const CUSTOMER_AUTO_RECEIVE_MS = 2 * 60 * 60 * 1000;
+setInterval(() => {
+  const owners = loadOwners();
+  let changed = false;
+  for (const owner of owners) {
+    for (const order of (owner.orders || [])) {
+      if (order.orderType === 'dostavka') continue;
+      if (order.status !== 'tayyor') continue;
+      if (order.customerReceivedAt) continue;
+      const readyTime = new Date(order.readyAt || order.updatedAt || order.createdAt).getTime();
+      if (Date.now() - readyTime >= CUSTOMER_AUTO_RECEIVE_MS) {
+        order.customerReceivedAt = new Date().toISOString();
+        order.customerReceivedAuto = true;
+        changed = true;
+      }
+    }
+  }
+  if (changed) saveOwners(owners);
+}, 15 * 60 * 1000);
+
 const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/verify') {
