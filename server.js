@@ -1227,6 +1227,22 @@ function customerIsCardOnlyRestricted(owner, userId) {
   if ((owner.cardOnlyOverrides || []).some(id => String(id) === String(userId))) return false;
   return customerCancelledDeliveryCount(owner, userId) >= CARD_ONLY_AFTER_CANCELLED_DELIVERIES;
 }
+
+// ---- Mijozlar reytingi (65-bosqich): har bir dostavka yetkazilgach mijoz
+// 1-5 yulduz va ixtiyoriy sharh qoldirishi mumkin (qarang: 'rate:' callback
+// va pastdagi pendingReviewComments). Bu funksiya o'sha baholarning
+// o'rtachasini hisoblaydi — admin panelida do'konlarni reyting bo'yicha
+// saralash va egasining o'z "Mijoz sharhlari" ekranida ko'rsatish uchun.
+function ownerRatedOrders(owner) {
+  return (owner.orders || []).filter(o => Number.isFinite(o.customerRating));
+}
+function ownerAverageRating(owner) {
+  const rated = ownerRatedOrders(owner);
+  if (!rated.length) return { avg: null, count: 0 };
+  const sum = rated.reduce((s, o) => s + o.customerRating, 0);
+  return { avg: Math.round((sum / rated.length) * 10) / 10, count: rated.length };
+}
+
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
 const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
@@ -1367,7 +1383,17 @@ function findStaffInfo(owners, userId) {
 // Berilgan userId qaysi oshxonaga tegishli ekanini aniqlaydi (egasining o'zi yoki uning xodimi)
 // Qaytaradi: { owner, role, roles, branchId } — role: 'egasi' yoki xodimning birinchi roli
 // (orqaga moslik uchun), roles: xodimga biriktirilgan BARCHA rollar massivi; topilmasa null
-function resolveOwnerContext(owners, userId) {
+function resolveOwnerContext(owners, userId, opts) {
+  // 65-bosqich: admin ba'zan yangi/tajribasiz oshxona egasi uchun menyu yoki
+  // skladni o'zi to'ldirib berishi kerak bo'ladi. Shunday holatda so'rov
+  // payload'ida targetOwnerId yuboriladi — bu holda haqiqiy egasi/xodim
+  // aniqlanmay, to'g'ridan-to'g'ri o'sha egasi nomidan "egasi" rolida ishlanadi.
+  // Faqat chaqiruvchi rostdan ham admin bo'lsagina (isAdminId) ishlaydi.
+  if (opts && opts.targetOwnerId && isAdminId(userId)) {
+    const targetOwner = findOwner(owners, opts.targetOwnerId);
+    if (!targetOwner) return null;
+    return { owner: targetOwner, role: 'egasi', roles: ['egasi'], branchId: null, isAdminActing: true };
+  }
   const owner = findOwner(owners, userId);
   if (isOwnerAccessValid(owner)) return { owner, role: 'egasi', roles: ['egasi'], branchId: null };
 
@@ -2140,6 +2166,13 @@ function approveRequest(reqInfo, days) {
 // qayta bossa yetarli, ma'lumot yo'qolmaydi, chunki hali owner sifatida
 // SAQLANMAGAN).
 const pendingSelfRegistration = new Set(); // userId(string) larni saqlaydi
+// 65-bosqich: mijoz yulduz bilan baholagach, keyingi (buyruq bo'lmagan)
+// matnli xabarini shu buyurtmaga sharh sifatida bog'laymiz. Key: mijoz
+// telegram ID'si (string) -> { ownerId, orderId, expiresAt }. 30 daqiqadan
+// keyin eskirgan deb hisoblanadi (pastda tekshiriladi) — shundan keyin
+// kelgan oddiy xabar sharh sifatida qabul qilinmaydi.
+const pendingReviewComments = new Map();
+const REVIEW_COMMENT_WINDOW_MS = 30 * 60 * 1000;
 
 // /start buyrug'ining asosiy mantiqi (taklif havolasi, mijoz menyu havolasi va h.k.) —
 // alohida funksiyaga ajratildi, chunki ro'yxatdan o'tish tugagandan keyin ham
@@ -2390,6 +2423,41 @@ async function handleTelegramUpdate(update) {
         owner.kitchenGroupTitle = null;
         saveOwners(owners);
         await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
+      }
+      return;
+    }
+
+    // ---- 65-bosqich: yulduz bilan baholagandan keyin so'ralgan ixtiyoriy
+    // sharh — mijoz yozgan keyingi (buyruq bo'lmagan) oddiy xabarni shu
+    // buyurtmaga sharh sifatida yozib qo'yamiz va egasi/adminlarga xabar
+    // qilamiz (ular buni "Mijoz sharhlari" ekranida ham ko'rishadi). ----
+    if (!text.startsWith('/') && pendingReviewComments.has(String(from.id))) {
+      const pending = pendingReviewComments.get(String(from.id));
+      pendingReviewComments.delete(String(from.id));
+      if (pending.expiresAt >= Date.now()) {
+        const owners = loadOwners();
+        const owner = findOwner(owners, pending.ownerId);
+        const order = owner && (owner.orders || []).find(o => String(o.id) === String(pending.orderId));
+        if (owner && order && !order.customerComment) {
+          const commentTrim = text.trim().slice(0, 500);
+          if (commentTrim) {
+            order.customerComment = commentTrim;
+            order.customerCommentAt = new Date().toISOString();
+            saveOwners(owners);
+            await sendMessage(chatId, 'Fikringiz uchun rahmat! 🙏');
+
+            const starsText = '⭐️'.repeat(order.customerRating || 0);
+            const notifyText = `💬 <b>Mijoz sharhi</b> (${starsText})\n"${escapeHtmlServer(commentTrim)}"\n\nMijoz: ${orderCustomerContactLabel(order)}`;
+            const staffList = owner.staff || [];
+            const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
+            for (const targetId of new Set([owner.id, ...targetIds])) {
+              sendMessage(targetId, notifyText);
+            }
+            for (const adminId of allAdminIds()) {
+              sendMessage(adminId, `${notifyText}\n\nOshxona: ${escapeHtmlServer((owner.profile && owner.profile.name) || owner.id)}`);
+            }
+          }
+        }
       }
       return;
     }
@@ -2850,6 +2918,16 @@ async function handleTelegramUpdate(update) {
           `${cq.message.text || ''}\n\nSizning bahoyingiz: ${starsText}\nRahmat! 🙏`, null);
       }
       await answerCallbackQuery(cq.id, 'Bahoyingiz uchun rahmat! 🙏');
+
+      // 65-bosqich: yulduzdan keyin ixtiyoriy matnli sharh so'raymiz — mijoz
+      // yozgan keyingi (buyruq bo'lmagan) xabar shu buyurtmaga sharh sifatida
+      // yoziladi (qarang: pendingReviewComments, matn xabarlari bo'limi).
+      pendingReviewComments.set(String(from.id), {
+        ownerId: String(owner.id),
+        orderId: String(order.id),
+        expiresAt: Date.now() + REVIEW_COMMENT_WINDOW_MS
+      });
+      await sendMessage(from.id, '✍️ Fikr-mulohazangiz bo\'lsa, shu yerga yozib qoldiring (ixtiyoriy — o\'tkazib yuborishingiz ham mumkin).');
 
       // Past baho (1-3) qo'yilsa — egasi va kassirlarga darhol xabar, shikoyatga
       // tezroq javob berish imkoni bo'lishi uchun.
@@ -3838,7 +3916,7 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
       return sendJSON(res, 200, { ok: true, branches: ctx.owner.branches || [] });
@@ -3945,7 +4023,7 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
       const menuWithStock = (ctx.owner.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(ctx.owner, m) }));
@@ -3969,7 +4047,7 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
       return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(ctx.owner) });
@@ -3987,9 +4065,10 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi bo\'limlarni boshqara oladi'));
-      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi bo\'limlarni boshqara oladi'));
+      const owner = ctx.owner;
+      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
 
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Bo\'lim nomini kiriting.' });
@@ -4022,9 +4101,10 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ctx.owner;
+      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       ensureOwnerCategories(owner);
@@ -4053,9 +4133,10 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      if (!ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ctx.owner;
+      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
       if (!Array.isArray(orderedIds)) return sendJSON(res, 200, { ok: false, reason: 'Tartib ro\'yxati noto\'g\'ri.' });
 
       const categories = ensureOwnerCategories(owner);
@@ -4097,9 +4178,10 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
-      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
+      const owner = ctx.owner;
+      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
 
       const nameTrim = String(name || '').trim();
       const priceNum = Number(price);
@@ -4153,9 +4235,10 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
-      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
+      const owner = ctx.owner;
+      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const item = (owner.menu || []).find(m => m.id === id);
@@ -4218,9 +4301,10 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      if (!ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ctx.owner;
+      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.menu = (owner.menu || []).filter(m => m.id !== id);
@@ -6738,7 +6822,7 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
       if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
@@ -6764,12 +6848,12 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
       if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
         return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
       }
-      if (!ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
+      if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
 
       const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const pool = resolveStockPool(ctx.owner, branchId);
@@ -6868,8 +6952,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ctx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const pool = resolveStockPool(owner, branchId || null);
@@ -6997,8 +7082,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi retsept belgilay oladi'));
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi retsept belgilay oladi'));
+      const owner = ctx.owner;
 
       const menuItem = (owner.menu || []).find(m => m.id === menuId);
       if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
@@ -7748,6 +7834,45 @@ const server = http.createServer((req, res) => {
       customers.sort((a, b) => b.cancelledCount - a.cancelledCount);
 
       return sendJSON(res, 200, { ok: true, customers });
+    });
+    return;
+  }
+
+  // ---- API: mijozlar qoldirgan reyting va sharhlar ro'yxati (65-bosqich) ----
+  // Egasi o'zining ekranidan (targetOwnerId'siz) yoki admin istalgan do'kon
+  // uchun (targetOwnerId bilan) chaqiradi — ikkalasi ham bir xil ma'lumotni
+  // ko'radi, chunki "izoh admin va ownerlarga ko'rinsin" talabiga ko'ra.
+  if (req.method === 'POST' && req.url === '/api/owner-reviews') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, targetOwnerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      let owner;
+      if (targetOwnerId && isAdminId(userId)) {
+        owner = findOwner(owners, targetOwnerId);
+        if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday oshxona topilmadi.' });
+      } else {
+        owner = findOwner(owners, userId);
+        if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga (yoki adminga) ko\'rinadi'));
+      }
+
+      const rating = ownerAverageRating(owner);
+      const reviews = ownerRatedOrders(owner)
+        .sort((a, b) => new Date(b.customerRatedAt) - new Date(a.customerRatedAt))
+        .slice(0, 200)
+        .map(o => ({
+          orderId: o.id,
+          stars: o.customerRating,
+          comment: o.customerComment || null,
+          ratedAt: o.customerRatedAt,
+          customerName: (findCustomer(owner, o.customerId) || {}).firstName || o.customerName || null
+        }));
+
+      return sendJSON(res, 200, { ok: true, avgRating: rating.avg, ratingCount: rating.count, reviews });
     });
     return;
   }
@@ -8982,7 +9107,23 @@ const server = http.createServer((req, res) => {
         delete clean.sessionToken;
         delete clean.sessionExpiresAt;
         clean.hasLogin = !!(o.login && o.passwordHash);
+        // 65-bosqich: mijozlar qo'ygan reytingi — do'konlar shu bo'yicha
+        // ro'yxatda tepaga ko'tariladi (pastda saralash qarang).
+        const rating = ownerAverageRating(o);
+        clean.avgRating = rating.avg;
+        clean.ratingCount = rating.count;
         return clean;
+      });
+      // Reytingi yuqori do'konlar ro'yxat boshida ko'rinadi. Hali baholanmagan
+      // (avgRating === null) do'konlar — reytingga qarab pastga tushmasin
+      // uchun emas, balki hali ma'lumot yo'qligi uchun — ro'yxat oxirida,
+      // lekin o'zaro nisbiy tartibini (masalan, ro'yxatga qo'shilgan vaqti)
+      // saqlagan holda qoladi.
+      owners.sort((a, b) => {
+        if (a.avgRating === null && b.avgRating === null) return 0;
+        if (a.avgRating === null) return 1;
+        if (b.avgRating === null) return -1;
+        return b.avgRating - a.avgRating;
       });
       // 67-bosqich: umumiy daromad — payments.json (to'liq tarix) asosida,
       // joriy owners.json holatining oddiy yig'indisi emas. Shu bilan owner
