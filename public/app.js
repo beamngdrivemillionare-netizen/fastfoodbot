@@ -615,6 +615,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
           ${adminMenuItemHtml({ key: 'elon', icon: 'send', label: "E'lon yuborish" })}
           ${adminMenuItemHtml({ key: 'savatcha', icon: 'trash', label: 'Savatcha' })}
+          ${adminMenuItemHtml({ key: 'zaxira', icon: 'download', label: 'Zaxira (Backup)' })}
           ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
         </div>
       </div>
@@ -633,6 +634,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
         if (key === 'elon') { renderBroadcastScreen(goBack); return; }
         if (key === 'savatcha') { renderTrashScreen(goBack); return; }
+        if (key === 'zaxira') { renderBackupScreen(goBack); return; }
         if (key === 'tizim') { loadAndShowSystemStatus(); return; }
       });
     });
@@ -1562,6 +1564,151 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
       </div>
     `).join('');
+  }
+
+  // =========================================================================
+  // Admin bo'limi: "Zaxira (Backup)" (52-54-bosqich) — butun bazani (barcha
+  // oshxona egalari, to'lovlar, sozlamalar va h.k.) bitta JSON faylga jamlab
+  // yuklab olish, va o'sha faylni yuklab bazani tiklash. Tiklash — juda xavfli
+  // amal (butun bazani almashtiradi) bo'lgani uchun ikki bosqichli: avval
+  // fayl tekshiriladi va xulosa ko'rsatiladi (preview), so'ng admin
+  // "TASDIQLAYMAN" so'zini qo'lda kiritib, aniq shu fayl uchun yaratilgan
+  // tasdiqlash kodi bilan tasdiqlaydi (server buni 10 daqiqa ichida talab qiladi).
+  const BACKUP_SECTION_LABELS = {
+    owners: "Do'kon egalari", admins: 'Adminlar', invites: 'Taklif havolalari',
+    requests: "So'rovlar", profiles: 'Profillar', tariffs: 'Tariflar',
+    payments: "To'lovlar", archived_orders: 'Arxivlangan buyurtmalar',
+    subscription_plans: 'Obuna rejalari', settings: 'Sozlamalar',
+    broadcasts: "E'lonlar tarixi", trash: 'Savatcha', trash_log: 'Savatcha loglari',
+    awaiting: 'Kutilayotgan amallar'
+  };
+
+  function backupCountsHtml(counts) {
+    if (!counts) return '';
+    return `
+      <div class="owner-list" style="margin-top:8px;">
+        ${Object.keys(counts).map(k => `
+          <div class="owner-item" style="padding:8px 10px;">
+            <div class="owner-id" style="font-size:14px;">${escapeHtml(BACKUP_SECTION_LABELS[k] || k)}</div>
+            <div class="owner-username">${counts[k]} ta</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  async function renderBackupScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${icon('download', 'icon-sm')} Zaxira (Backup)</div>
+        <button class="btn ikkinchi" id="backupBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+
+        <div class="kartochka">
+          <h2>${icon('download', 'icon-xs')} Zaxira nusxa yuklab olish</h2>
+          <div class="bosh" style="margin-bottom:10px;">Butun baza (barcha oshxona egalari, to'lovlar, sozlamalar va h.k.) bitta JSON faylga jamlanib, telefoningizga yuklab olinadi. Bu fayl kelajakda bazani tiklash uchun ishlatiladi.</div>
+          <button class="btn" id="backupExportBtn">${icon('download', 'icon-xs')} Yuklab olish</button>
+          <div class="xabar" id="backupExportMsg"></div>
+        </div>
+
+        <div class="kartochka">
+          <h2>${icon('upload', 'icon-xs')} Bazani zaxiradan tiklash</h2>
+          <div class="bosh" style="margin-bottom:10px; color: var(--danger, #e53e3e);">⚠️ DIQQAT: bu amal joriy bazadagi ma'lumotlarni tanlangan zaxiradagi ma'lumotlar bilan ALMASHTIRADI. Tiklashdan oldin joriy holat avtomatik saqlab qo'yiladi, lekin baribir ehtiyot bo'ling.</div>
+          <input type="file" id="backupFileInput" accept="application/json,.json" style="margin-bottom:10px;">
+          <div id="backupPreviewArea"></div>
+          <div class="xabar" id="backupImportMsg"></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('backupBackBtn').addEventListener('click', () => onBack());
+
+    // ---- Yuklab olish (export) ----
+    document.getElementById('backupExportBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('backupExportBtn');
+      const msgEl = document.getElementById('backupExportMsg');
+      btn.disabled = true;
+      msgEl.className = 'xabar';
+      msgEl.textContent = '';
+      const res = await apiPost('/api/backup-export', { initData });
+      btn.disabled = false;
+      if (!res.ok) {
+        msgEl.className = 'xabar err';
+        msgEl.textContent = res.reason || 'Zaxira tayyorlanmadi. Qayta urinib ko\'ring.';
+        return;
+      }
+      downloadFile(res.filename, res.mime, res.content, false);
+      msgEl.className = 'xabar ok';
+      msgEl.textContent = `✅ Zaxira yuklab olindi (${Object.values(res.counts || {}).reduce((a, b) => a + b, 0)} ta yozuv).`;
+    });
+
+    // ---- Fayl tanlanganda — avval faqat TEKSHIRUV (preview), hech narsa o'zgarmaydi ----
+    let selectedBackupContent = null;
+    let selectedConfirmToken = null;
+    document.getElementById('backupFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const previewArea = document.getElementById('backupPreviewArea');
+      const msgEl = document.getElementById('backupImportMsg');
+      msgEl.className = 'xabar';
+      msgEl.textContent = '';
+      previewArea.innerHTML = '';
+      selectedBackupContent = null;
+      selectedConfirmToken = null;
+      if (!file) return;
+
+      previewArea.innerHTML = `<div class="bosh">Fayl tekshirilmoqda...</div>`;
+      const content = await file.text();
+      const res = await apiPost('/api/backup-import-preview', { initData, content });
+      if (!res.ok) {
+        previewArea.innerHTML = '';
+        msgEl.className = 'xabar err';
+        msgEl.textContent = res.reason || 'Fayl tekshirib bo\'lmadi.';
+        return;
+      }
+
+      selectedBackupContent = content;
+      selectedConfirmToken = res.confirmToken;
+      const exportedAtLabel = res.exportedAt ? new Date(res.exportedAt).toLocaleString('uz-UZ') : 'noma\'lum';
+
+      previewArea.innerHTML = `
+        <div class="kartochka" style="background: var(--bg-secondary, #f5f5f5); margin-top:4px;">
+          <div class="owner-username">📅 Zaxira sanasi: ${escapeHtml(exportedAtLabel)}</div>
+          ${backupCountsHtml(res.counts)}
+        </div>
+        <label class="field-label" style="margin-top:10px;">Tasdiqlash uchun "TASDIQLAYMAN" so'zini kiriting</label>
+        <input type="text" id="backupConfirmTextInput" placeholder="TASDIQLAYMAN">
+        <button class="btn xavfli" id="backupRestoreBtn" style="margin-top:10px;">${icon('upload', 'icon-xs')} Bazani tiklash</button>
+      `;
+
+      document.getElementById('backupRestoreBtn').addEventListener('click', async () => {
+        const confirmText = document.getElementById('backupConfirmTextInput').value.trim();
+        if (confirmText.toUpperCase() !== 'TASDIQLAYMAN') {
+          msgEl.className = 'xabar err';
+          msgEl.textContent = 'Iltimos, "TASDIQLAYMAN" so\'zini aniq kiriting.';
+          return;
+        }
+        if (!confirm('SO\'NGGI OGOHLANTIRISH: joriy baza tanlangan zaxira bilan almashtiriladi. Davom etasizmi?')) return;
+
+        const btn = document.getElementById('backupRestoreBtn');
+        btn.disabled = true;
+        msgEl.className = 'xabar';
+        msgEl.textContent = 'Tiklanmoqda...';
+        const r = await apiPost('/api/backup-import-confirm', {
+          initData,
+          confirmToken: selectedConfirmToken,
+          confirmText,
+          content: selectedBackupContent
+        });
+        btn.disabled = false;
+        if (!r.ok) {
+          msgEl.className = 'xabar err';
+          msgEl.textContent = r.reason || 'Tiklashda xatolik yuz berdi.';
+          return;
+        }
+        previewArea.innerHTML = '';
+        document.getElementById('backupFileInput').value = '';
+        msgEl.className = 'xabar ok';
+        msgEl.textContent = `✅ Baza tiklandi (${(r.applied || []).length} ta bo'lim almashtirildi). Sahifani qayta oching.`;
+      });
+    });
   }
 
   async function renderTariffsScreen(onBack) {
