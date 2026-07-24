@@ -1538,6 +1538,69 @@
     transition: background var(--transition-fast);
   }
   .order-card .order-reorder-btn:hover { background: var(--brand-primary-light); }
+
+  /* =========================================================================
+     39-bosqich: mijoz uchun bildirishnomalar markazi — header'dagi
+     qo'ng'iroqcha (badge bilan) va bildirishnomalar ekranidagi ro'yxat
+     bandlari. Owner tarafidagi .ko-alert-* bilan bir xil g'oya, lekin
+     mijoz header'i (.profile-view, ochiq/karta fon) uchun moslashtirilgan.
+     ========================================================================= */
+  .cust-notif-bell-btn {
+    position: relative;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-color);
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+  .cust-notif-bell-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: var(--radius-pill);
+    background: var(--danger);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+  .cust-notif-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-3);
+    padding: var(--sp-3) 0;
+    border-top: 1px solid var(--border-color);
+  }
+  .cust-notif-item:first-of-type { border-top: none; }
+  .cust-notif-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-pill);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: var(--info-bg);
+    color: var(--info);
+  }
+  .cust-notif-icon.promo { background: var(--promo-bg-1); color: var(--promo-text); }
+  .cust-notif-body { flex: 1 1 auto; min-width: 0; }
+  .cust-notif-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+  .cust-notif-text { font-size: var(--fs-xs); color: var(--text-secondary); margin-top: 2px; }
+  .cust-notif-time { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 4px; }
   .order-card .order-reorder-btn:disabled { opacity: 0.6; cursor: default; }
 
   /* ---- Oshxona (oshpaz) va kuryer (kuryer) taxtalari uchun
