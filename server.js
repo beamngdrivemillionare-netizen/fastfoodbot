@@ -158,6 +158,13 @@ function ensureSubscriptionFields(owner) {
   if (owner.blockedNotifiedAt === undefined) {
     owner.blockedNotifiedAt = null;
   }
+  // Mijozlar "karta" to'lovini tanlaganda ko'radigan, DO'KON EGASINING O'ZI
+  // to'ldiradigan karta raqami/egasi. Bu — subscriptionPaymentRequisites'dan
+  // (platforma egasining obuna kartasi) FARQLI: har bir do'kon o'zining
+  // mijozlaridan pul qabul qilish uchun o'z kartasini kiritadi.
+  if (owner.customerPaymentCard === undefined) {
+    owner.customerPaymentCard = { cardNumber: '', cardHolder: '' };
+  }
   return owner;
 }
 
@@ -5030,7 +5037,8 @@ const server = http.createServer((req, res) => {
           phone: (owner.profile && owner.profile.phone) || null,
           workHours: (owner.profile && owner.profile.workHours) || null,
           logoUrl: (owner.profile && owner.profile.logoUrl) || null,
-          brandColor: (owner.profile && owner.profile.brandColor) || null
+          brandColor: (owner.profile && owner.profile.brandColor) || null,
+          paymentCard: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' }
         },
         customer: { favorites: customer.favorites, addresses: customer.addresses || [], bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
         personRegistered: isRegisteredUser(userId),
@@ -5788,8 +5796,16 @@ const server = http.createServer((req, res) => {
         // keyin kassir/egasi tasdiqlashi kerak (qarang: 'payok' callback -
         // xuddi shu notifyText/notifyTargets/notifyDeliveryGroup o'sha yerda
         // takrorlanadi, FAQAT tasdiqlangandan keyin ishga tushadi).
+        // Karta raqami do'kon egasi tomonidan kiritiladi (qarang:
+        // customerPaymentCard, /api/owner-payment-card-set). <code> tegi
+        // Telegram'da bosib-nusxalash imkonini beradi.
+        const payCard = owner.customerPaymentCard || {};
+        const cardLine = payCard.cardNumber
+          ? `\n\n💳 To'lov: <code>${escapeHtmlServer(payCard.cardNumber)}</code>` +
+            (payCard.cardHolder ? ` (${escapeHtmlServer(payCard.cardHolder)})` : '')
+          : '\n\n⚠️ Oshxona hali to\'lov kartasini kiritmagan — to\'lov uchun kassaga murojaat qiling.';
         await sendMessage(userId,
-          '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.\n\n' +
+          '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.' + cardLine + '\n\n' +
           'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
           'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
       } else if (order.paymentConfirmMethod === 'naqd_kassa') {
@@ -8525,6 +8541,47 @@ const server = http.createServer((req, res) => {
         prefs[key] = !isNotificationCategoryMuted(owner, key);
       }
       return sendJSON(res, 200, { ok: true, prefs });
+    });
+    return;
+  }
+
+  // Do'kon egasi mijozlardan "karta" to'lovini qabul qilish uchun o'z karta
+  // raqamini ko'radi/tahrirlaydi (qarang: customerPaymentCard,
+  // ensureSubscriptionFields). Bu — platforma egasining OBUNA kartasidan
+  // (admin-payment-requisites-*) butunlay boshqa, alohida narsa.
+  if (req.method === 'POST' && req.url === '/api/owner-payment-card-get') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      return sendJSON(res, 200, { ok: true, card: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' } });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/owner-payment-card-set') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+
+      const cardNumber = String(payload.cardNumber || '').trim().slice(0, 40);
+      const cardHolder = String(payload.cardHolder || '').trim().slice(0, 80);
+      owner.customerPaymentCard = { cardNumber, cardHolder };
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, card: owner.customerPaymentCard });
     });
     return;
   }
