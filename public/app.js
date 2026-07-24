@@ -1900,6 +1900,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const p = existing;
     let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
     let pendingLogo = p.logoUrl || '';
+    let pendingBannerImg = ''; // 45-bosqich: yangi banner formasidagi tanlangan rasm (hali saqlanmagan)
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     const accSections = [
       {
@@ -1935,6 +1936,29 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="kartochka">
             <h2>Aksiyalar ro'yxati</h2>
             <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'banners', icon: 'image', title: 'Reklama bannerlari',
+        hint: "Mijozlar ekraniga rasmli e'lon",
+        body: `
+          <div class="kartochka">
+            <h2>Yangi banner qo'shish</h2>
+            <div class="bosh">Banner mijozlar ilovasining menyu ekrani tepasida ko'rinadi. Ixtiyoriy ravishda havola qo'shsangiz, banner bosilganda o'sha sahifa ochiladi.</div>
+            ${logoPickerHtml('bannerImg', '')}
+            <input type="text" id="bannerTitleInput" placeholder="Sarlavha (ixtiyoriy)" style="margin-top:10px;">
+            <input type="text" id="bannerLinkInput" placeholder="Havola (ixtiyoriy, https://...)">
+            <label class="field-label">Boshlanish sanasi (ixtiyoriy)</label>
+            <input type="date" id="bannerStartInput">
+            <label class="field-label">Tugash sanasi (ixtiyoriy)</label>
+            <input type="date" id="bannerEndInput">
+            <button class="btn" id="addBannerBtn" style="margin-top:8px;">Banner qo'shish</button>
+            <div class="xabar" id="bannerMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Bannerlar ro'yxati</h2>
+            <div class="owner-list" id="bannerList"><div class="bosh">Yuklanmoqda...</div></div>
           </div>
         `
       },
@@ -2092,6 +2116,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       applyBrandColor(hex);
     });
     attachLogoPickerHandlers('pLogo', (val) => { pendingLogo = val; });
+    attachLogoPickerHandlers('bannerImg', (val) => { pendingBannerImg = val; });
 
     // Jonli ko'rish saqlashdan oldingi taxminiy holat — shu sababli bekor
     // qilinganda haqiqiy saqlangan rangga qaytarib, o'zgarishlarni tashlab
@@ -2189,6 +2214,54 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    document.getElementById('addBannerBtn').addEventListener('click', async () => {
+      const title = document.getElementById('bannerTitleInput').value.trim();
+      const link = document.getElementById('bannerLinkInput').value.trim();
+      const startAt = document.getElementById('bannerStartInput').value;
+      const endAt = document.getElementById('bannerEndInput').value;
+      const msgEl = document.getElementById('bannerMsg');
+      if (!pendingBannerImg) {
+        msgEl.textContent = 'Banner uchun rasm tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/banner-add', { initData, imageUrl: pendingBannerImg, title, link, startAt, endAt });
+      if (res.ok) {
+        msgEl.textContent = 'Banner qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        pendingBannerImg = '';
+        document.getElementById('bannerTitleInput').value = '';
+        document.getElementById('bannerLinkInput').value = '';
+        document.getElementById('bannerStartInput').value = '';
+        document.getElementById('bannerEndInput').value = '';
+        const preview = document.getElementById('bannerImgPreview');
+        if (preview) preview.outerHTML = `<div id="bannerImgPreview" class="logo-picker-preview logo-picker-preview-empty">${icon('image', 'icon-md')}</div>`;
+        const removeBtn = document.getElementById('bannerImgRemoveBtn');
+        if (removeBtn) removeBtn.remove();
+        loadBannerAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('bannerList').addEventListener('click', async (e) => {
+      const toggleId = e.target.getAttribute('data-toggle-banner-id');
+      const removeId = e.target.getAttribute('data-remove-banner-id');
+      if (toggleId) {
+        e.target.disabled = true;
+        await apiPost('/api/banner-toggle', { initData, id: toggleId });
+        loadBannerAndRender();
+      } else if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/banner-remove', { initData, id: removeId });
+        loadBannerAndRender();
+      }
+    });
+
     document.getElementById('saveBonusBtn').addEventListener('click', async () => {
       const enabled = document.getElementById('bonusEnabledInput').checked;
       const earnPercent = document.getElementById('bonusPercentInput').value.trim();
@@ -2242,6 +2315,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     loadCategoriesAndRender();
     loadPromoAndRender();
+    loadBannerAndRender();
     loadBonusSettingsAndRender();
     loadDeliveryGroupStatus();
     loadKitchenGroupStatus();
@@ -3578,6 +3652,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/promo-list', { initData });
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadPromoAndRender); return; }
     listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
+  }
+
+  // 46-bosqich: bannerlar ro'yxati (egasi boshqaruv paneli) — promoListHtml
+  // bilan bir xil kartochka ko'rinishi, farqi: rasm kichik ko'rinishda chap
+  // tomonda, va sana oynasi (bor bo'lsa) ko'rsatiladi.
+  function bannerListHtml(banners) {
+    if (!banners || !banners.length) return `<div class="bosh">Hali banner qo'shilmagan.</div>`;
+    return banners.map(b => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <img src="${escapeHtml(b.imageUrl)}" alt="" style="width:56px; height:56px; border-radius:10px; object-fit:cover; flex-shrink:0; margin-right:10px;" onerror="this.style.visibility='hidden'">
+        <div style="flex:1; min-width:0;">
+          <div class="owner-id">${escapeHtml(b.title || "(sarlavhasiz)")}</div>
+          ${b.link ? `<div class="owner-username">${escapeHtml(b.link)}</div>` : ''}
+          ${(b.startAt || b.endAt) ? `<div class="owner-username">${b.startAt ? new Date(b.startAt).toLocaleDateString('uz-UZ') : '...'} — ${b.endAt ? new Date(b.endAt).toLocaleDateString('uz-UZ') : '...'}</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${b.active ? 'paid' : 'unpaid'}">${b.active ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-banner-id="${escapeHtml(b.id)}">${b.active ? 'To\'xtatish' : 'Yoqish'}</button>
+          <button data-remove-banner-id="${escapeHtml(b.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadBannerAndRender() {
+    const listEl = document.getElementById('bannerList');
+    if (!listEl) return;
+    const res = await apiPost('/api/banner-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBannerAndRender); return; }
+    listEl.innerHTML = bannerListHtml(res.ok ? res.banners : []);
   }
 
   async function loadBonusSettingsAndRender() {
@@ -6783,6 +6887,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     menu: [],
     categories: [],
     promotions: [],
+    banners: [],
     favorites: [],
     bonusPoints: 0,
     bonusEnabled: false,
@@ -6991,6 +7096,37 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
+  // 45-bosqich: mijoz ekranidagi rasmli reklama/e'lon karuseli — egasi
+  // "Reklama bannerlari" bo'limida qo'shgan, hozir faol bannerlar
+  // (customerState.banners — /api/customer-menu-list orqali keladi, faqat
+  // active=true va startAt/endAt oynasi ichidagilar, qarang: activeOwnerBanners
+  // server.js'da). Bittadan ko'p bo'lsa gorizontal surilib turadi.
+  function customerAdBannerHtml() {
+    if (!customerState.banners || !customerState.banners.length) return '';
+    return `
+      <div class="ad-banner-row">
+        ${customerState.banners.map(b => `
+          <div class="ad-banner-card" data-ad-banner-id="${escapeHtml(b.id)}" ${b.link ? 'style="cursor:pointer;"' : ''}>
+            <img src="${escapeHtml(b.imageUrl)}" alt="${escapeHtml(b.title || '')}" onerror="this.closest('.ad-banner-card').style.display='none'">
+            ${b.title ? `<div class="ad-banner-title">${escapeHtml(b.title)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  // Banner bosilganda (agar havola berilgan bo'lsa) — mavjud
+  // openExternalLink() yordamchisi orqali ochiladi (Telegram ichida
+  // tg.openLink, aks holda yangi tab).
+  function attachCustomerAdBannerHandlers() {
+    document.querySelectorAll('[data-ad-banner-id]').forEach(el => {
+      const banner = (customerState.banners || []).find(b => b.id === el.getAttribute('data-ad-banner-id'));
+      if (banner && banner.link) {
+        el.addEventListener('click', () => openExternalLink(banner.link));
+      }
+    });
+  }
+
   function customerPromoBannerHtml() {
     if (!customerState.promotions.length) return '';
     return customerState.promotions.map(p => `
@@ -7081,6 +7217,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ekran(`
       <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
         ${customerHeaderHtml()}
+        ${customerAdBannerHtml()}
         ${customerTabRowHtml()}
         ${customerPromoBannerHtml()}
         ${customerSearchSortBarHtml()}
@@ -7094,6 +7231,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCustomerTabHandlers();
     attachCartFabHandler();
     attachCustomerSearchSortHandlers();
+    attachCustomerAdBannerHandlers();
     if (!(customerState.searchQuery || '').trim()) {
       attachSectionedMenuTabHandlers('customerCatRow');
       attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
@@ -7685,6 +7823,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.menu = menuRes.ok ? menuRes.menu : [];
     customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
     customerState.promotions = menuRes.ok ? menuRes.promotions : [];
+    customerState.banners = menuRes.ok ? (menuRes.banners || []) : [];
 
     renderCustomerMenuTab();
     // 39-bosqich: qo'ng'iroqcha ustidagi son ekran chizilgach fonda yuklanadi
