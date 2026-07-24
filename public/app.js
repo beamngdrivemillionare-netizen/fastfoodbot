@@ -3555,6 +3555,41 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
+  // To'lov rekvizitlari (admin kartasi) kartochkasini chizadi va "Nusxalash"
+  // tugmasini ulaydi. Ilgari bu markup to'g'ridan-to'g'ri
+  // loadOwnerSubscriptionStatus() ichida, faqat "so'rov yo'q" holatida
+  // chizilardi va boshqa holatlarda karta butunlay yashirilardi — endi
+  // bitta joyda, har doim chaqiriladi.
+  function renderPaymentRequisitesCard(requisitesCard, requisites) {
+    if (!requisitesCard) return;
+    requisitesCard.style.display = '';
+    requisitesCard.innerHTML = `
+      <div class="section-label">To'lov rekvizitlari</div>
+      <div class="profile-row"><b>Ism-familya:</b> ${escapeHtml(requisites.cardHolder)}</div>
+      <div class="profile-row" style="margin-bottom:0;"><b>Karta raqami:</b></div>
+      <div class="link-box" style="margin-top:6px;">
+        <span id="subCardNumberText">${escapeHtml(requisites.cardNumber)}</span>
+        <button id="subCopyCardBtn" type="button">${icon('clipboard', 'icon-xs')}<span>Nusxalash</span></button>
+      </div>
+      <div class="xabar" id="subCopyCardMsg"></div>
+    `;
+    const copyBtn = document.getElementById('subCopyCardBtn');
+    if (copyBtn) copyBtn.addEventListener('click', () => {
+      const msgEl = document.getElementById('subCopyCardMsg');
+      const rawNumber = (requisites.cardNumber || '').replace(/\s+/g, '');
+      const showMsg = (text, ok) => { if (msgEl) { msgEl.textContent = text; msgEl.className = 'xabar ' + (ok ? 'ok' : 'err'); } };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(rawNumber).then(() => {
+          showMsg('Karta raqami nusxalandi.', true);
+        }).catch(() => {
+          showMsg('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.', false);
+        });
+      } else {
+        showMsg('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.', false);
+      }
+    });
+  }
+
   async function loadOwnerSubscriptionStatus(onBack) {
     const statusCard = document.getElementById('subStatusCard');
     const requisitesCard = document.getElementById('subRequisitesCard');
@@ -3574,11 +3609,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ${(res.daysLeft !== null && res.daysLeft !== undefined) ? `<div class="profile-row"><b>Qolgan kun:</b> ${escapeHtml(String(res.daysLeft))}</div>` : ''}
     `;
 
+    // MUHIM TUZATISH: ilgari tarif tanlangач (yoki skrinshot yuborilgach)
+    // to'lov rekvizitlari (admin kartasi) BUTUNLAY yashirilardi
+    // (requisitesCard.style.display = 'none') — natijada egasi to'lov
+    // qilish jarayonida karta raqamini qayta ko'ra olmasdi. Endi bu karta
+    // HAR DOIM ko'rinadi (pastda, "So'rov holati"dan keyin), va karta
+    // raqamini bitta bosishda nusxalab olish mumkin.
+    renderPaymentRequisitesCard(requisitesCard, res.requisites);
+
     const req = res.pendingRequest;
 
     // Tarif tanlangan, lekin skrinshot hali yuborilmagan - botga o'tishni eslatamiz.
     if (req && req.status === 'kutilmoqda_skrinshot') {
-      requisitesCard.style.display = 'none';
       plansCard.style.display = '';
       plansCard.innerHTML = `
         <div class="section-label">Tanlangan reja: ${escapeHtml(req.planLabel)} (${fmtNum(req.amount)} so'm)</div>
@@ -3597,7 +3639,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     // Skrinshot yuborilgan, admin tasdig'i kutilmoqda.
     if (req && req.status === 'kutilmoqda_tasdiq') {
-      requisitesCard.style.display = 'none';
       plansCard.style.display = '';
       plansCard.innerHTML = `
         <div class="section-label">🕓 Tasdiqlanishi kutilmoqda</div>
@@ -3607,13 +3648,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
 
     // So'rov yo'q (yoki avvalgisi tasdiqlangan/rad etilgan) - yangi tarif tanlash imkoni.
-    requisitesCard.style.display = '';
-    requisitesCard.innerHTML = `
-      <div class="section-label">To'lov rekvizitlari</div>
-      <div class="profile-row"><b>Ism-familya:</b> ${escapeHtml(res.requisites.cardHolder)}</div>
-      <div class="profile-row"><b>Karta raqami:</b> ${escapeHtml(res.requisites.cardNumber)}</div>
-    `;
-
     plansCard.style.display = '';
     const rejectedNote = (req && req.status === 'rad_etildi')
       ? `<div class="xabar err" style="margin-bottom:10px;">Oldingi so'rovingiz (${escapeHtml(req.planLabel)}) rad etilgan. Qaytadan tarif tanlang.</div>`
