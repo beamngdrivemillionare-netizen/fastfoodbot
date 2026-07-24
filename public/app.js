@@ -108,7 +108,24 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // o'qib bo'lmadi (internet yo'q / server ishlamayapti) — bu holda
   // {ok:false, networkError:true, reason} qaytadi, shunda chaqiruvchi joy
   // "Qayta urinish" tugmali maxsus holatni ko'rsatishi mumkin.
+  // 66-bosqich: admin "Do'kon egalari" ro'yxatidan bironta oshxonaning
+  // menyusi/skladini o'zi to'ldirib berish uchun Sklad ekranini ochganda, shu
+  // o'zgaruvchiga o'sha egasining ID'si yoziladi (qarang: renderStockScreen
+  // chaqiruvi admin-ovoz bilan). Shu holatda quyidagi apiPost — menyu/sklad/
+  // bo'lim endpointlariga avtomatik targetOwnerId qo'shadi, shunday qilib
+  // renderStockScreen/menuAddSectionHtml kabi umumiy kod hech o'zgarishsiz
+  // aynan o'sha egasi nomidan ishlay boshlaydi.
+  let adminTargetOwnerId = null;
+  const ADMIN_TARGET_OWNER_ENDPOINTS = [
+    '/api/menu-list', '/api/menu-add', '/api/menu-update', '/api/menu-remove', '/api/menu-set-recipe',
+    '/api/category-list', '/api/category-add', '/api/category-remove', '/api/category-reorder',
+    '/api/stock-list', '/api/stock-add', '/api/stock-remove', '/api/stock-movements',
+    '/api/branch-list'
+  ];
   async function apiPost(url, body) {
+    if (adminTargetOwnerId && ADMIN_TARGET_OWNER_ENDPOINTS.includes(url) && body && typeof body === 'object' && body.targetOwnerId === undefined) {
+      body = Object.assign({}, body, { targetOwnerId: adminTargetOwnerId });
+    }
     let r;
     try {
       r = await fetch(url, {
@@ -519,6 +536,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function ownerItemHtml(o) {
+    // 65/66-bosqich: mijozlar qo'ygan reyting (bo'lsa) badge sifatida
+    // ko'rinadi — /api/owners javobida allaqachon reyting bo'yicha saralab
+    // yuborilgan, shu sababli bu yerda faqat ko'rsatish qoladi.
+    const ratingBadgeHtml = o.avgRating !== null && o.avgRating !== undefined
+      ? `<span class="badge" title="${o.ratingCount} ta baho asosida">⭐ ${o.avgRating}</span>`
+      : '';
     return `
       <div class="owner-item owner-item-detailed" data-search-key="${escapeHtml(ownerSearchKey(o))}">
         <div class="owner-item-head">
@@ -529,6 +552,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
               <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}">
                 ${o.paid ? icon('check', 'icon-xs') + " To'langan" : icon('x', 'icon-xs') + ' Qarzdor'}
               </span>
+              ${ratingBadgeHtml}
             </div>
             ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
             ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
@@ -558,6 +582,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <span class="owner-field-value">${escapeHtml(ownerTariffLabel(o.tariffId))}</span>
             <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
           </div>
+        </div>
+
+        <div class="owner-action-row" style="display:flex; gap:8px; margin-top:8px;">
+          <button class="row-action-btn brand" style="flex:1;" data-view-reviews="${escapeHtml(o.id)}">⭐ Sharhlar</button>
+          <button class="row-action-btn brand" style="flex:1;" data-manage-menu="${escapeHtml(o.id)}" data-manage-menu-name="${escapeHtml((o.profile && o.profile.name) || o.id)}">🍽 Menyu/Sklad</button>
         </div>
       </div>
     `;
@@ -771,6 +800,31 @@ const tg = window.Telegram && window.Telegram.WebApp;
         removeBtn.disabled = true;
         await apiPost('/api/remove-owner', { initData, id: removeBtn.getAttribute('data-remove-id') });
         reloadAdminOwnersScreen(goBack);
+        return;
+      }
+
+      const reviewsBtn = e.target.closest('[data-view-reviews]');
+      if (reviewsBtn) {
+        const ownerId = reviewsBtn.getAttribute('data-view-reviews');
+        const ownerObj = owners.find(o => String(o.id) === String(ownerId));
+        renderAdminOwnerReviewsScreen(ownerId, (ownerObj && ownerObj.profile && ownerObj.profile.name) || ownerId, () => renderAdminOwnersScreen(owners, goBack));
+        return;
+      }
+
+      const menuBtn = e.target.closest('[data-manage-menu]');
+      if (menuBtn) {
+        const ownerId = menuBtn.getAttribute('data-manage-menu');
+        const ownerName = menuBtn.getAttribute('data-manage-menu-name');
+        // 66-bosqich: admin shu egasi nomidan menyu/skladni to'ldiradi —
+        // Sklad ekrani allaqachon "egasi" rolida menyu bo'limini ham
+        // ko'rsatadi (qarang: menuAddSectionHtml). Ekrandan chiqilganda
+        // adminTargetOwnerId albatta tozalanadi (aks holda admin o'zining
+        // keyingi amallari ham shu egasi nomidan ketib qolishi mumkin).
+        adminTargetOwnerId = ownerId;
+        renderStockScreen(ownerName, 'egasi', () => {
+          adminTargetOwnerId = null;
+          renderAdminOwnersScreen(owners, goBack);
+        });
         return;
       }
 
@@ -5286,6 +5340,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <button class="btn ikkinchi" id="deliveryStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
         ${onBack ? `<button class="btn ikkinchi" id="restrictedCustomersBtn" style="margin-bottom:12px;">🚫 Cheklangan mijozlar</button>` : ''}
+        ${onBack ? `<button class="btn ikkinchi" id="ownerReviewsBtn" style="margin-bottom:12px;">⭐ Mijoz sharhlari</button>` : ''}
         ${soundToggleBtnHtml()}
         <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
@@ -5304,6 +5359,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       restrictedBtn.addEventListener('click', () => {
         stopOrdersPolling();
         renderRestrictedCustomersScreen(() => renderDeliveryScreen(restaurantName, onBack));
+      });
+    }
+    const ownerReviewsBtn = document.getElementById('ownerReviewsBtn');
+    if (ownerReviewsBtn) {
+      ownerReviewsBtn.addEventListener('click', () => {
+        stopOrdersPolling();
+        renderReviewsScreen(null, 'Mijoz sharhlari', () => renderDeliveryScreen(restaurantName, onBack));
       });
     }
     attachSoundToggleHandler();
@@ -5338,6 +5400,53 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </button>
       </div>
     `;
+  }
+
+  // ---- Mijoz sharhlari (65-bosqich) — egasi o'zi (targetOwnerId=null,
+  // "Yetkazib berish" ekranidagi tugmadan) yoki admin istalgan do'kon uchun
+  // (targetOwnerId bilan, "Do'kon egalari" ro'yxatidagi "⭐ Sharhlar"
+  // tugmasidan) ochadi. Ikkalasi ham bir xil ma'lumotni ko'radi. ----
+  async function renderReviewsScreen(targetOwnerId, title, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(title)}</div>
+        <button class="btn ikkinchi" id="reviewsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div id="reviewsSummary" class="bosh">Yuklanmoqda...</div>
+        <div id="reviewsList" style="margin-top:14px;"></div>
+      </div>
+    `);
+    document.getElementById('reviewsBackBtn').addEventListener('click', onBack);
+
+    const summaryEl = document.getElementById('reviewsSummary');
+    const listEl = document.getElementById('reviewsList');
+    const body = targetOwnerId ? { initData, targetOwnerId } : { initData };
+    const res = await apiPost('/api/owner-reviews', body);
+    if (!res.ok) {
+      if (res.networkError) { renderNetworkErrorInline(summaryEl, res.reason, () => renderReviewsScreen(targetOwnerId, title, onBack)); return; }
+      summaryEl.textContent = res.reason || 'Xatolik yuz berdi.';
+      return;
+    }
+    summaryEl.innerHTML = res.avgRating !== null
+      ? `⭐ O'rtacha baho: <b>${escapeHtml(String(res.avgRating))}</b> (${res.ratingCount} ta baho)`
+      : `Hozircha baho yo'q.`;
+    if (!res.reviews.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha sharhlar yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.reviews.map(r => `
+      <div class="order-card">
+        <div class="order-top">
+          <div class="order-type">${'⭐️'.repeat(r.stars)}</div>
+          <div class="order-time">${timeAgo(r.ratedAt)}</div>
+        </div>
+        ${r.comment ? `<div class="order-time" style="margin-top:6px;">"${escapeHtml(r.comment)}"</div>` : ''}
+        ${r.customerName ? `<div class="order-time" style="margin-top:4px;">— ${escapeHtml(r.customerName)}</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  function renderAdminOwnerReviewsScreen(ownerId, ownerName, onBack) {
+    renderReviewsScreen(ownerId, `${ownerName} — sharhlar`, onBack);
   }
 
   async function renderRestrictedCustomersScreen(onBack) {
@@ -5480,6 +5589,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
         currentStockBranchId = e.target.value || null;
         loadStockAndRender();
         loadMovementsAndRender();
+      });
+      // Admin boshqa egasi nomidan kirganda (adminTargetOwnerId), eski
+      // keshlangan branchState o'sha egasiga tegishli bo'lmasligi mumkin —
+      // shu sababli ekran ochilganda filiallar ro'yxati har doim qayta
+      // so'raladi va select yangilanadi.
+      apiPost('/api/branch-list', { initData }).then(res => {
+        branchState.branches = res.ok ? res.branches : [];
+        const sel = document.getElementById('stockBranchSelect');
+        if (sel) {
+          const current = sel.value;
+          sel.innerHTML = branchOptionsHtml(current).replace('— Markaziy (filialsiz) —', 'Markaziy sklad');
+        }
       });
     }
 
