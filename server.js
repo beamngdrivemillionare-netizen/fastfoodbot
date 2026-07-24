@@ -5270,6 +5270,53 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- Umumiy yordamchi: sana/xodim/to'lov/turi bo'yicha filtrlangan,
+  // vaqt bo'yicha kamayish tartibida saralangan TO'LIQ buyurtmalar ro'yxatini
+  // qaytaradi (sahifalashsiz) — /api/order-history (sahifalab) va
+  // /api/order-history-export (44-bosqich: Excel/PDF eksport, sahifalashsiz)
+  // ikkalasi ham shundan foydalanadi, filtr mantig'i ikki joyda takrorlanmasin.
+  function filterOwnerOrderHistory(ctx, payload) {
+    const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
+    let orders = (ctx.owner.orders || []).slice();
+
+    if (dateFrom) {
+      const from = new Date(dateFrom + 'T00:00:00');
+      if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
+    }
+    if (dateTo) {
+      const to = new Date(dateTo + 'T23:59:59');
+      if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
+    }
+    if (employeeId) {
+      orders = orders.filter(o => String(o.createdBy) === String(employeeId));
+    }
+    if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+      orders = orders.filter(o => o.paymentType === paymentType);
+    }
+    if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+      orders = orders.filter(o => o.orderType === orderType);
+    }
+    orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Xodim F.I.Sh — buyurtmani kim yaratgani (1-bosqich bilan bir xil qoida)
+    const nameCache = new Map();
+    const staffNameById = (id) => {
+      if (!id) return null;
+      if (nameCache.has(id)) return nameCache.get(id);
+      let name;
+      if (String(id) === String(ctx.owner.id)) {
+        name = 'Egasi';
+      } else {
+        const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
+        name = staff ? staffDisplayName(staff) : `ID: ${id}`;
+      }
+      nameCache.set(id, name);
+      return name;
+    };
+
+    return { orders, staffNameById };
+  }
+
   // ---- API: buyurtmalar tarixini filtrlash — sana/xodim/to'lov turi (44-bosqich) ----
   // Faqat oshxona egasiga ko'rinadi (boshqa moliyaviy hisobotlar — kuryer/Z-hisobot —
   // bilan bir xil qoida). Sana oralig'i, xodim (kim yaratgan) va to'lov turi bo'yicha
@@ -5288,54 +5335,17 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
       }
 
-      const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
       let page = parseInt(payload.page, 10);
       if (!Number.isFinite(page) || page < 1) page = 1;
       const PAGE_SIZE = 30;
 
-      let orders = (ctx.owner.orders || []).slice();
-
-      if (dateFrom) {
-        const from = new Date(dateFrom + 'T00:00:00');
-        if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
-      }
-      if (dateTo) {
-        const to = new Date(dateTo + 'T23:59:59');
-        if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
-      }
-      if (employeeId) {
-        orders = orders.filter(o => String(o.createdBy) === String(employeeId));
-      }
-      if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-        orders = orders.filter(o => o.paymentType === paymentType);
-      }
-      if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
-        orders = orders.filter(o => o.orderType === orderType);
-      }
-
-      orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
 
       const totalCount = orders.length;
       const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
       const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
       if (page > totalPages) page = totalPages;
       const pageOrders = orders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-      // Xodim F.I.Sh — buyurtmani kim yaratgani (1-bosqich bilan bir xil qoida)
-      const nameCache = new Map();
-      const staffNameById = (id) => {
-        if (!id) return null;
-        if (nameCache.has(id)) return nameCache.get(id);
-        let name;
-        if (String(id) === String(ctx.owner.id)) {
-          name = 'Egasi';
-        } else {
-          const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
-          name = staff ? staffDisplayName(staff) : `ID: ${id}`;
-        }
-        nameCache.set(id, name);
-        return name;
-      };
 
       const resultOrders = pageOrders.map(o => ({
         id: o.id,
@@ -5363,6 +5373,178 @@ const server = http.createServer((req, res) => {
         pageSize: PAGE_SIZE,
         employees
       });
+    });
+    return;
+  }
+
+  // =========================================================================
+  // 44-bosqich: buyurtmalar tarixini Excel (CSV) va PDF sifatida eksport
+  // qilish. Loyihada hech qanday tashqi kutubxona (npm paket) ishlatilmagani
+  // sababli (package.json bo'sh) — ikkalasi ham TASHQI KUTUBXONASIZ:
+  //   • Excel — CSV matn (UTF-8 BOM bilan) qaytariladi, Excel'da to'g'ridan
+  //     to'g'ri ochiladi.
+  //   • PDF — minimal, qo'lda tuzilgan PDF fayl (standart Helvetica shrifti,
+  //     WinAnsiEncoding) generatsiya qilinadi. Faqat lotin-1 diapazonidagi
+  //     belgilar (asosiy lotin, aksanlar) qo'llab-quvvatlanadi — kirill yoki
+  //     boshqa belgilar '?' bilan almashtiriladi (buyurtma taomlari/xodim
+  //     nomlari odatda o'zbek lotin alifbosida bo'ladi).
+  // =========================================================================
+  function pdfSanitizeText(s) {
+    return String(s == null ? '' : s).replace(/[\r\n\t]/g, ' ').split('').map(ch => {
+      const code = ch.charCodeAt(0);
+      return (code >= 0x20 && code <= 0x7E) || (code >= 0xA0 && code <= 0xFF) ? ch : '?';
+    }).join('');
+  }
+  function pdfEscapeText(s) {
+    return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  }
+  function pdfCellText(value, width, fontSize) {
+    const avgCharWidth = fontSize * 0.56;
+    const maxChars = Math.max(1, Math.floor(width / avgCharWidth));
+    let t = pdfSanitizeText(value);
+    if (t.length > maxChars) t = t.slice(0, Math.max(0, maxChars - 2)) + '..';
+    return pdfEscapeText(t);
+  }
+
+  // headers — ustun nomlari, colWidths — har bir ustun kengligi (pt),
+  // rows — string massivlar massivi (har bir qator = har bir ustun uchun matn).
+  function buildSimplePdfReport(title, generatedAtLabel, headers, colWidths, rows) {
+    const pageWidth = 595, pageHeight = 842; // A4, pt
+    const marginX = 40, topY = 802, bottomMargin = 40;
+    const titleFontSize = 13, headerFontSize = 8, cellFontSize = 7.5, lineHeight = 13;
+    const headerY = topY - 26;
+    const firstRowY = headerY - lineHeight - 2;
+    const rowsPerPage = Math.max(5, Math.floor((firstRowY - bottomMargin) / lineHeight));
+
+    const pages = [];
+    for (let i = 0; i < rows.length; i += rowsPerPage) pages.push(rows.slice(i, i + rowsPerPage));
+    if (!pages.length) pages.push([]);
+
+    function colX(idx) {
+      let x = marginX;
+      for (let i = 0; i < idx; i++) x += colWidths[i];
+      return x;
+    }
+
+    const pageStreams = pages.map((pageRows, pIdx) => {
+      let s = 'BT\n';
+      s += `/F1 ${titleFontSize} Tf\n1 0 0 1 ${marginX} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(title))}) Tj\n`;
+      s += `/F1 7 Tf\n1 0 0 1 ${pageWidth - marginX - 130} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(generatedAtLabel))}) Tj\n`;
+      s += `/F1 ${headerFontSize} Tf\n`;
+      headers.forEach((h, i) => {
+        s += `1 0 0 1 ${colX(i)} ${headerY} Tm\n(${pdfCellText(h, colWidths[i], headerFontSize)}) Tj\n`;
+      });
+      s += `/F1 ${cellFontSize} Tf\n`;
+      pageRows.forEach((row, ri) => {
+        const y = firstRowY - ri * lineHeight;
+        row.forEach((val, ci) => {
+          s += `1 0 0 1 ${colX(ci)} ${y} Tm\n(${pdfCellText(val, colWidths[ci], cellFontSize)}) Tj\n`;
+        });
+      });
+      s += `/F1 6.5 Tf\n1 0 0 1 ${marginX} ${bottomMargin - 15} Tm\n(${pdfEscapeText(String(pIdx + 1) + ' / ' + pages.length)}) Tj\n`;
+      s += 'ET';
+      return s;
+    });
+
+    // ---- PDF obyektlarini yig'ish (kutubxonasiz, qo'lda) ----
+    const objects = [];
+    const pageCount = pageStreams.length;
+    const firstPageObjNum = 4; // 1=Catalog, 2=Pages, 3=Font
+    const pageObjNums = [], contentObjNums = [];
+    for (let i = 0; i < pageCount; i++) {
+      pageObjNums.push(firstPageObjNum + i * 2);
+      contentObjNums.push(firstPageObjNum + i * 2 + 1);
+    }
+    objects[1] = `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`;
+    objects[2] = `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map(n => n + ' 0 R').join(' ')}] /Count ${pageCount} >>\nendobj\n`;
+    objects[3] = `3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n`;
+    for (let i = 0; i < pageCount; i++) {
+      const pObjNum = pageObjNums[i], cObjNum = contentObjNums[i];
+      objects[pObjNum] = `${pObjNum} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${cObjNum} 0 R >>\nendobj\n`;
+      const streamBody = pageStreams[i];
+      const byteLen = Buffer.byteLength(streamBody, 'latin1');
+      objects[cObjNum] = `${cObjNum} 0 obj\n<< /Length ${byteLen} >>\nstream\n${streamBody}\nendstream\nendobj\n`;
+    }
+    const maxObjNum = 3 + pageCount * 2;
+    let pdf = '%PDF-1.4\n';
+    const offsets = new Array(maxObjNum + 1).fill(0);
+    for (let n = 1; n <= maxObjNum; n++) {
+      offsets[n] = Buffer.byteLength(pdf, 'latin1');
+      pdf += objects[n];
+    }
+    const xrefStart = Buffer.byteLength(pdf, 'latin1');
+    pdf += `xref\n0 ${maxObjNum + 1}\n0000000000 65535 f \n`;
+    for (let n = 1; n <= maxObjNum; n++) {
+      pdf += `${String(offsets[n]).padStart(10, '0')} 00000 n \n`;
+    }
+    pdf += `trailer\n<< /Size ${maxObjNum + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+    return Buffer.from(pdf, 'latin1');
+  }
+
+  function csvEscapeCell(value) {
+    const s = String(value == null ? '' : value);
+    return /[";\n,]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/order-history-export') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const format = payload.format === 'pdf' ? 'pdf' : 'csv';
+      const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
+      const exportOrders = orders.slice(0, 2000); // haddan tashqari katta fayl bo'lib ketmasligi uchun cheklov
+      const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+      const nowLabel = new Date().toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const restaurantName = (ctx.owner.name || 'Oshxona');
+
+      const rows = exportOrders.map(o => {
+        const d = new Date(o.createdAt);
+        const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const itemsText = (o.items || []).map(it => `${it.name} x${it.qty}`).join(', ');
+        return [
+          sana,
+          ORDER_TYPES[o.orderType] || o.orderType,
+          o.tableNumber || '',
+          PAYMENT_TYPES[o.paymentType] || o.paymentType,
+          ORDER_STATUSES[o.status] || o.status,
+          itemsText,
+          String(o.total || 0),
+          staffNameById(o.createdBy) || ''
+        ];
+      });
+
+      if (format === 'csv') {
+        const headers = ['Sana', 'Turi', 'Stol', "To'lov", 'Holat', 'Taomlar', 'Summa', 'Xodim'];
+        let csv = headers.map(csvEscapeCell).join(',') + '\r\n';
+        csv += rows.map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
+        csv += `\r\n\r\n${csvEscapeCell('Jami: ' + rows.length + ' ta buyurtma, ' + totalSum + ' so\'m')}\r\n`;
+        const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.csv`;
+        // UTF-8 BOM — Excel'da o'zbek harflari (', g' va h.k.) to'g'ri ko'rinishi uchun
+        const content = '\uFEFF' + csv;
+        return sendJSON(res, 200, { ok: true, format: 'csv', filename, mime: 'text/csv;charset=utf-8', content });
+      }
+
+      // PDF — jadval ustunlari toraytirilgan (taomlar ustuni qisqartiriladi)
+      const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Summa', 'Xodim'];
+      const colWidths = [95, 65, 65, 70, 75, 145];
+      const pdfRows = rows.map(r => [r[0], r[1], r[3], r[4], r[6] + " so'm", r[7]]);
+      const pdfBuffer = buildSimplePdfReport(
+        `${restaurantName} — Buyurtmalar tarixi (${rows.length} ta, ${totalSum} so'm)`,
+        nowLabel, headers, colWidths, pdfRows
+      );
+      const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.pdf`;
+      return sendJSON(res, 200, { ok: true, format: 'pdf', filename, mime: 'application/pdf', contentBase64: pdfBuffer.toString('base64') });
     });
     return;
   }
