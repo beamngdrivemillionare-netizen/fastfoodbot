@@ -1386,6 +1386,49 @@
   .order-card .order-received-btn:hover { opacity: 0.88; }
   .order-card .order-received-btn:disabled { opacity: 0.6; cursor: default; }
 
+  .order-card .order-queue-btn {
+    width: 100%;
+    margin-top: var(--sp-2);
+    border: 1px solid var(--border-color-strong);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .order-card .order-queue-btn:hover { background: var(--surface-1); }
+
+  .queue-ahead {
+    text-align: center;
+    font-size: var(--fs-base);
+    margin: var(--sp-3) 0 var(--sp-2);
+  }
+  .queue-timer {
+    text-align: center;
+    font-size: 40px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--brand-primary);
+    margin-bottom: 4px;
+  }
+  .queue-done {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: var(--sp-4) 0;
+    text-align: center;
+    font-size: var(--fs-base);
+    font-weight: 600;
+  }
+
   .order-track {
     display: flex;
     align-items: flex-start;
