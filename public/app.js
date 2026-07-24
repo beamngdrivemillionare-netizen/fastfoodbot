@@ -7591,6 +7591,87 @@ const tg = window.Telegram && window.Telegram.WebApp;
     renderCheckoutModalBody(overlay);
   }
 
+  let customerQueueState = { pollTimer: null, tickTimer: null, secondsLeft: 0 };
+
+  function stopCustomerQueuePolling() {
+    if (customerQueueState.pollTimer) { clearInterval(customerQueueState.pollTimer); customerQueueState.pollTimer = null; }
+    if (customerQueueState.tickTimer) { clearInterval(customerQueueState.tickTimer); customerQueueState.tickTimer = null; }
+  }
+
+  function queueTimeText(seconds) {
+    const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
+    const ss = String(seconds % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  }
+
+  function customerQueueModalBodyHtml(data) {
+    if (!data) {
+      return `<h3>Navbat holati</h3><div class="bosh">Yuklanmoqda...</div>`;
+    }
+    if (data.status === 'tayyor') {
+      return `
+        <h3>Navbat holati</h3>
+        <div class="queue-done">${icon('check-circle', 'icon-md icon-success')}<div>Buyurtmangiz tayyor!</div></div>
+        <div class="btn-row"><button type="button" class="btn" id="cQueueCloseBtn">Yopish</button></div>
+      `;
+    }
+    if (data.status === 'bekor_qilindi') {
+      return `
+        <h3>Navbat holati</h3>
+        <div class="bosh">Bu buyurtma bekor qilingan.</div>
+        <div class="btn-row"><button type="button" class="btn" id="cQueueCloseBtn">Yopish</button></div>
+      `;
+    }
+    return `
+      <h3>Navbat holati</h3>
+      <div class="queue-ahead">${data.aheadCount > 0 ? `Sizdan oldin <b>${data.aheadCount}</b> ta buyurtma bor` : "Navbatda birinchi buyurtmasiz"}</div>
+      <div class="queue-timer">${queueTimeText(customerQueueState.secondsLeft)}</div>
+      <div class="bosh" style="text-align:center;">taxminiy kutish vaqti</div>
+      <div class="btn-row"><button type="button" class="btn ikkinchi" id="cQueueCloseBtn">Yopish</button></div>
+    `;
+  }
+
+  function closeCustomerQueueModal(overlay) {
+    stopCustomerQueuePolling();
+    overlay.remove();
+  }
+
+  function wireCustomerQueueModal(overlay) {
+    const closeBtn = overlay.querySelector('#cQueueCloseBtn');
+    if (closeBtn) closeBtn.addEventListener('click', () => closeCustomerQueueModal(overlay));
+  }
+
+  async function openCustomerQueueModal(orderId) {
+    stopCustomerQueuePolling();
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `<div class="modal" style="max-width:340px;"></div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomerQueueModal(overlay); });
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.innerHTML = customerQueueModalBodyHtml(null);
+
+    const poll = async () => {
+      const res = await apiPost('/api/customer-queue-status', { initData, ownerId: customerState.ownerId, orderId });
+      if (!document.body.contains(overlay)) { stopCustomerQueuePolling(); return; }
+      if (!res.ok) return;
+      customerQueueState.secondsLeft = (res.etaMinutes || 0) * 60;
+      modalEl.innerHTML = customerQueueModalBodyHtml(res);
+      wireCustomerQueueModal(overlay);
+      if (res.status === 'tayyor' || res.status === 'bekor_qilindi') stopCustomerQueuePolling();
+    };
+
+    await poll();
+    customerQueueState.pollTimer = setInterval(poll, 8000);
+    customerQueueState.tickTimer = setInterval(() => {
+      if (customerQueueState.secondsLeft > 0) {
+        customerQueueState.secondsLeft--;
+        const timerEl = overlay.querySelector('.queue-timer');
+        if (timerEl) timerEl.textContent = queueTimeText(customerQueueState.secondsLeft);
+      }
+    }, 1000);
+  }
+
   function renderCheckoutModalBody(overlay) {
     const modalEl = overlay.querySelector('.modal');
     modalEl.innerHTML = customerCheckoutModalBodyHtml();
@@ -7981,6 +8062,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
         </div>
         ${o.orderType !== 'dostavka' && o.status === 'tayyor' && !o.customerReceivedAt ? `<button type="button" class="order-received-btn" data-received-id="${escapeHtml(o.id)}">${icon('check-circle', 'icon-xs')} Oldim</button>` : ''}
+        ${(o.status === 'yangi' || o.status === 'tayyorlanmoqda') ? `<button type="button" class="order-queue-btn" data-queue-id="${escapeHtml(o.id)}">${icon('clock', 'icon-xs')} Navbatni ko'rish</button>` : ''}
         <button type="button" class="order-reorder-btn" data-reorder-id="${escapeHtml(o.id)}">${icon('repeat', 'icon-xs')} Yana buyurtma berish</button>
       </div>
     `;
@@ -7997,6 +8079,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function attachCustomerHistoryHandlers(listEl, orders) {
+    listEl.querySelectorAll('[data-queue-id]').forEach(btn => btn.addEventListener('click', () => {
+      openCustomerQueueModal(btn.getAttribute('data-queue-id'));
+    }));
+
     listEl.querySelectorAll('[data-received-id]').forEach(btn => btn.addEventListener('click', async () => {
       const orderId = btn.getAttribute('data-received-id');
       btn.disabled = true;
