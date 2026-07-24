@@ -4521,6 +4521,34 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/api/customer-confirm-received') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, orderId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (String(order.customerId) !== userId) return sendJSON(res, 200, { ok: false, reason: 'Bu sizning buyurtmangiz emas.' });
+      if (order.orderType === 'dostavka') return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarini kuryer belgilaydi.' });
+      if (order.status !== 'tayyor') return sendJSON(res, 200, { ok: false, reason: 'Buyurtma hali tayyor emas.' });
+      if (order.customerReceivedAt) return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon olingan deb belgilangan.' });
+
+      order.customerReceivedAt = new Date().toISOString();
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/customer-notifications') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
