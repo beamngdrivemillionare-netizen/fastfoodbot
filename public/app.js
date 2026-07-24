@@ -3187,6 +3187,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'moliya', icon: 'wallet', label: 'Moliya' },
     { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
+    { key: 'stollarQR', icon: 'clipboard', label: 'Stollar uchun QR' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'obuna', icon: 'card', label: 'Obuna' },
@@ -3241,6 +3242,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const target = document.getElementById('koBranchesSectionLabel');
         if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       },
+      stollarQR: () => renderTableQrScreen(profile, goBack),
       hisobotlar: () => renderZReportScreen(profile, goBack),
       aiTavsiyalar: () => renderAiScreen(profile, goBack),
       bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
@@ -3283,6 +3285,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'moliya', icon: 'wallet', label: 'Moliya' },
     { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
+    { key: 'stollarQR', icon: 'clipboard', label: 'Stollar uchun QR' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
@@ -6875,6 +6878,81 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return reports.map(z => zReportCardHtml(z)).join('');
   }
 
+  // =========================================================================
+  // 57-bosqich: stollar uchun QR-kod — egasi stol raqamini kiritadi,
+  // shu stol uchun maxsus bot-havola (/api/table-qr-link) va shu havoladan
+  // yasalgan QR-rasm ko'rsatiladi. Mijoz QR-ni skanerlasa, Mini App
+  // to'g'ridan-to'g'ri "Stolga" buyurtma turi va stol raqami oldindan
+  // to'ldirilgan holda ochiladi (qarang: server.js — menu_..._table_...
+  // /start payload, va bu faylda renderCustomerApp'dagi ?table= o'qish).
+  // QR-rasm tashqi (offline'da ishlamaydigan) xizmat orqali yasaladi —
+  // shuning uchun rasm yuklanmasa ham havolaning o'zi ko'rinadi va
+  // nusxalab bo'ladi.
+  // =========================================================================
+  function tableQrImageUrl(link) {
+    return `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(link)}`;
+  }
+
+  function renderTableQrScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Stollar uchun QR</div>
+        <button class="btn ikkinchi" id="tqrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <div class="bosh">Stol raqamini kiriting — shu stol uchun QR-kod yasaladi. Mijoz uni skanerlasa, Mini App to'g'ridan-to'g'ri o'sha stol tanlangan holda ochiladi (stol raqamini qo'lda kiritish shart bo'lmaydi).</div>
+          <input type="text" id="tqrTableInput" placeholder="Stol raqami (masalan: 5)" style="margin-top:10px;">
+          <button type="button" class="btn" id="tqrGenBtn" style="margin-top:10px;">QR-kod yaratish</button>
+          <div class="xabar" id="tqrMsg"></div>
+        </div>
+        <div id="tqrResultWrap"></div>
+      </div>
+    `);
+    document.getElementById('tqrBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.getElementById('tqrGenBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('tqrMsg');
+      const input = document.getElementById('tqrTableInput');
+      const tableNumber = input.value.trim();
+      if (!tableNumber) {
+        msgEl.textContent = 'Stol raqamini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Yaratilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/table-qr-link', { initData, tableNumber });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = '';
+      msgEl.className = 'xabar';
+      const wrap = document.getElementById('tqrResultWrap');
+      const card = document.createElement('div');
+      card.className = 'kartochka tqr-card';
+      card.innerHTML = `
+        <div class="tqr-title">Stol ${escapeHtml(res.tableNumber)}</div>
+        <img class="tqr-img" src="${tableQrImageUrl(res.link)}" alt="QR" onerror="this.style.display='none'">
+        <div class="tqr-link-row">
+          <input type="text" class="tqr-link-input" value="${escapeHtml(res.link)}" readonly>
+          <button type="button" class="btn ikkinchi tqr-copy-btn">Nusxalash</button>
+        </div>
+      `;
+      card.querySelector('.tqr-copy-btn').addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(res.link);
+          const btn = card.querySelector('.tqr-copy-btn');
+          const old = btn.textContent;
+          btn.textContent = 'Nusxalandi!';
+          setTimeout(() => { btn.textContent = old; }, 1500);
+        } catch (e) { /* clipboard mavjud bo'lmasa — jim o'tkaziladi, matn qo'lda tanlanadi */ }
+      });
+      wrap.prepend(card);
+      input.value = '';
+    });
+  }
+
   function renderZReportScreen(profile, onBack) {
     ekran(`
       <div class="panel">
@@ -8390,6 +8468,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
+
+    // 57-bosqich: QR-kod orqali kirilgan bo'lsa (?table=<raqam>) — buyurtma
+    // turi va stol raqami oldindan avtomatik to'ldiriladi, mijoz stol
+    // raqamini qo'lda kiritmasligi kerak.
+    const qrTableNumber = urlParams.get('table');
+    if (qrTableNumber) {
+      customerState.orderType = 'stol';
+      customerState.tableNumber = qrTableNumber;
+    }
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
