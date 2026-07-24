@@ -4550,6 +4550,113 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- API: 39-bosqich — mijoz uchun bildirishnomalar markazi ----
+  // Owner tomonidagi "Bildirishnomalar" ekrani kabi — alohida bildirishnoma
+  // bazasi kerak emas, mavjud buyurtma maydonlaridan (createdAt/startedAt/
+  // readyAt/deliveredAt/cancelledAt/paymentProof*At) va faol aksiyalardan
+  // ro'yxat hisoblab chiqiladi. "Ko'rilgan" belgisi mijoz tarafida
+  // (localStorage) saqlanadi, shuning uchun bu yerda faqat xom ro'yxat
+  // qaytariladi.
+  if (req.method === 'POST' && req.url === '/api/customer-notifications') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
+      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+
+      const myOrders = (owner.orders || [])
+        .filter(o => String(o.customerId) === userId)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 30);
+
+      const notifications = [];
+      myOrders.forEach(o => {
+        const items = o.items || [];
+        const itemsText = items.slice(0, 3).map(it => it.name).join(', ') + (items.length > 3 ? ' va yana...' : '');
+
+        notifications.push({
+          id: `${o.id}-created`, type: 'order', icon: 'clipboard',
+          title: 'Buyurtma qabul qilindi',
+          text: `${itemsText} — ${fmtNum(o.total)} so'm`,
+          time: o.createdAt
+        });
+
+        if (o.status === 'tayyorlanmoqda' || (o.status === 'tayyor' && o.startedAt)) {
+          notifications.push({
+            id: `${o.id}-progress`, type: 'order', icon: 'chef-hat',
+            title: 'Buyurtmangiz tayyorlanmoqda',
+            text: itemsText,
+            time: o.startedAt || o.updatedAt || o.createdAt
+          });
+        }
+
+        if (o.status === 'tayyor') {
+          notifications.push({
+            id: `${o.id}-ready`, type: 'order', icon: 'check-circle',
+            title: o.orderType === 'dostavka' ? 'Buyurtmangiz tayyor — kuryerga topshirilmoqda' : 'Buyurtmangiz tayyor!',
+            text: itemsText,
+            time: o.readyAt || o.updatedAt || o.createdAt
+          });
+        }
+
+        if (o.deliveredAt) {
+          notifications.push({
+            id: `${o.id}-delivered`, type: 'order', icon: 'check-circle',
+            title: 'Buyurtmangiz yetkazib berildi',
+            text: itemsText,
+            time: o.deliveredAt
+          });
+        }
+
+        if (o.status === 'bekor_qilindi' && o.cancelledAt) {
+          notifications.push({
+            id: `${o.id}-cancelled`, type: 'order', icon: 'x-circle',
+            title: 'Dostavka bekor qilindi',
+            text: o.cancelReason || 'Kechirasiz, buyurtmangizni yetkazib bera olmadik.',
+            time: o.cancelledAt
+          });
+        }
+
+        if (o.paymentProofApprovedAt) {
+          notifications.push({
+            id: `${o.id}-payok`, type: 'order', icon: 'card',
+            title: 'To\'lovingiz tasdiqlandi',
+            text: itemsText,
+            time: o.paymentProofApprovedAt
+          });
+        }
+
+        if (o.paymentProofRejectedAt) {
+          notifications.push({
+            id: `${o.id}-payrej`, type: 'order', icon: 'x-circle',
+            title: 'To\'lov tasdiqlanmadi',
+            text: 'Iltimos, to\'g\'ri chekni qayta yuboring yoki oshxona bilan bog\'laning.',
+            time: o.paymentProofRejectedAt
+          });
+        }
+      });
+
+      (owner.promotions || []).filter(p => p.active).forEach(p => {
+        notifications.push({
+          id: `promo-${p.id}`, type: 'promo', icon: 'star',
+          title: `Yangi aksiya: ${p.title}`,
+          text: `${p.discountPercent}% chegirma${p.minTotal ? ` (${fmtNum(p.minTotal)} so'mdan buyurtmalarga)` : ''}`,
+          time: p.createdAt
+        });
+      });
+
+      notifications.sort((a, b) => new Date(b.time) - new Date(a.time));
+      return sendJSON(res, 200, { ok: true, notifications: notifications.slice(0, 50) });
+    });
+    return;
+  }
+
   // ---- API: mijoz o'zi to'g'ridan-to'g'ri buyurtma beradi (katalog-menyu orqali) ----
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
