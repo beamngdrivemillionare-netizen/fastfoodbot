@@ -21,6 +21,35 @@ const tg = window.Telegram && window.Telegram.WebApp;
   if (tg && typeof tg.onEvent === 'function') {
     tg.onEvent('viewportChanged', applyResponsiveViewport);
   }
+
+  // ---- 38-bosqich: Dark/Light rejim ----
+  // Foydalanuvchi qo'lda tanlagan tema localStorage'da saqlanadi va shu
+  // qurilma/brauzerda keyingi safar ochilganda ham eslab qolinadi. Hech
+  // narsa tanlanmagan bo'lsa (birinchi marta ochilganda) — avvalgidek
+  // Telegram'ning o'z temasi (--tg-theme-*) avtomatik ishlatiladi.
+  const THEME_STORAGE_KEY = 'kitchenOsTheme';
+  function getStoredTheme() {
+    try { return localStorage.getItem(THEME_STORAGE_KEY); } catch (e) { return null; }
+  }
+  function currentActiveTheme() {
+    return getStoredTheme() || (tg && tg.colorScheme) || 'light';
+  }
+  function applyStoredTheme() {
+    const stored = getStoredTheme();
+    if (stored === 'dark' || stored === 'light') {
+      document.documentElement.setAttribute('data-theme', stored);
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  }
+  applyStoredTheme();
+  function toggleTheme() {
+    const next = currentActiveTheme() === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) {}
+    applyStoredTheme();
+    const btn = document.getElementById('appHeaderThemeBtn');
+    if (btn) btn.innerHTML = icon(next === 'dark' ? 'sun' : 'moon', 'icon-xs');
+  }
   // Login/parol orqali kirish (16-bosqich): Telegram initData bo'lmasa,
   // localStorage'da saqlangan sessiya tokeni ("sess_<token>") bo'lishi mumkin —
   // u xuddi Telegram initData o'rniga barcha /api/... so'rovlarida ishlatiladi.
@@ -213,12 +242,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="app-header-name">${escapeHtml(name)}</div>
       ${roleLabel ? `<span class="app-header-role-badge">${escapeHtml(roleLabel)}</span>` : ''}
       ${onRoleSwitch ? `<button type="button" class="app-header-role-switch-btn" id="appHeaderRoleSwitchBtn" title="Rol almashtirish">${icon('refresh', 'icon-xs')}</button>` : ''}
+      <button type="button" class="app-header-theme-btn" id="appHeaderThemeBtn" title="Tungi/kunduzgi rejim">${icon(currentActiveTheme() === 'dark' ? 'sun' : 'moon', 'icon-xs')}</button>
     `;
     appHeaderEl.classList.remove('hidden');
     if (onRoleSwitch) {
       const btn = document.getElementById('appHeaderRoleSwitchBtn');
       if (btn) btn.addEventListener('click', onRoleSwitch);
     }
+    document.getElementById('appHeaderThemeBtn').addEventListener('click', toggleTheme);
   }
   function clearAppHeader() {
     appHeaderEl.classList.add('hidden');
@@ -6714,7 +6745,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     promoId: '',
     usePoints: false,
     cardOnlyRestricted: false,
-    lastOrderRequestId: null
+    lastOrderRequestId: null,
+    searchQuery: '',
+    sortBy: 'default'
   };
 
   function customerCartTotal() {
@@ -6752,8 +6785,46 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // 30-bosqich: mijoz uchun ham xuddi shu umumiy komponent (K-bo'lim,
   // yuqorida) ishlatiladi — alohida customerMenuGroups/customerSectionId
   // endi kerak emas.
+  // 36-37-bosqich: qidiruv+saralash — filtrlangan/saralangan ro'yxatni
+  // hisoblaydi. Qidiruv matni bo'lsa, kategoriya bo'linishi (tab/sections)
+  // ma'nosiz bo'lib qoladi (natijalar bir nechta kategoriyadan bo'lishi
+  // mumkin), shuning uchun bunday holatda customerCategoriesHtml/
+  // customerMenuListHtml TEKIS (flat) ro'yxat ko'rsatadi.
+  function customerVisibleMenu() {
+    let items = customerState.menu.slice();
+    const q = (customerState.searchQuery || '').trim().toLowerCase();
+    if (q) {
+      items = items.filter(m =>
+        (m.name || '').toLowerCase().includes(q) ||
+        (m.description || '').toLowerCase().includes(q)
+      );
+    }
+    if (customerState.sortBy === 'price_asc') items.sort((a, b) => a.price - b.price);
+    else if (customerState.sortBy === 'price_desc') items.sort((a, b) => b.price - a.price);
+    else if (customerState.sortBy === 'name_asc') items.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'uz'));
+    return items;
+  }
+
+  function customerSearchSortBarHtml() {
+    return `
+      <div class="cust-search-row">
+        <div class="admin-search-wrap">
+          ${icon('search', 'icon-xs icon-muted admin-search-icon')}
+          <input type="text" id="cMenuSearchInput" placeholder="Taom qidirish..." value="${escapeHtml(customerState.searchQuery)}" autocomplete="off">
+        </div>
+        <select id="cMenuSortSelect" class="cust-sort-select">
+          <option value="default" ${customerState.sortBy === 'default' ? 'selected' : ''}>Tartib</option>
+          <option value="price_asc" ${customerState.sortBy === 'price_asc' ? 'selected' : ''}>Arzon → Qimmat</option>
+          <option value="price_desc" ${customerState.sortBy === 'price_desc' ? 'selected' : ''}>Qimmat → Arzon</option>
+          <option value="name_asc" ${customerState.sortBy === 'name_asc' ? 'selected' : ''}>Nomi (A-Ya)</option>
+        </select>
+      </div>
+    `;
+  }
+
   function customerCategoriesHtml() {
-    return sectionedMenuTabsHtml(customerState.menu, {
+    if ((customerState.searchQuery || '').trim()) return '';
+    return sectionedMenuTabsHtml(customerVisibleMenu(), {
       tabRowId: 'customerCatRow', sectionIdPrefix: 'menu-section-cust', listElId: 'customerMenuList', categories: customerState.categories
     });
   }
@@ -6806,7 +6877,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function customerMenuListHtml() {
-    return renderSectionedMenu(customerState.menu, {
+    const items = customerVisibleMenu();
+    const q = (customerState.searchQuery || '').trim();
+    if (q) {
+      return `<div class="catalog-grid">${
+        items.length ? items.map(customerItemCardHtml).join('')
+          : `<div class="bosh">"${escapeHtml(q)}" bo'yicha hech narsa topilmadi.</div>`
+      }</div>`;
+    }
+    return renderSectionedMenu(items, {
       sectionIdPrefix: 'menu-section-cust',
       itemsWrapperClass: 'catalog-grid',
       renderItem: customerItemCardHtml,
@@ -6907,7 +6986,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${customerHeaderHtml()}
         ${customerTabRowHtml()}
         ${customerPromoBannerHtml()}
-        ${customerCategoriesHtml()}
+        ${customerSearchSortBarHtml()}
+        <div id="customerCatRowWrap">${customerCategoriesHtml()}</div>
         <div id="customerMenuList" style="margin-top:8px;">${customerMenuListHtml()}</div>
       </div>
       ${cartFabBarHtml()}
@@ -6916,8 +6996,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachCustomerCatalogHandlers();
     attachCustomerTabHandlers();
     attachCartFabHandler();
-    attachSectionedMenuTabHandlers('customerCatRow');
-    attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+    attachCustomerSearchSortHandlers();
+    if (!(customerState.searchQuery || '').trim()) {
+      attachSectionedMenuTabHandlers('customerCatRow');
+      attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+    }
 
     document.querySelectorAll('[data-promo-id]').forEach(el => {
       el.addEventListener('click', () => {
@@ -6926,6 +7009,40 @@ const tg = window.Telegram && window.Telegram.WebApp;
         renderCustomerMenuTab();
       });
     });
+  }
+
+  // 36-37-bosqich: qidiruv/saralash o'zgarganda BUTUN ekran emas, faqat
+  // kategoriya-tab qatori va taomlar ro'yxati qayta chiziladi — shu bilan
+  // qidiruv maydonidagi fokus (klaviatura) yo'qolmaydi.
+  function attachCustomerSearchSortHandlers() {
+    const searchInput = document.getElementById('cMenuSearchInput');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        customerState.searchQuery = searchInput.value;
+        updateCustomerMenuListAndTabs();
+      });
+    }
+    const sortSelect = document.getElementById('cMenuSortSelect');
+    if (sortSelect) {
+      sortSelect.addEventListener('change', () => {
+        customerState.sortBy = sortSelect.value;
+        updateCustomerMenuListAndTabs();
+      });
+    }
+  }
+
+  function updateCustomerMenuListAndTabs() {
+    const tabWrap = document.getElementById('customerCatRowWrap');
+    if (tabWrap) tabWrap.innerHTML = customerCategoriesHtml();
+    const listEl = document.getElementById('customerMenuList');
+    if (listEl) listEl.innerHTML = customerMenuListHtml();
+    attachCustomerCatalogHandlers();
+    if (!(customerState.searchQuery || '').trim()) {
+      attachSectionedMenuTabHandlers('customerCatRow');
+      attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+    } else {
+      disconnectSectionedMenuObserver('customerCatRow');
+    }
   }
 
   // ---- Checkout — ALOHIDA oynada (overlay/modal) ----
@@ -7104,6 +7221,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="order-total">${fmtNum(o.total)} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${fmtNum(o.discountAmount)})</span>` : ''}</div>
           ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
         </div>
+        <button type="button" class="order-reorder-btn" data-reorder-id="${escapeHtml(o.id)}">${icon('repeat', 'icon-xs')} Yana buyurtma berish</button>
       </div>
     `;
   }
@@ -7122,6 +7240,38 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!listEl) return;
     const orders = res.ok ? res.orders : [];
     listEl.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
+
+    // 40-bosqich: tezkor takroriy buyurtma — bosilganda o'sha buyurtmadagi
+    // taomlarni (hozir ham menyuda mavjud bo'lganlarini) savatga solib,
+    // to'g'ridan-to'g'ri Menyu bo'limiga o'tkazadi.
+    listEl.querySelectorAll('[data-reorder-id]').forEach(btn => btn.addEventListener('click', () => {
+      const orderId = btn.getAttribute('data-reorder-id');
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      btn.disabled = true;
+      const newCart = {};
+      let skipped = 0;
+      order.items.forEach(it => {
+        if (it.isCombo) { skipped++; return; }
+        const stillOnMenu = customerState.menu.find(m => m.id === it.id && !m.outOfStock);
+        if (stillOnMenu) newCart[it.id] = (newCart[it.id] || 0) + it.qty;
+        else skipped++;
+      });
+      if (!Object.keys(newCart).length) {
+        btn.disabled = false;
+        const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+        alertFn("Afsuski, bu buyurtmadagi taomlar hozir menyuda mavjud emas.");
+        return;
+      }
+      customerState.cart = newCart;
+      customerState.tab = 'menyu';
+      customerState.searchQuery = '';
+      renderCustomerMenuTab();
+      if (skipped > 0) {
+        const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+        alertFn(`Savatga qo'shildi. ${skipped} ta taom hozir mavjud emasligi sababli o'tkazib yuborildi.`);
+      }
+    }));
   }
 
   async function sendCustomerOrder(overlay) {
