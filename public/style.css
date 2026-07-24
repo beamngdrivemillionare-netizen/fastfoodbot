@@ -1518,6 +1518,39 @@
     padding: var(--sp-4) 0;
   }
 
+  /* ---- Katta ekranlarga moslashish (planshet / noutbuk / devordagi monitor) ---- */
+  @media (min-width: 768px) {
+    .live-board-title { font-size: 24px; }
+    .live-board-hint { font-size: var(--fs-base); }
+    .live-board-cols { gap: var(--sp-4); }
+    .live-board-col { min-height: 420px; }
+    .live-board-col-head { padding: 16px var(--sp-4); font-size: var(--fs-base); }
+    .live-board-col-head .icon { width: 22px; height: 22px; }
+    .live-board-col-body { padding: var(--sp-4); gap: 14px; }
+    .live-board-chip { font-size: 22px; padding: 14px 20px; border-radius: var(--radius-lg, 14px); }
+  }
+
+  @media (min-width: 1024px) {
+    .live-board-panel { min-height: calc(100vh - 140px); display: flex; flex-direction: column; }
+    .live-board-title { font-size: 30px; }
+    .live-board-cols { flex: 1 1 auto; }
+    .live-board-col { min-height: 560px; }
+    .live-board-col-head { font-size: 20px; padding: 20px var(--sp-5, 24px); }
+    .live-board-col-count { font-size: var(--fs-sm); padding: 4px 12px; }
+    .live-board-chip { font-size: 28px; padding: 16px 24px; }
+  }
+
+  /* Devorga osilgan TV/monitor (kiosk rejimi) — uzoqdan o'qish uchun juda katta matn */
+  @media (min-width: 1600px) {
+    .live-board-title { font-size: 38px; }
+    .live-board-hint { font-size: 18px; }
+    .live-board-col-head { font-size: 26px; }
+    .live-board-col-count { font-size: 18px; }
+    .live-board-chip { font-size: 40px; padding: 22px 32px; letter-spacing: 1px; }
+    .live-board-open-title { font-size: 20px; }
+    .live-board-open-sub { font-size: var(--fs-sm); }
+  }
+
   .order-track {
     display: flex;
     align-items: flex-start;
