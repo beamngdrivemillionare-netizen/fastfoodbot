@@ -1602,6 +1602,31 @@
      bandlari. Owner tarafidagi .ko-alert-* bilan bir xil g'oya, lekin
      mijoz header'i (.profile-view, ochiq/karta fon) uchun moslashtirilgan.
      ========================================================================= */
+  /* ---- 56-bosqich: checkout'dagi saqlangan manzillar chip qatori ---- */
+  .cust-addr-chip-row {
+    display: flex;
+    gap: var(--sp-2);
+    overflow-x: auto;
+    padding-bottom: 4px;
+    margin-bottom: 8px;
+  }
+  .cust-addr-chip {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-color);
+    background: var(--surface-1);
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .cust-addr-chip:hover { background: var(--brand-primary-light); color: var(--brand-primary); }
+
   .cust-notif-bell-btn {
     position: relative;
     flex-shrink: 0;
