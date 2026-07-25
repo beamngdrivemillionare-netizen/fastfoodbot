@@ -766,6 +766,17 @@ function featureBlockedResult(featureId) {
   };
 }
 
+// Tarif rejasida "Filiallar soni" cheklovi (admin panelidagi Tariflar
+// bo'limida sozlanadi — qarang: /api/tariff-add, /api/tariff-rename).
+// maxBranches: null yoki 0 — cheklanmagan (owner istagancha filial ocha
+// oladi). Owner'ga tarif biriktirilmagan bo'lsa ham cheklanmagan.
+function ownerMaxBranches(owner) {
+  if (!owner || !owner.tariffId) return null;
+  const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+  if (!tariff || !tariff.maxBranches) return null;
+  return tariff.maxBranches;
+}
+
 function loadAdmins() { return loadJSONArray(ADMINS_FILE); }
 function saveAdmins(admins) {
   saveJSONArray(ADMINS_FILE, admins);
@@ -3374,7 +3385,7 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
-      return sendJSON(res, 200, { ok: true, branches: ctx.owner.branches || [] });
+      return sendJSON(res, 200, { ok: true, branches: ctx.owner.branches || [], maxBranches: ownerMaxBranches(ctx.owner) });
     });
     return;
   }
@@ -3396,6 +3407,17 @@ const server = http.createServer((req, res) => {
       const trimmedAddress = String(address || '').trim();
       if (!trimmedName || !trimmedAddress) {
         return sendJSON(res, 200, { ok: false, reason: 'Filial nomi va manzilini kiriting.' });
+      }
+
+      const maxBranches = ownerMaxBranches(owner);
+      const currentCount = (owner.branches || []).length;
+      if (maxBranches && currentCount >= maxBranches) {
+        return sendJSON(res, 200, {
+          ok: false,
+          reason: `Joriy tarifingiz bo'yicha ko'pi bilan ${maxBranches} ta filial ochish mumkin. Kengaytirish uchun administrator bilan bog'laning.`,
+          blockedFeature: true,
+          featureId: 'branch-manage'
+        });
       }
 
       if (!owner.branches) owner.branches = [];
@@ -8014,7 +8036,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/tariff-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, name, price } = payload;
+      const { initData, name, price, maxBranches } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -8029,6 +8051,16 @@ const server = http.createServer((req, res) => {
         if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
       }
 
+      // Filiallar soni (ixtiyoriy) — bo'sh/0 qoldirilsa cheklanmagan.
+      let maxBranchesVal = null;
+      if (maxBranches !== undefined && maxBranches !== null && String(maxBranches).trim() !== '') {
+        const v = parseInt(maxBranches, 10);
+        if (!Number.isInteger(v) || v <= 0) {
+          return sendJSON(res, 200, { ok: false, reason: 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).' });
+        }
+        maxBranchesVal = v;
+      }
+
       const tariffs = loadTariffs();
       if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
         return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
@@ -8038,7 +8070,7 @@ const server = http.createServer((req, res) => {
         name: nameTrim,
         order: tariffs.length,
         price: priceVal,
-
+        maxBranches: maxBranchesVal,
         reminderDays: 1,
         features: {},
         createdAt: new Date().toISOString()
@@ -8054,7 +8086,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/tariff-rename') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, price, reminderDays } = payload;
+      const { initData, id, name, price, reminderDays, maxBranches } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -8081,6 +8113,20 @@ const server = http.createServer((req, res) => {
           return sendJSON(res, 200, { ok: false, reason: 'Eslatma kunlari musbat butun son bo\'lishi kerak.' });
         }
         tariff.reminderDays = reminderVal;
+      }
+      // Filiallar soni — bo'sh string yuborilsa cheklovni OLIB TASHLAYDI
+      // (cheklanmagan qiladi); maydon umuman yuborilmasa (undefined),
+      // eski qiymat tegilmay qoladi.
+      if (maxBranches !== undefined) {
+        if (maxBranches === null || String(maxBranches).trim() === '') {
+          tariff.maxBranches = null;
+        } else {
+          const v = parseInt(maxBranches, 10);
+          if (!Number.isInteger(v) || v <= 0) {
+            return sendJSON(res, 200, { ok: false, reason: 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).' });
+          }
+          tariff.maxBranches = v;
+        }
       }
       tariff.name = nameTrim;
       saveTariffs(tariffs);
