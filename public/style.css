@@ -1047,6 +1047,7 @@
   .recipe-row .recipe-name { flex: 1; font-size: var(--fs-body); }
   .recipe-row .recipe-unit { color: var(--text-muted); font-size: var(--fs-xs); }
   .recipe-row input { width: 76px; margin: 0; text-align: center; }
+  .recipe-row .row-action-btn { padding: 4px; min-height: auto; flex-shrink: 0; }
 
   .subscription-progress { margin-top: var(--sp-2); max-width: 160px; }
   .subscription-progress-track {
