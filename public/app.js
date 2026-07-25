@@ -7863,13 +7863,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="profile-view" style="margin-bottom:12px;">
         ${r.logoUrl ? `<img class="logo-preview" src="${escapeHtml(r.logoUrl)}" onerror="this.style.display='none'">` : ''}
         <div class="info">
-          <div class="salom" style="font-size:20px; margin-bottom:2px;">${escapeHtml(r.name || 'Oshxona')}</div>
+          <div class="salom" style="font-size:20px; margin-bottom:2px; display:flex; align-items:center; gap:8px;">
+            <span>${escapeHtml(r.name || 'Oshxona')}</span>
+            <button type="button" id="custSwitchRestBtn" title="Oshxonadan chiqish" aria-label="Oshxonadan chiqish" style="flex-shrink:0; display:flex; align-items:center; gap:4px; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:3px 10px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">
+              ${icon('x', 'icon-xs')}<span>Chiqish</span>
+            </button>
+          </div>
           ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
           ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
         </div>
-        <button type="button" class="cust-notif-bell-btn" id="custSwitchRestBtn" title="Boshqa oshxonalar" aria-label="Boshqa oshxonalar" style="margin-right:6px;">
-          ${icon('store', 'icon-sm')}
-        </button>
         <button type="button" class="cust-notif-bell-btn" id="custAddrBookBtn" title="Manzillarim" aria-label="Manzillarim" style="margin-right:6px;">
           ${icon('pin', 'icon-sm')}
         </button>
