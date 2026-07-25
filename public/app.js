@@ -9511,7 +9511,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return restaurants.map(r => `
       <div class="owner-item" data-pick-restaurant-id="${escapeHtml(r.id)}" style="cursor:pointer;">
         <div>
-          <div class="owner-id">${escapeHtml(r.name)}</div>
+          <div class="owner-id">${r.avgRating !== null && r.avgRating !== undefined ? `⭐ ${r.avgRating} · ` : ''}${escapeHtml(r.name)}</div>
           ${r.address ? `<div class="owner-username">${escapeHtml(r.address)}</div>` : ''}
         </div>
         <div style="font-size:20px;">›</div>
