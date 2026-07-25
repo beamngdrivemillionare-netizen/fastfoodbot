@@ -471,6 +471,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
             </div>
             ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
             ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
+            ${o.profile && o.profile.phone ? `<div class="owner-username">${icon('send', 'icon-xs icon-muted')} ${escapeHtml(o.profile.phone)}</div>` : ''}
+            ${o.profile && o.profile.address ? `<div class="owner-username">${icon('pin', 'icon-xs icon-muted')} ${escapeHtml(o.profile.address)}</div>` : ''}
           </div>
           <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
         </div>
