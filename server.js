@@ -5707,6 +5707,11 @@ const server = http.createServer((req, res) => {
   function canSetOrderStatus(ctx, order, newStatus) {
     if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
 
+    // To'lov (karta skrinshoti yoki stoldagi naqd) hali tasdiqlanmagan bo'lsa -
+    // buyurtma holatini HECH KIM (egasi ham) o'zgartira olmasligi kerak,
+    // aks holda mijoz to'lamasdan turib taom tayyorlana boshlaydi.
+    if (order && order.paymentProofStatus === 'kutilmoqda') return false;
+
     if (ctxHasRole(ctx, 'egasi')) return true;
 
     const currentStatus = order ? order.status : 'yangi';
@@ -6304,7 +6309,10 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: true, order });
       }
       if (!canSetOrderStatus(ctx, order, status)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).' });
+        const reason = order.paymentProofStatus === 'kutilmoqda'
+          ? 'Mijozning to\'lovi hali tasdiqlanmagan - avval to\'lovni tasdiqlang, shundan keyin buyurtma holatini o\'zgartirish mumkin.'
+          : 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).';
+        return sendJSON(res, 200, { ok: false, reason });
       }
 
       order.status = status;
