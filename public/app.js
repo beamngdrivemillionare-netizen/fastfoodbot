@@ -4817,6 +4817,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     ekran(`
       <div class="panel">
+        ${onBack ? `<button type="button" class="btn" id="kitchenMenuManageBtn" style="margin-bottom:12px;">${icon('restaurant', 'icon-xs')} Menyu boshqaruvi</button>` : ''}
         <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
         ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
         <button class="btn ikkinchi" id="kitchenStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
@@ -4824,7 +4825,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${soundToggleBtnHtml()}
         <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
         <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
-        ${onBack ? menuAddSectionHtml() : ''}
       </div>
     `);
     if (onBack) document.getElementById('kitchenBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
@@ -4836,7 +4836,114 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachShiftWidgetHandler();
     loadShiftWidget();
     startOrdersPolling('oshpaz');
-    if (onBack) attachMenuAddSectionHandlers();
+    if (onBack) {
+      document.getElementById('kitchenMenuManageBtn').addEventListener('click', () => openKitchenMenuManageMenu(restaurantName, onBack));
+    }
+  }
+
+  function openKitchenMenuManageMenu(restaurantName, onBack) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px;">
+        <h3>Menyu boshqaruvi</h3>
+        <div class="ko-menu-grid" style="margin-top:10px;">
+          <button type="button" class="ko-menu-item" id="kmmAddMenuBtn">
+            <span class="ko-menu-item-icon">${icon('plus')}</span>
+            <span class="ko-menu-item-label">Menyu qo'shish</span>
+          </button>
+          <button type="button" class="ko-menu-item" id="kmmAddRecipeBtn">
+            <span class="ko-menu-item-icon">${icon('clipboard')}</span>
+            <span class="ko-menu-item-label">Retsept qo'shish</span>
+          </button>
+          <button type="button" class="ko-menu-item" id="kmmStockBtn">
+            <span class="ko-menu-item-icon">${icon('box')}</span>
+            <span class="ko-menu-item-label">Mahsulotlar</span>
+          </button>
+        </div>
+        <button class="btn ikkinchi" id="kmmCancelBtn" style="margin-top:14px;">Bekor qilish</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.getElementById('kmmCancelBtn').addEventListener('click', close);
+    document.getElementById('kmmAddMenuBtn').addEventListener('click', () => {
+      close();
+      openMenuAddOverlay();
+    });
+    document.getElementById('kmmAddRecipeBtn').addEventListener('click', () => {
+      close();
+      openRecipePickerOverlay();
+    });
+    document.getElementById('kmmStockBtn').addEventListener('click', () => {
+      close();
+      stopOrdersPolling();
+      renderStockScreen(restaurantName, 'egasi', () => renderKitchenScreen(restaurantName, onBack));
+    });
+  }
+
+  function openMenuAddOverlay() {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:480px; max-height:85vh; overflow-y:auto;">
+        <button type="button" class="btn ikkinchi" id="menuAddOverlayCloseBtn" style="margin-bottom:12px;">← Yopish</button>
+        ${menuAddSectionHtml()}
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    document.getElementById('menuAddOverlayCloseBtn').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    attachMenuAddSectionHandlers();
+  }
+
+  async function openRecipePickerOverlay() {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
+        <h3>Retsept qo'shish</h3>
+        <div class="bosh">Retsept qo'shmoqchi bo'lgan taomni tanlang.</div>
+        <div id="recipePickerList" style="margin-top:10px;"><div class="bosh">Yuklanmoqda...</div></div>
+        <button type="button" class="btn ikkinchi" id="recipePickerCloseBtn" style="margin-top:12px;">Yopish</button>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    document.getElementById('recipePickerCloseBtn').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    const listEl = document.getElementById('recipePickerList');
+    const res = await apiPost('/api/menu-list', { initData });
+    if (!listEl.isConnected) return;
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    const menu = (res.menu || []).filter(m => !m.directStockId);
+    if (!menu.length) {
+      listEl.innerHTML = `<div class="bosh">Retsept qo'shish uchun avval menyuga taom qo'shing.</div>`;
+      return;
+    }
+    listEl.innerHTML = menu.map(m => `
+      <div class="menu-item">
+        <div>
+          <div class="m-name">${escapeHtml(m.name)}</div>
+          ${m.recipe && m.recipe.length ? `<div class="m-cat">Retsept mavjud ${icon('check', 'icon-xs icon-success')}</div>` : ''}
+        </div>
+        <button type="button" data-pick-recipe-id="${escapeHtml(m.id)}" class="row-action-btn brand">${m.recipe && m.recipe.length ? "Tahrirlash" : "Qo'shish"}</button>
+      </div>
+    `).join('');
+    listEl.querySelectorAll('[data-pick-recipe-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-pick-recipe-id');
+        const menuItem = menu.find(m => m.id === id);
+        close();
+        if (menuItem) openRecipeEditor(menuItem);
+      });
+    });
   }
 
   function deliveryRouteUrl(order) {
