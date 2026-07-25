@@ -9599,6 +9599,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   } else {
     tg.ready();
     tg.expand();
+    if (typeof tg.disableVerticalSwipes === 'function') tg.disableVerticalSwipes();
 
     if (customerOwnerId) {
       renderCustomerApp(customerOwnerId);
