@@ -1765,6 +1765,29 @@ function approveRequest(reqInfo, days) {
 
 const pendingSelfRegistration = new Set();
 
+// Ro'yxatdan o'tish jarayonini boshlaydi ("Oshxonangiz nomini yozing" deb
+// so'raydi). Ikki joydan chaqiriladi: (1) inline tugma (self_register_start
+// callback — pastda), (2) Mini App ichidagi "Hamkor bo'lish" havolasi orqali
+// kelgan /start owner_register (handleStartCommand ichida) — mantiq ikki
+// joyda takrorlanmasin deb bitta manbaga jamlandi.
+async function beginSelfRegistration(userId) {
+  if (isAdminId(userId)) {
+    await sendMessage(userId, 'Siz administratorsiz, ro\'yxatdan o\'tishning hojati yo\'q.');
+    return;
+  }
+  const owners = loadOwners();
+  if (findOwner(owners, userId)) {
+    await sendMessage(userId, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
+    return;
+  }
+  if (findStaffInfo(owners, userId)) {
+    await sendMessage(userId, 'Siz allaqachon boshqa oshxonaning xodimisiz, alohida ega sifatida ro\'yxatdan o\'ta olmaysiz.');
+    return;
+  }
+  pendingSelfRegistration.add(String(userId));
+  await sendMessage(userId, 'Oshxonangiz nomini yozib yuboring (masalan: "Sardor Osh Markazi").');
+}
+
 const pendingReviewComments = new Map();
 const REVIEW_COMMENT_WINDOW_MS = 30 * 60 * 1000;
 
@@ -1813,9 +1836,20 @@ async function handleStartCommand(chatId, from, text) {
       `👋 <b>KitchenOS</b>ga xush kelibsiz!\n` +
       `Buyurtma berish uchun quyidagi tugmani bosing:`,
       { inline_keyboard: [
-        [{ text: '🍽 Menyuni ochish', web_app: { url: entryMenuUrl } }],
-        [{ text: "🏪 Oshxona egasimisiz? Ro'yxatdan o'tish", callback_data: 'self_register_start' }]
+        [{ text: '🍽 Menyuni ochish', web_app: { url: entryMenuUrl } }]
       ] });
+    return;
+  }
+
+  // Mini App ichidagi "Siz ham oshxona egasimisiz? Hamkor bo'ling" havolasi
+  // shu payload bilan botga qaytaradi (qarang: /api/partner-register-link
+  // va renderCustomerEntry ichidagi "Hamkor bo'lish" tugmasi). Ilgari bu
+  // tugma HAR BIR yangi mijozga /start xabarida ko'rsatilardi va ular
+  // "oshxona egasimisiz?" deb so'ralgandek tuyular edi — endi mijozlar
+  // to'g'ridan-to'g'ri menyuga o'tadi, hamkorlik esa ilova ichida (kamroq
+  // ko'zga tashlanadigan joyda) taklif qilinadi.
+  if (payload === 'owner_register') {
+    await beginSelfRegistration(from.id);
     return;
   }
 
@@ -2292,21 +2326,7 @@ async function handleTelegramUpdate(update) {
 
     if (data === 'self_register_start') {
       await answerCallbackQuery(cq.id);
-      if (isAdminId(from.id)) {
-        await sendMessage(from.id, 'Siz administratorsiz, ro\'yxatdan o\'tishning hojati yo\'q.');
-        return;
-      }
-      const owners = loadOwners();
-      if (findOwner(owners, from.id)) {
-        await sendMessage(from.id, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
-        return;
-      }
-      if (findStaffInfo(owners, from.id)) {
-        await sendMessage(from.id, 'Siz allaqachon boshqa oshxonaning xodimisiz, alohida ega sifatida ro\'yxatdan o\'ta olmaysiz.');
-        return;
-      }
-      pendingSelfRegistration.add(String(from.id));
-      await sendMessage(from.id, 'Oshxonangiz nomini yozib yuboring (masalan: "Sardor Osh Markazi").');
+      await beginSelfRegistration(from.id);
       return;
     }
 
@@ -3907,6 +3927,26 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // Mijoz Mini App ichida "Siz ham oshxona egasimisiz? Hamkor bo'ling"
+  // havolasini bossa, shu endpoint bot username'ni qaytaradi — keyin
+  // frontend Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}
+  // ?start=owner_register`) chaqiradi. Owner'ga emas, HAR QANDAY ro'yxatdan
+  // o'tgan Telegram foydalanuvchisiga ochiq (mijoz bo'lishi kerak, shu
+  // sababli isOwnerAccessValid tekshiruvi YO'Q — faqat initData haqiqiyligi
+  // tekshiriladi).
+  if (req.method === 'POST' && req.url === '/api/partner-register-link') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
+      }
+      return sendJSON(res, 200, { ok: true, botUsername: BOT_USERNAME });
     });
     return;
   }
