@@ -1,8 +1,12 @@
 :root {
 
-    --brand-primary: #E4232A;
-    --brand-primary-dark: #B81E24;
-    --brand-primary-light: #FDEAEA;
+    /* Standart brend rangi — "Pulsar" ko'k rangi. Owner o'z brend rangini
+       tanlasa, JS (applyBrandColor) shu 4 ta o'zgaruvchini inline style
+       orqali ustidan yozadi — bu yerdagi qiymatlar faqat HALI HECH KIM
+       rang tanlamagan holat uchun standart. */
+    --brand-primary: #1E4FD8;
+    --brand-primary-dark: #1941B1;
+    --brand-primary-light: #E9EDFB;
     --brand-on-primary: #FFFFFF;
 
     --surface-0: var(--tg-theme-bg-color, #FFFFFF);
