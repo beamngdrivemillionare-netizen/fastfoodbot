@@ -8420,7 +8420,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   // ---- Jonli navbat taxtasi (live board): "Tayyorlanmoqda" / "Tayyor" ustunlari ----
-  let liveBoardState = { pollTimer: null, myOrderIds: [], lastPreparingIds: [] };
+  let liveBoardState = { pollTimer: null, myOrderIds: [], lastPreparingIds: [], pendingPaymentOrderId: null, pendingPaymentMsgEl: null };
 
   function stopLiveBoardPolling() {
     if (liveBoardState.pollTimer) { clearInterval(liveBoardState.pollTimer); liveBoardState.pollTimer = null; }
@@ -8479,6 +8479,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     liveBoardState.myOrderIds = res.myOrderIds || [];
+
+    // "To'lov tasdiqlash kutilmoqda" xabari - to'lov tasdiqlangach (yoki rad
+    // etilgach) shu buyurtma myPendingPaymentOrderIds ro'yxatidan chiqib
+    // ketadi, shunda xabarni o'zi olib tashlaymiz.
+    if (liveBoardState.pendingPaymentOrderId) {
+      const stillPending = (res.myPendingPaymentOrderIds || []).includes(liveBoardState.pendingPaymentOrderId);
+      if (!stillPending) {
+        const el = liveBoardState.pendingPaymentMsgEl;
+        if (el && el.parentNode) {
+          el.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} To'lov holati yangilandi.`;
+          setTimeout(() => { if (el.parentNode) el.remove(); }, 4000);
+        }
+        liveBoardState.pendingPaymentOrderId = null;
+        liveBoardState.pendingPaymentMsgEl = null;
+      }
+    }
+
     const prevPreparingIds = liveBoardState.lastPreparingIds || [];
     bodyEl2.innerHTML = liveBoardBodyHtml(res);
     (res.ready || []).forEach(o => {
@@ -8498,6 +8515,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function startLiveBoardPolling() {
     stopLiveBoardPolling();
     liveBoardState.lastPreparingIds = [];
+    liveBoardState.pendingPaymentOrderId = null;
+    liveBoardState.pendingPaymentMsgEl = null;
     refreshLiveBoard();
     liveBoardState.pollTimer = setInterval(refreshLiveBoard, 4000);
   }
@@ -9129,6 +9148,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const hintEl = panelEl && panelEl.querySelector('.live-board-hint');
       if (panelEl && hintEl) panelEl.insertBefore(topMsg, hintEl);
       else if (panelEl) panelEl.prepend(topMsg);
+
+      if (res.paymentPending) {
+        liveBoardState.pendingPaymentOrderId = res.orderId;
+        liveBoardState.pendingPaymentMsgEl = topMsg;
+      }
 
       if (needsPaymentProofModal) showPaymentProofModal();
     } else {
