@@ -7865,6 +7865,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
           ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
         </div>
+        <button type="button" class="cust-notif-bell-btn" id="custSwitchRestBtn" title="Boshqa oshxonalar" aria-label="Boshqa oshxonalar" style="margin-right:6px;">
+          ${icon('store', 'icon-sm')}
+        </button>
         <button type="button" class="cust-notif-bell-btn" id="custAddrBookBtn" title="Manzillarim" aria-label="Manzillarim" style="margin-right:6px;">
           ${icon('pin', 'icon-sm')}
         </button>
@@ -8656,6 +8659,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
           else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
           else renderCustomerMenuTab();
         });
+      });
+    }
+    const switchRestBtn = document.getElementById('custSwitchRestBtn');
+    if (switchRestBtn) {
+      switchRestBtn.addEventListener('click', () => {
+        if (customerCartQty() && !confirm('Savatchangizdagi mahsulotlar yo\'qoladi. Boshqa oshxonaga o\'tasizmi?')) return;
+        stopCustomerHistoryPolling();
+        customerState.cart = {};
+        renderCustomerEntry();
       });
     }
     const addrBookBtn = document.getElementById('custAddrBookBtn');
