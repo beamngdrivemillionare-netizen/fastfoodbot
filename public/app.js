@@ -4794,7 +4794,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
 
     const currentIds = new Set((res.orders || []).map(o => o.id));
-    if (knownOrderIds && (role === 'oshpaz' || role === 'kassir')) {
+    if (knownOrderIds && (role === 'oshpaz' || role === 'kassir' || role === 'egasi')) {
       const hasNew = (res.orders || []).some(o => o.status === 'yangi' && !knownOrderIds.has(o.id));
       if (hasNew) playNewOrderBeep();
     }
@@ -4814,6 +4814,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function renderKitchenScreen(restaurantName, onBack) {
+    // onBack faqat do'kon egasi shu ekranga o'z menyusidan kirganda beriladi
+    // (haqiqiy oshpaz xodim to'g'ridan-to'g'ri renderStaffScreen orqali,
+    // onBack'siz kiradi) - shu orqali egasi uchun 'egasi' rolini ishlatib,
+    // "Mijoz oldi" (va boshqa egasiga xos) tugmalari ham shu yerda chiqadi.
+    const boardRole = onBack ? 'egasi' : 'oshpaz';
 
     ekran(`
       <div class="panel">
@@ -4835,7 +4840,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachSoundToggleHandler();
     attachShiftWidgetHandler();
     loadShiftWidget();
-    startOrdersPolling('oshpaz');
+    startOrdersPolling(boardRole);
     if (onBack) {
       document.getElementById('kitchenMenuManageBtn').addEventListener('click', () => openKitchenMenuManageMenu(restaurantName, onBack));
     }
