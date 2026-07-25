@@ -5165,6 +5165,62 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+
+  function unitConversionPair(unit) {
+    if (unit === 'kg' || unit === 'g') return { big: 'kg', small: 'g', bigLabel: 'Kilogramm', smallLabel: 'Gramm' };
+    if (unit === 'l' || unit === 'ml') return { big: 'l', small: 'ml', bigLabel: 'Litr', smallLabel: 'Mililitr' };
+    return null;
+  }
+
+  function openUnitConverter(targetUnit, onApply) {
+    const pair = unitConversionPair(targetUnit);
+    if (!pair) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:340px;">
+        <h3>${pair.bigLabel} ⇄ ${pair.smallLabel}</h3>
+        <p class="bosh" style="margin-bottom:10px;">Birini kiriting — ikkinchisi avtomatik hisoblanadi.</p>
+        <input type="text" id="convBigInput" placeholder="${pair.bigLabel}, masalan 0.2" inputmode="decimal">
+        <input type="text" id="convSmallInput" placeholder="${pair.smallLabel}, masalan 200" inputmode="decimal">
+        <div class="xabar" id="convMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="convCancelBtn">Bekor qilish</button>
+          <button class="btn" id="convApplyBtn">${STOCK_UNIT_LABELS[targetUnit] || targetUnit} sifatida ishlatish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const bigInput = overlay.querySelector('#convBigInput');
+    const smallInput = overlay.querySelector('#convSmallInput');
+    bigInput.addEventListener('input', () => {
+      const v = parseFloat(bigInput.value);
+      smallInput.value = Number.isFinite(v) ? String(Math.round(v * 1e6) / 1e3) : '';
+    });
+    smallInput.addEventListener('input', () => {
+      const v = parseFloat(smallInput.value);
+      bigInput.value = Number.isFinite(v) ? String(Math.round((v / 1000) * 1e6) / 1e6) : '';
+    });
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('#convCancelBtn').addEventListener('click', close);
+    overlay.querySelector('#convApplyBtn').addEventListener('click', () => {
+      const msgEl = overlay.querySelector('#convMsg');
+      const bigVal = parseFloat(bigInput.value);
+      const smallVal = parseFloat(smallInput.value);
+      let result = null;
+      if (targetUnit === pair.big && Number.isFinite(bigVal) && bigVal > 0) result = bigVal;
+      else if (targetUnit === pair.small && Number.isFinite(smallVal) && smallVal > 0) result = smallVal;
+      if (result === null) {
+        msgEl.textContent = "To'g'ri qiymat kiriting.";
+        msgEl.className = 'xabar err';
+        return;
+      }
+      onApply(result);
+      close();
+    });
+  }
+
   let stockState = { stock: [] };
   let currentStockRole = null;
   let currentStockBranchId = null;
@@ -5237,6 +5293,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <select id="stockUnitInput">
             ${Object.entries(STOCK_UNIT_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
           </select>
+          <button type="button" class="btn ikkinchi" id="stockUnitConvertBtn" style="margin-top:-2px;">${icon('repeat', 'icon-xs')} kg/gramm, litr/ml hisoblagich</button>
           <input type="text" id="stockPriceInput" placeholder="Narxi, so'm *" inputmode="numeric">
           <input type="text" id="stockMinInput" placeholder="Kam qolish chegarasi (ixtiyoriy)" inputmode="decimal">
           <button class="btn" id="stockAddBtn">Qo'shish</button>
@@ -5317,6 +5374,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
 
     document.getElementById('openAuditBtn').addEventListener('click', () => openAuditForm());
+
+    document.getElementById('stockUnitConvertBtn').addEventListener('click', () => {
+      const unit = document.getElementById('stockUnitInput').value;
+      if (unit === 'dona') { alert("Bu birlik uchun konvertatsiya kerak emas."); return; }
+      openUnitConverter(unit, (value) => {
+        document.getElementById('stockQtyInput').value = String(value);
+      });
+    });
 
     if (role === 'egasi') {
       attachMenuAddSectionHandlers();
@@ -7079,6 +7144,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="recipe-row">
             <div class="recipe-name">${escapeHtml(s.name)} <span class="recipe-unit">(${escapeHtml(s.unit)})</span></div>
             <input type="text" inputmode="decimal" data-recipe-qty="${escapeHtml(s.id)}" placeholder="0" value="${existingMap[s.id] != null ? existingMap[s.id] : ''}">
+            ${unitConversionPair(s.unit) ? `<button type="button" class="row-action-btn brand" data-recipe-convert="${escapeHtml(s.id)}" data-recipe-unit="${escapeHtml(s.unit)}" title="kg/gramm, litr/ml hisoblagich">${icon('repeat', 'icon-xs')}</button>` : ''}
           </div>
         `).join('')
       : `<div class="bosh">Avval skladga mahsulot qo'shing.</div>`;
@@ -7098,6 +7164,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
     `;
     document.body.appendChild(overlay);
+
+    overlay.querySelectorAll('[data-recipe-convert]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-recipe-convert');
+        const unit = btn.getAttribute('data-recipe-unit');
+        openUnitConverter(unit, (value) => {
+          const inp = overlay.querySelector(`[data-recipe-qty="${id}"]`);
+          if (inp) inp.value = String(value);
+        });
+      });
+    });
 
     document.getElementById('recipeCancelBtn').onclick = () => overlay.remove();
     document.getElementById('recipeSaveBtn').onclick = async () => {
