@@ -4860,6 +4860,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <span class="ko-menu-item-icon">${icon('box')}</span>
             <span class="ko-menu-item-label">Mahsulotlar</span>
           </button>
+          <button type="button" class="ko-menu-item" id="kmmComboBtn">
+            <span class="ko-menu-item-icon">${icon('star')}</span>
+            <span class="ko-menu-item-label">Combo</span>
+          </button>
         </div>
         <button class="btn ikkinchi" id="kmmCancelBtn" style="margin-top:14px;">Bekor qilish</button>
       </div>
@@ -4881,6 +4885,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       stopOrdersPolling();
       renderStockScreen(restaurantName, 'egasi', () => renderKitchenScreen(restaurantName, onBack));
     });
+    document.getElementById('kmmComboBtn').addEventListener('click', () => {
+      close();
+      stopOrdersPolling();
+      renderComboScreen(restaurantName, () => renderKitchenScreen(restaurantName, onBack));
+    });
   }
 
   function openMenuAddOverlay() {
@@ -4897,6 +4906,329 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('menuAddOverlayCloseBtn').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     attachMenuAddSectionHandlers();
+  }
+
+  let comboScreenMenuCache = [];
+
+  function comboItemsSummary(combo, menu) {
+    return (combo.itemIds || []).map(e => {
+      const m = (menu || []).find(mm => mm.id === e.menuItemId);
+      return `${m ? m.name : '?'} x${e.qty}`;
+    }).join(', ');
+  }
+
+  function comboListHtml(combos, menu) {
+    if (!combos || !combos.length) return `<div class="bosh">Hali combo qo'shilmagan.</div>`;
+    return combos.map(c => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div>
+          <div class="owner-id">${escapeHtml(c.name)} — ${fmtNum(c.price)} so'm${c.outOfStock ? ' <span class="badge unpaid">Tugagan</span>' : ''}</div>
+          <div class="owner-username">${escapeHtml(comboItemsSummary(c, menu))}</div>
+          ${c.category ? `<div class="owner-username">Bo'lim: ${escapeHtml(c.category)}</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${c.available !== false ? 'paid' : 'unpaid'}">${c.available !== false ? 'Faol' : 'Nofaol'}</span>
+          <button data-edit-combo-id="${escapeHtml(c.id)}">Tahrirlash</button>
+          <button data-toggle-combo-id="${escapeHtml(c.id)}">${c.available !== false ? 'Yashirish' : 'Faollashtirish'}</button>
+          <button data-remove-combo-id="${escapeHtml(c.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function comboItemPickerRowsHtml(menu, prefix, selectedMap) {
+    selectedMap = selectedMap || {};
+    if (!menu || !menu.length) return `<div class="bosh">Avval menyuga taom qo'shing.</div>`;
+    return menu.map(m => {
+      const checked = Object.prototype.hasOwnProperty.call(selectedMap, m.id);
+      const qty = checked ? selectedMap[m.id] : 1;
+      return `
+        <div class="menu-item" style="align-items:center;">
+          <label style="display:flex; align-items:center; gap:8px; flex:1; min-width:0; cursor:pointer;">
+            <input type="checkbox" class="${prefix}-item-check" data-combo-item-id="${escapeHtml(m.id)}" ${checked ? 'checked' : ''}>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(m.name)} (${fmtNum(m.price)} so'm)</span>
+          </label>
+          <input type="text" class="${prefix}-item-qty" data-combo-item-qty="${escapeHtml(m.id)}" value="${qty}" inputmode="numeric" style="width:56px; text-align:center;" ${checked ? '' : 'disabled'}>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function wireComboItemPicker(container, prefix) {
+    container.querySelectorAll(`.${prefix}-item-check`).forEach(cb => {
+      cb.addEventListener('change', () => {
+        const id = cb.getAttribute('data-combo-item-id');
+        const qtyInput = container.querySelector(`.${prefix}-item-qty[data-combo-item-qty="${id}"]`);
+        if (qtyInput) qtyInput.disabled = !cb.checked;
+      });
+    });
+  }
+
+  function collectComboItemIds(container, prefix) {
+    const itemIds = [];
+    container.querySelectorAll(`.${prefix}-item-check:checked`).forEach(cb => {
+      const id = cb.getAttribute('data-combo-item-id');
+      const qtyInput = container.querySelector(`.${prefix}-item-qty[data-combo-item-qty="${id}"]`);
+      const qty = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
+      itemIds.push({ menuItemId: id, qty });
+    });
+    return itemIds;
+  }
+
+  async function loadComboMenuPickerAndRender() {
+    const picker = document.getElementById('comboItemPicker');
+    if (!picker) return;
+    const res = await apiPost('/api/menu-list', { initData });
+    comboScreenMenuCache = res.ok ? res.menu : [];
+    picker.innerHTML = comboItemPickerRowsHtml(comboScreenMenuCache, 'combo', {});
+    wireComboItemPicker(picker, 'combo');
+  }
+
+  async function loadComboListAndRender() {
+    const listEl = document.getElementById('comboList');
+    if (!listEl) return;
+    const res = await apiPost('/api/combo-list', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadComboListAndRender); return; }
+    const combos = res.ok ? res.combos : [];
+    let menu = comboScreenMenuCache;
+    if (!menu.length) {
+      const menuRes = await apiPost('/api/menu-list', { initData });
+      menu = menuRes.ok ? menuRes.menu : [];
+    }
+    listEl.innerHTML = comboListHtml(combos, menu);
+    listEl.querySelectorAll('[data-remove-combo-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm("Combo o'chirilsinmi?")) return;
+        btn.disabled = true;
+        await apiPost('/api/combo-remove', { initData, id: btn.getAttribute('data-remove-combo-id') });
+        loadComboListAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-toggle-combo-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-toggle-combo-id');
+        const combo = combos.find(c => c.id === id);
+        btn.disabled = true;
+        await apiPost('/api/combo-update', { initData, id, available: combo ? combo.available === false : true });
+        loadComboListAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-edit-combo-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-combo-id');
+        const combo = combos.find(c => c.id === id);
+        if (combo) renderComboEditOverlay(combo, menu);
+      });
+    });
+  }
+
+  function renderComboEditOverlay(combo, menu) {
+    const selectedMap = {};
+    (combo.itemIds || []).forEach(e => { selectedMap[e.menuItemId] = e.qty; });
+    let pendingImage = combo.imageUrl || '';
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:420px; max-height:85vh; overflow:auto;">
+        <h3>Comboni tahrirlash</h3>
+        <input type="text" id="editComboNameInput" placeholder="Combo nomi" value="${escapeHtml(combo.name || '')}">
+        <label class="field-label" style="margin-top:8px;">Tarkibi (kamida 2 ta taom)</label>
+        <div id="editComboItemPicker">${comboItemPickerRowsHtml(menu, 'editCombo', selectedMap)}</div>
+        <label class="field-label" style="margin-top:10px;">Narx</label>
+        <select id="editComboPriceModeInput">
+          <option value="auto" ${combo.priceMode !== 'manual' ? 'selected' : ''}>Avtomatik (tarkib narxlari yig'indisi)</option>
+          <option value="manual" ${combo.priceMode === 'manual' ? 'selected' : ''}>Qo'lda kiritish</option>
+        </select>
+        <input type="text" id="editComboPriceInput" placeholder="Combo narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(combo.price || ''))}" class="${combo.priceMode === 'manual' ? '' : 'hidden'}" style="margin-top:8px;">
+        <label class="field-label" style="margin-top:10px;">Bo'lim (ixtiyoriy)</label>
+        <input type="text" id="editComboCategoryInput" placeholder="Masalan: Combolar" value="${escapeHtml(combo.category || '')}">
+        <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
+        <img id="editComboImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
+        <input type="file" id="editComboImageFileInput" accept="image/*">
+        <label style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+          <input type="checkbox" id="editComboAvailableInput" ${combo.available !== false ? 'checked' : ''}>
+          <span>Faol (mijozlar menyusida ko'rinadi)</span>
+        </label>
+        <div class="xabar" id="editComboMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="editComboCancelBtn">Bekor qilish</button>
+          <button class="btn" id="editComboSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const picker = document.getElementById('editComboItemPicker');
+    wireComboItemPicker(picker, 'editCombo');
+
+    document.getElementById('editComboCancelBtn').onclick = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    document.getElementById('editComboPriceModeInput').addEventListener('change', (e) => {
+      document.getElementById('editComboPriceInput').classList.toggle('hidden', e.target.value !== 'manual');
+    });
+
+    document.getElementById('editComboImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('editComboMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        pendingImage = dataUrl || '';
+        const preview = document.getElementById('editComboImagePreview');
+        preview.src = pendingImage;
+        preview.style.display = pendingImage ? 'block' : 'none';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('editComboSaveBtn').onclick = async () => {
+      const name = document.getElementById('editComboNameInput').value.trim();
+      const itemIds = collectComboItemIds(picker, 'editCombo');
+      const priceMode = document.getElementById('editComboPriceModeInput').value;
+      const price = document.getElementById('editComboPriceInput').value.trim();
+      const category = document.getElementById('editComboCategoryInput').value.trim();
+      const available = document.getElementById('editComboAvailableInput').checked;
+      const msgEl = document.getElementById('editComboMsg');
+
+      if (!name) {
+        msgEl.textContent = 'Combo nomini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (itemIds.length < 2) {
+        msgEl.textContent = 'Combo tarkibida kamida 2 ta taom tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (priceMode === 'manual' && (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)) {
+        msgEl.textContent = 'Combo narxini to\'g\'ri kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/combo-update', {
+        initData, id: combo.id, name, itemIds, priceMode, price, category, imageUrl: pendingImage, available
+      });
+      if (res.ok) {
+        overlay.remove();
+        loadComboListAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
+  }
+
+  function renderComboScreen(restaurantName, onBack) {
+    ekran(`
+      <div class="panel">
+        <button class="btn ikkinchi" id="comboBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="salom" style="font-size:20px;">${icon('star', 'icon-xs')} Combo</div>
+        <div class="bosh">Bir nechta taomni birlashtirib, chegirmali combo yarating.</div>
+        <div class="kartochka" style="margin-top:14px;">
+          <h2>Yangi combo qo'shish</h2>
+          <input type="text" id="comboNameInput" placeholder="Combo nomi">
+          <label class="field-label" style="margin-top:8px;">Tarkibi (kamida 2 ta taom tanlang)</label>
+          <div id="comboItemPicker"><div class="bosh">Yuklanmoqda...</div></div>
+          <label class="field-label" style="margin-top:10px;">Narx</label>
+          <select id="comboPriceModeInput">
+            <option value="auto">Avtomatik (tarkib narxlari yig'indisi)</option>
+            <option value="manual">Qo'lda kiritish</option>
+          </select>
+          <input type="text" id="comboPriceInput" placeholder="Combo narxi (so'm)" inputmode="numeric" class="hidden" style="margin-top:8px;">
+          <label class="field-label" style="margin-top:10px;">Bo'lim (ixtiyoriy)</label>
+          <input type="text" id="comboCategoryInput" placeholder="Masalan: Combolar">
+          <div class="staff-hint" style="margin-top:8px;">Rasm (ixtiyoriy):</div>
+          <input type="file" id="comboImageFileInput" accept="image/*">
+          <img id="comboImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
+          <input type="hidden" id="comboImageInput">
+          <button class="btn" id="addComboBtn" style="margin-top:10px;">Qo'shish</button>
+          <div class="xabar" id="comboMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('star', 'icon-xs')} Combolar</h2>
+          <div id="comboList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('comboBackBtn').addEventListener('click', onBack);
+
+    document.getElementById('comboPriceModeInput').addEventListener('change', (e) => {
+      document.getElementById('comboPriceInput').classList.toggle('hidden', e.target.value !== 'manual');
+    });
+
+    document.getElementById('comboImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('comboMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('comboImageInput').value = dataUrl || '';
+        const preview = document.getElementById('comboImagePreview');
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
+        msgEl.className = 'xabar err';
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('addComboBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('comboMsg');
+      const name = document.getElementById('comboNameInput').value.trim();
+      const picker = document.getElementById('comboItemPicker');
+      const itemIds = collectComboItemIds(picker, 'combo');
+      const priceMode = document.getElementById('comboPriceModeInput').value;
+      const price = document.getElementById('comboPriceInput').value.trim();
+      const category = document.getElementById('comboCategoryInput').value.trim();
+      const imageUrl = document.getElementById('comboImageInput').value.trim();
+
+      if (!name) {
+        msgEl.textContent = 'Combo nomini kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (itemIds.length < 2) {
+        msgEl.textContent = 'Combo tarkibida kamida 2 ta taom tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (priceMode === 'manual' && (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)) {
+        msgEl.textContent = 'Combo narxini to\'g\'ri kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Qo\'shilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/combo-add', { initData, name, itemIds, priceMode, price, category, imageUrl });
+      if (res.ok) {
+        msgEl.textContent = 'Combo qo\'shildi.';
+        msgEl.className = 'xabar ok';
+        document.getElementById('comboNameInput').value = '';
+        document.getElementById('comboPriceInput').value = '';
+        document.getElementById('comboCategoryInput').value = '';
+        document.getElementById('comboImageInput').value = '';
+        document.getElementById('comboImageFileInput').value = '';
+        document.getElementById('comboImagePreview').style.display = 'none';
+        document.getElementById('comboPriceModeInput').value = 'auto';
+        document.getElementById('comboPriceInput').classList.add('hidden');
+        loadComboMenuPickerAndRender();
+        loadComboListAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    loadComboMenuPickerAndRender();
+    loadComboListAndRender();
   }
 
   async function openRecipePickerOverlay() {
