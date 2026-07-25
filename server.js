@@ -40,6 +40,7 @@ const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 const BROADCASTS_FILE = path.join(DATA_DIR, 'broadcasts.json');
+const ADMIN_SUPPORT_FILE = path.join(DATA_DIR, 'admin_support.json');
 
 const SUBSCRIPTION_STATUS = {
   PENDING_TRIAL: 'pending_trial',
@@ -492,6 +493,9 @@ function saveJSONArray(file, arr) {
 
 function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
 function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
+
+function loadAdminSupportMessages() { return loadJSONArray(ADMIN_SUPPORT_FILE); }
+function saveAdminSupportMessages(msgs) { saveJSONArray(ADMIN_SUPPORT_FILE, msgs); }
 
 function loadInvites() { return loadJSONArray(INVITES_FILE); }
 function saveInvites(invites) { saveJSONArray(INVITES_FILE, invites); }
@@ -4916,6 +4920,171 @@ const server = http.createServer((req, res) => {
       await sendMessage(customerId, `💬 <b>Oshxonadan javob</b>\n${escapeHtmlServer(textTrim)}`);
 
       return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(ctx.owner, customerId) });
+    });
+    return;
+  }
+
+  function adminSupportThreadMessages(ownerId) {
+    return loadAdminSupportMessages()
+      .filter(m => String(m.ownerId) === String(ownerId))
+      .sort((a, b) => new Date(a.at) - new Date(b.at));
+  }
+
+  if (req.method === 'POST' && req.url === '/api/owner-admin-support-send') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, text } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi adminga yoza oladi.' });
+
+      const textTrim = String(text || '').trim().slice(0, 1000);
+      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
+
+      const msgs = loadAdminSupportMessages();
+      msgs.push({
+        id: crypto.randomBytes(4).toString('hex'),
+        ownerId: owner.id,
+        from: 'owner',
+        text: textTrim,
+        at: new Date().toISOString(),
+        readByOwner: true,
+        readByAdmin: false
+      });
+      saveAdminSupportMessages(msgs);
+
+      const alertText = `🆘 <b>Egadan xabar</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || owner.id)}</b> (ID: <code>${owner.id}</code>)\n\n${escapeHtmlServer(textTrim)}`;
+      for (const adminId of allAdminIds()) {
+        sendMessage(adminId, alertText);
+      }
+
+      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(owner.id) });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/owner-admin-support-thread') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi.' });
+
+      const msgs = loadAdminSupportMessages();
+      let changed = false;
+      msgs.forEach(m => {
+        if (String(m.ownerId) === owner.id && m.from === 'admin' && !m.readByOwner) {
+          m.readByOwner = true;
+          changed = true;
+        }
+      });
+      if (changed) saveAdminSupportMessages(msgs);
+
+      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(owner.id) });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/admin-support-inbox') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+
+      const owners = loadOwners();
+      const msgs = loadAdminSupportMessages();
+      const byOwner = new Map();
+      for (const m of msgs) {
+        const list = byOwner.get(m.ownerId) || [];
+        list.push(m);
+        byOwner.set(m.ownerId, list);
+      }
+      const threads = [];
+      for (const [ownerId, list] of byOwner.entries()) {
+        list.sort((a, b) => new Date(a.at) - new Date(b.at));
+        const last = list[list.length - 1];
+        const owner = findOwner(owners, ownerId);
+        threads.push({
+          ownerId,
+          ownerName: (owner && owner.profile && owner.profile.name) || `ID: ${ownerId}`,
+          lastText: last.text,
+          lastAt: last.at,
+          lastFrom: last.from,
+          unreadCount: list.filter(m => m.from === 'owner' && !m.readByAdmin).length
+        });
+      }
+      threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+
+      return sendJSON(res, 200, { ok: true, threads });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/admin-support-thread') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona tanlanmagan.' });
+
+      const msgs = loadAdminSupportMessages();
+      let changed = false;
+      msgs.forEach(m => {
+        if (String(m.ownerId) === String(ownerId) && m.from === 'owner' && !m.readByAdmin) {
+          m.readByAdmin = true;
+          changed = true;
+        }
+      });
+      if (changed) saveAdminSupportMessages(msgs);
+
+      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(ownerId) });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/admin-support-reply') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId, text } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin javob bera oladi' });
+      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona tanlanmagan.' });
+
+      const textTrim = String(text || '').trim().slice(0, 1000);
+      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
+
+      const msgs = loadAdminSupportMessages();
+      msgs.push({
+        id: crypto.randomBytes(4).toString('hex'),
+        ownerId: String(ownerId),
+        from: 'admin',
+        text: textTrim,
+        at: new Date().toISOString(),
+        readByOwner: false,
+        readByAdmin: true
+      });
+      saveAdminSupportMessages(msgs);
+
+      await sendMessage(ownerId, `💬 <b>Admindan javob</b>\n${escapeHtmlServer(textTrim)}`);
+
+      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(ownerId) });
     });
     return;
   }
