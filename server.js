@@ -1739,7 +1739,8 @@ function clearAwaitingCustom() {
 
 function isPlausiblePhone(str) {
   const cleaned = String(str).replace(/[\s\-()]/g, '');
-  return /^\+?\d{7,15}$/.test(cleaned);
+  // Faqat O'zbekiston raqamlarini qabul qilamiz: +998 (yoki 998) va undan keyin 9 ta raqam
+  return /^\+?998\d{9}$/.test(cleaned);
 }
 
 function approveRequest(reqInfo, days) {
@@ -4555,6 +4556,9 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
       }
       const extraPhoneTrim = String(extraPhone || '').trim().slice(0, 30);
+      if (extraPhoneTrim && !isPlausiblePhone(extraPhoneTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
+      }
 
       const customer = findOrCreateCustomer(owner, userId, check.user);
       if (!Array.isArray(customer.addresses)) customer.addresses = [];
@@ -5214,9 +5218,9 @@ const server = http.createServer((req, res) => {
           return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
         }
 
-        const extraPhoneDigits = String(extraPhone || '').replace(/\D/g, '');
-        if (extraPhoneDigits.length < 7) {
-          return sendJSON(res, 200, { ok: false, reason: 'Qo\'shimcha telefon raqamingizni kiriting.' });
+        const extraPhoneTrimmed = String(extraPhone || '').trim();
+        if (!isPlausiblePhone(extraPhoneTrimmed)) {
+          return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
         }
       }
       const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
@@ -7976,8 +7980,8 @@ const server = http.createServer((req, res) => {
 
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Oshxona nomini kiriting.' });
       if (!addressTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzilni kiriting.' });
-      if (!phoneTrim || !/^[\d+\-\s()]{6,20}$/.test(phoneTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini to\'g\'ri kiriting.' });
+      if (!phoneTrim || !isPlausiblePhone(phoneTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
       }
       if (logoTrim && !isValidImageValue(logoTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.' });
