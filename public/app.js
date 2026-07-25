@@ -532,6 +532,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'egalar', icon: 'users', label: "Do'kon egalari" })}
           ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
           ${adminMenuItemHtml({ key: 'tolovlar', icon: 'card', label: "Kutilayotgan to'lovlar" })}
+          ${adminMenuItemHtml({ key: 'yordam', icon: 'message-circle', label: "Egalardan xabarlar" })}
           ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
           ${adminMenuItemHtml({ key: 'obunaRejalari', icon: 'card', label: 'Obuna rejalari' })}
           ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
@@ -551,6 +552,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
         if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
         if (key === 'tolovlar') { renderAdminPendingPaymentsScreen(goBack); return; }
+        if (key === 'yordam') { renderAdminSupportInboxScreen(goBack); return; }
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
         if (key === 'obunaRejalari') { renderSubscriptionPlansScreen(goBack); return; }
         if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
@@ -2955,6 +2957,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'obuna', icon: 'card', label: 'Obuna' },
+    { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
     { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
   ];
 
@@ -2995,6 +2998,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
       profil: () => renderOwnerProfileScreen(profile, goBack),
       obuna: () => renderOwnerSubscriptionScreen(profile, goBack),
+      adminChat: () => openOwnerAdminSupportChat(),
       sozlamalar: () => renderProfileForm(profile)
     };
   }
@@ -3026,6 +3030,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
     { key: 'profil', icon: 'user', label: 'Profil' },
     { key: 'obuna', icon: 'card', label: 'Obuna' },
+    { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
     { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
   ];
 
@@ -6766,6 +6771,117 @@ const tg = window.Telegram && window.Telegram.WebApp;
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
   }
 
+  let adminSupportPollTimer = null;
+
+  function adminSupportMessagesHtml(messages) {
+    if (!messages.length) {
+      return `<div class="bosh" style="padding:24px 8px;">Hali xabar yo'q.</div>`;
+    }
+    return messages.map(m => `
+      <div class="support-msg ${m.from === 'admin' ? 'mine' : 'staff'}">
+        <div class="support-msg-bubble">${escapeHtml(m.text)}</div>
+        <div class="support-msg-time">${customerSupportMsgTime(m.at)}</div>
+      </div>
+    `).join('');
+  }
+
+  function renderAdminSupportInboxScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Egalardan xabarlar</div>
+        <button class="btn ikkinchi" id="adminSupBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div id="adminSupInboxList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('adminSupBackBtn').addEventListener('click', () => {
+      if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; }
+      onBack && onBack();
+    });
+    loadAdminSupportInbox(onBack);
+    adminSupportPollTimer = setInterval(() => loadAdminSupportInbox(onBack, true), 5000);
+  }
+
+  async function loadAdminSupportInbox(onBack, isBackgroundRefresh) {
+    const listEl = document.getElementById('adminSupInboxList');
+    if (!listEl) { if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; } return; }
+    const res = await apiPost('/api/admin-support-inbox', { initData });
+    if (res.networkError) { if (!isBackgroundRefresh) renderNetworkErrorInline(listEl, res.reason, () => loadAdminSupportInbox(onBack)); return; }
+    if (!res.ok) {
+      if (!isBackgroundRefresh) listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Yuklanmadi.')}</div>`;
+      return;
+    }
+    if (!res.threads.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha egalardan xabar yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.threads.map(t => `
+      <div class="kartochka" data-thread-owner="${escapeHtml(t.ownerId)}" style="cursor:pointer; display:flex; align-items:center; gap:10px;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; display:flex; align-items:center; gap:6px;">
+            ${escapeHtml(t.ownerName)}
+            ${t.unreadCount > 0 ? `<span class="badge danger">${t.unreadCount}</span>` : ''}
+          </div>
+          <div class="owner-username" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${t.lastFrom === 'admin' ? "Siz: " : ''}${escapeHtml(t.lastText)}</div>
+        </div>
+        <div style="font-size:var(--fs-xs); color:var(--text-secondary); flex-shrink:0;">${supportStaffMsgTime(t.lastAt)}</div>
+      </div>
+    `).join('');
+    listEl.querySelectorAll('[data-thread-owner]').forEach(el => {
+      el.addEventListener('click', () => {
+        if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; }
+        renderAdminSupportThreadScreen(el.getAttribute('data-thread-owner'), () => renderAdminSupportInboxScreen(onBack));
+      });
+    });
+  }
+
+  function renderAdminSupportThreadScreen(ownerId, onBack) {
+    ekran(`
+      <div class="panel" style="display:flex; flex-direction:column; height:calc(100vh - 32px);">
+        <div class="salom" style="font-size:20px;">Suhbat</div>
+        <button class="btn ikkinchi" id="adminSupThreadBackBtn" style="margin-bottom:12px;">← Ro'yxatga</button>
+        <div id="adminSupThreadMsgs" style="flex:1; overflow-y:auto; margin-bottom:10px;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="adminSupThreadInput" placeholder="Javob yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="adminSupThreadSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('adminSupThreadBackBtn').addEventListener('click', () => {
+      if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; }
+      onBack && onBack();
+    });
+
+    const msgsEl = document.getElementById('adminSupThreadMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/admin-support-thread', { initData, ownerId });
+      if (!document.getElementById('adminSupThreadMsgs')) { if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; } return; }
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = adminSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+    loadThread(true);
+    adminSupportPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = document.getElementById('adminSupThreadInput');
+    const sendBtn = document.getElementById('adminSupThreadSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/admin-support-reply', { initData, ownerId, text });
+      sendBtn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = adminSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
   function renderZReportScreen(profile, onBack) {
     ekran(`
       <div class="panel">
@@ -7601,6 +7717,80 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function closeCustomerSupportChat(overlay) {
     if (customerSupportPollTimer) { clearInterval(customerSupportPollTimer); customerSupportPollTimer = null; }
+    overlay.remove();
+  }
+
+  let ownerAdminSupportPollTimer = null;
+
+  function ownerAdminSupportMessagesHtml(messages) {
+    if (!messages.length) {
+      return `<div class="bosh" style="padding:24px 8px;">Hali xabar yo'q. Savolingiz yoki muammoingiz bo'lsa, pastdan yozing — admin tez orada javob beradi.</div>`;
+    }
+    return messages.map(m => `
+      <div class="support-msg ${m.from === 'owner' ? 'mine' : 'staff'}">
+        <div class="support-msg-bubble">${escapeHtml(m.text)}</div>
+        <div class="support-msg-time">${customerSupportMsgTime(m.at)}</div>
+      </div>
+    `).join('');
+  }
+
+  function openOwnerAdminSupportChat() {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:85vh; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+        <div style="padding:16px 16px 10px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
+          ${icon('send', 'icon-sm')}
+          <div style="font-weight:700; flex:1;">Admin bilan bog'lanish</div>
+          <button type="button" id="ownerAdminSupportCloseBtn" style="background:none; border:none; cursor:pointer; padding:4px; display:flex;">${icon('x', 'icon-sm')}</button>
+        </div>
+        <div id="ownerAdminSupportMsgs" style="flex:1; overflow-y:auto; padding:14px 16px; min-height:200px; max-height:50vh;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border-color);">
+          <input type="text" id="ownerAdminSupportInput" placeholder="Xabar yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="ownerAdminSupportSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = () => closeOwnerAdminSupportChat(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('#ownerAdminSupportCloseBtn').addEventListener('click', close);
+
+    const msgsEl = overlay.querySelector('#ownerAdminSupportMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/owner-admin-support-thread', { initData });
+      if (!document.body.contains(overlay)) return;
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = ownerAdminSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+
+    loadThread(true);
+    ownerAdminSupportPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = overlay.querySelector('#ownerAdminSupportInput');
+    const sendBtn = overlay.querySelector('#ownerAdminSupportSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/owner-admin-support-send', { initData, text });
+      sendBtn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = ownerAdminSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
+  function closeOwnerAdminSupportChat(overlay) {
+    if (ownerAdminSupportPollTimer) { clearInterval(ownerAdminSupportPollTimer); ownerAdminSupportPollTimer = null; }
     overlay.remove();
   }
 
