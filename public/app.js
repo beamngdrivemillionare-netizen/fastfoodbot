@@ -1191,6 +1191,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div>
           <div class="owner-id">${escapeHtml(t.name)}</div>
           <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan · Eslatma: ${t.reminderDays || 1} kun oldin</div>
+          <div class="owner-username">${icon('store', 'icon-xs icon-muted')} Filiallar: ${t.maxBranches ? t.maxBranches + ' tagacha' : 'Cheklanmagan'}</div>
           <div class="owner-username">${icon('users', 'icon-xs icon-muted')} ${t.ownerCount || 0} ta do'kon</div>
         </div>
         <div class="btn-row" style="margin-top:0;">
@@ -1624,6 +1625,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <input type="text" id="tariffNameInput" placeholder="Masalan: Standart">
           <label class="field-label">Narx (so'm/oy)</label>
           <input type="text" id="tariffPriceInput" placeholder="Masalan: 150000" inputmode="numeric">
+          <label class="field-label">Filiallar soni (ixtiyoriy)</label>
+          <input type="text" id="tariffMaxBranchesInput" placeholder="Bo'sh = cheklanmagan" inputmode="numeric">
           <button class="btn" id="tariffAddBtn" style="margin-top:10px;">Qo'shish</button>
           <div class="xabar" id="tariffAddMsg"></div>
         </div>
@@ -1642,9 +1645,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('tariffAddBtn').addEventListener('click', async () => {
       const input = document.getElementById('tariffNameInput');
       const priceInput = document.getElementById('tariffPriceInput');
+      const maxBranchesInput = document.getElementById('tariffMaxBranchesInput');
       const msgEl = document.getElementById('tariffAddMsg');
       const name = input.value.trim();
       const priceStr = priceInput.value.trim();
+      const maxBranchesStr = maxBranchesInput.value.trim();
       if (!name) {
         msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
         msgEl.className = 'xabar err';
@@ -1655,8 +1660,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
         return;
       }
+      if (maxBranchesStr && (!/^\d+$/.test(maxBranchesStr) || parseInt(maxBranchesStr, 10) <= 0)) {
+        msgEl.textContent = 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).';
+        msgEl.className = 'xabar err';
+        return;
+      }
       msgEl.textContent = '';
-      const res = await apiPost('/api/tariff-add', { initData, name, price: priceStr || 0 });
+      const res = await apiPost('/api/tariff-add', { initData, name, price: priceStr || 0, maxBranches: maxBranchesStr || null });
       if (!res.ok) {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
@@ -1664,6 +1674,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       input.value = '';
       priceInput.value = '';
+      maxBranchesInput.value = '';
       loadTariffList();
     });
     await loadTariffList();
@@ -1751,6 +1762,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <input type="text" id="tariffEditPriceInput" value="${tariff.price || 0}" inputmode="numeric">
         <label class="field-label">Muddat tugashi eslatmasi (necha kun oldin)</label>
         <input type="text" id="tariffEditReminderInput" value="${tariff.reminderDays || 1}" inputmode="numeric">
+        <label class="field-label">Filiallar soni (ixtiyoriy)</label>
+        <input type="text" id="tariffEditMaxBranchesInput" value="${tariff.maxBranches || ''}" placeholder="Bo'sh = cheklanmagan" inputmode="numeric">
         <div class="xabar" id="tariffEditMsg"></div>
         <button type="button" class="btn ikkinchi" id="tariffEditPermsBtn" style="margin-top:4px;">${icon('check-circle', 'icon-xs')}<span>Ruxsatlar (funksiyalar)</span></button>
         <div class="btn-row">
@@ -1769,6 +1782,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const nameVal = document.getElementById('tariffEditNameInput').value.trim();
       const priceVal = document.getElementById('tariffEditPriceInput').value.trim();
       const reminderVal = document.getElementById('tariffEditReminderInput').value.trim();
+      const maxBranchesVal = document.getElementById('tariffEditMaxBranchesInput').value.trim();
       const msgEl = document.getElementById('tariffEditMsg');
       if (!nameVal) {
         msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
@@ -1785,7 +1799,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
         return;
       }
-      const res = await apiPost('/api/tariff-rename', { initData, id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1 });
+      if (maxBranchesVal && (!/^\d+$/.test(maxBranchesVal) || parseInt(maxBranchesVal, 10) <= 0)) {
+        msgEl.textContent = 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      const res = await apiPost('/api/tariff-rename', {
+        initData, id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1,
+        maxBranches: maxBranchesVal || null
+      });
       if (!res.ok) {
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
@@ -2675,6 +2697,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (res.networkError) { if (listEl) renderNetworkErrorInline(listEl, res.reason, loadBranchAndRender); return; }
     branchState.branches = res.ok ? res.branches : [];
     if (listEl) listEl.innerHTML = branchListHtml(branchState.branches);
+    const limitEl = document.getElementById('branchLimitLabel');
+    if (limitEl) {
+      limitEl.textContent = res.ok && res.maxBranches
+        ? `${branchState.branches.length} / ${res.maxBranches} filial ishlatilmoqda`
+        : '';
+    }
     const staffBranchSelect = document.getElementById('staffBranchInput');
     if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
   }
@@ -3476,6 +3504,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
         <div class="kartochka">
           <h2>Filiallar</h2>
+          <div class="owner-username" id="branchLimitLabel" style="margin-bottom:6px;"></div>
           <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
         <div class="section-label">${icon('link', 'icon-xs')} Mijozlar bilan ishlash</div>
