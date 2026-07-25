@@ -218,8 +218,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return Number(n || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
   }
 
-  const BRAND_COLOR_PRESETS = ['#E4232A', '#E67E22', '#1E8A55', '#12897E', '#1E6FD9', '#7B3FE4', '#D63384', '#2B2E33'];
-  const DEFAULT_BRAND_COLOR = '#E4232A';
+  // Standart brend rangi — "Pulsar" o'zining rasmiy ko'k rangi (logotipdagi
+  // to'q ko'k/qora fonga mos). Owner hali o'zining brend rangini
+  // tanlamagan bo'lsa, mijozlar/xodimlar ilovasida shu rang ishlatiladi.
+  // Owner keyinchalik xohlagan rangni tanlasa (pastdagi BRAND_COLOR_PRESETS
+  // yoki o'ziniki), o'sha rang uning XODIMLARI VA MIJOZLARI uchun ham
+  // qo'llaniladi (qarang: applyBrandColor — bu owner profilidan kelgan
+  // brandColor asosida chaqiriladi, xodim/mijoz ekranlarida ham xuddi shu
+  // owner.profile.brandColor ishlatiladi).
+  const BRAND_COLOR_PRESETS = ['#1E4FD8', '#E4232A', '#E67E22', '#1E8A55', '#12897E', '#7B3FE4', '#D63384', '#2B2E33'];
+  const DEFAULT_BRAND_COLOR = '#1E4FD8';
 
   function isValidHexColor(hex) {
     return typeof hex === 'string' && /^#[0-9A-Fa-f]{6}$/.test(hex);
@@ -488,6 +496,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="owner-action-row" style="display:flex; gap:8px; margin-top:8px;">
           <button class="row-action-btn brand" style="flex:1;" data-view-reviews="${escapeHtml(o.id)}">⭐ Sharhlar</button>
           <button class="row-action-btn brand" style="flex:1;" data-manage-menu="${escapeHtml(o.id)}" data-manage-menu-name="${escapeHtml((o.profile && o.profile.name) || o.id)}">🍽 Menyu/Sklad</button>
+          <button class="row-action-btn brand" style="flex:1;" data-write-owner="${escapeHtml(o.id)}">✉️ Yozish</button>
         </div>
       </div>
     `;
@@ -690,6 +699,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const ownerId = reviewsBtn.getAttribute('data-view-reviews');
         const ownerObj = owners.find(o => String(o.id) === String(ownerId));
         renderAdminOwnerReviewsScreen(ownerId, (ownerObj && ownerObj.profile && ownerObj.profile.name) || ownerId, () => renderAdminOwnersScreen(owners, goBack));
+        return;
+      }
+
+      const writeBtn = e.target.closest('[data-write-owner]');
+      if (writeBtn) {
+        const ownerId = writeBtn.getAttribute('data-write-owner');
+        // Bu yerda thread hali umuman yo'q bo'lishi ham mumkin (egasi hali
+        // yozmagan) — /api/admin-support-thread/-reply har qanday ownerId
+        // bilan ishlaydi, shu sababli to'g'ridan-to'g'ri suhbat oynasini
+        // ochamiz, "Egalardan xabarlar" ro'yxatida paydo bo'lishini kutmasdan.
+        renderAdminSupportThreadScreen(ownerId, () => renderAdminOwnersScreen(owners, goBack));
         return;
       }
 
