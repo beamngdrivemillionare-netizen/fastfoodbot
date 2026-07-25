@@ -8,7 +8,11 @@ const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN_BU_YERGA';
 const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA';
 const PORT = process.env.PORT || 3000;
 
-const BOT_USERNAME = (process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA').replace(/^@/, '');
+const BOT_USERNAME = (process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA')
+  .trim()
+  .replace(/^(https?:\/\/)?(www\.)?t\.me\//i, '')
+  .replace(/^@/, '')
+  .replace(/\/+$/, '');
 
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
 
