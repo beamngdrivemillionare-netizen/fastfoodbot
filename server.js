@@ -9752,11 +9752,71 @@ const server = http.createServer((req, res) => {
   });
 });
 
+const DEFAULT_TARIFF_FEATURE_IDS = FEATURE_CATALOG.map(f => f.id);
+
+function buildTariffFeatures(onIds) {
+  const onSet = new Set(onIds);
+  const features = {};
+  DEFAULT_TARIFF_FEATURE_IDS.forEach(id => { features[id] = onSet.has(id); });
+  return features;
+}
+
+// Agar hali birorta tarif yaratilmagan bo'lsa (masalan birinchi marta
+// ishga tushirilganda, yoki DATA_DIR boshqa joyga — masalan Railway
+// volume'ga — ko'rsatilgani sababli avvalgi tariffs.json fayli
+// ko'rinmayotgan bo'lsa), standart 4 ta tarifni avtomatik yaratib
+// qo'yadi. Admin keyinchalik Tariflar bo'limidan istagancha o'zgartira
+// oladi — bu faqat BIR MARTALIK boshlang'ich holat.
+function seedDefaultTariffsIfEmpty() {
+  const existing = loadTariffs();
+  if (existing.length) return;
+
+  const CORE = ['cashier-panel', 'courier-panel', 'kitchen-panel', 'staff-invite', 'shift-toggle',
+    'menu-manage', 'category-manage', 'orders-manage', 'delivery-group', 'kitchen-group',
+    'courier-report', 'stock-manage', 'expense-manage', 'cashflow', 'customer-menu',
+    'customer-account', 'support-chat', 'restaurant-brand', 'system-status', 'notification-log',
+    'dashboard'];
+  const STANDARD_ADDS = ['staff-roles', 'branch-manage', 'combo-manage', 'promo-manage', 'banner-manage', 'bonus-settings', 'z-report', 'ai-analytics'];
+  const BUSINESS_ADDS = ['staff-performance', 'ai-waiter', 'audit'];
+  const PREMIUM_ADDS = ['ai-director'];
+
+  const now = new Date().toISOString();
+  const defs = [
+    { name: 'Starter', price: 299000, maxBranches: null, branchManage: false, on: [...CORE] },
+    { name: 'Standard', price: 549000, maxBranches: 3, branchManage: true, on: [...CORE, ...STANDARD_ADDS] },
+    { name: 'Business', price: 680000, maxBranches: 10, branchManage: true, on: [...CORE, ...STANDARD_ADDS, ...BUSINESS_ADDS] },
+    { name: 'Premium', price: 1300000, maxBranches: null, branchManage: true, on: [...CORE, ...STANDARD_ADDS, ...BUSINESS_ADDS, ...PREMIUM_ADDS] }
+  ];
+
+  const tariffs = defs.map((d, i) => {
+    const features = buildTariffFeatures(d.on);
+    features['branch-manage'] = d.branchManage;
+    return {
+      id: crypto.randomBytes(4).toString('hex'),
+      name: d.name,
+      order: i,
+      price: d.price,
+      maxBranches: d.maxBranches,
+      reminderDays: 1,
+      features,
+      createdAt: now
+    };
+  });
+  saveTariffs(tariffs);
+  console.log(`Standart tariflar avtomatik yaratildi: ${tariffs.map(t => t.name).join(', ')}`);
+}
+
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
 
   reloadAdminsCache();
   console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
+
+  try {
+    seedDefaultTariffsIfEmpty();
+  } catch (e) {
+    console.error('Standart tariflarni yaratishda xatolik:', e.message);
+  }
 
   checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
   setInterval(() => {
