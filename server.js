@@ -997,6 +997,7 @@ const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka
 
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
+  if (o.paymentProofStatus === 'kutilmoqda' || o.paymentProofStatus === 'rad_etildi') return 0;
   if (o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false) return 0;
   return o.total || 0;
 }
