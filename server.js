@@ -5104,7 +5104,7 @@ const server = http.createServer((req, res) => {
       });
       saveAdminSupportMessages(msgs);
 
-      await sendMessage(ownerId, `💬 <b>Admindan javob</b>\n${escapeHtmlServer(textTrim)}`);
+      await sendMessage(ownerId, `💬 <b>Admindan xabar</b>\n${escapeHtmlServer(textTrim)}`);
 
       return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(ownerId) });
     });
@@ -7939,7 +7939,7 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.' });
       }
       if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #E4232A).' });
+        return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #1E4FD8).' });
       }
 
       if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
