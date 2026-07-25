@@ -3508,7 +3508,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="section-label">Tarif tanlang</div>
       ${rejectedNote}
       <div id="subPlansList">
-        ${res.plans.map(p => `
+        ${res.plans.length ? res.plans.map(p => `
           <div class="owner-item" data-plan-row="${escapeHtml(p.id)}">
             <div>
               <div class="owner-id">${escapeHtml(p.label)}</div>
@@ -3517,7 +3517,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             </div>
             <button class="btn" data-plan-id="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 14px;">Tanlash</button>
           </div>
-        `).join('')}
+        `).join('') : `<div class="bosh">Hozircha obuna rejalari sozlanmagan. Administrator bilan bog'laning.</div>`}
       </div>
     `;
     const listEl = document.getElementById('subPlansList');
