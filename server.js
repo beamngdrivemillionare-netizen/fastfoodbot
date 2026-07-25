@@ -9768,8 +9768,13 @@ function buildTariffFeatures(onIds) {
 // qo'yadi. Admin keyinchalik Tariflar bo'limidan istagancha o'zgartira
 // oladi — bu faqat BIR MARTALIK boshlang'ich holat.
 function seedDefaultTariffsIfEmpty() {
+  console.log(`[tarif-seed] DATA_DIR=${DATA_DIR}, tariffs fayli=${TARIFFS_FILE}`);
   const existing = loadTariffs();
-  if (existing.length) return;
+  console.log(`[tarif-seed] Mavjud tariflar soni: ${existing.length}`);
+  if (existing.length) {
+    console.log('[tarif-seed] Allaqachon tarif mavjud, o\'tkazib yuborildi.');
+    return;
+  }
 
   const CORE = ['cashier-panel', 'courier-panel', 'kitchen-panel', 'staff-invite', 'shift-toggle',
     'menu-manage', 'category-manage', 'orders-manage', 'delivery-group', 'kitchen-group',
