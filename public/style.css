@@ -450,6 +450,7 @@
     margin-top: var(--sp-5);
   }
   .ko-menu-item {
+    position: relative;
     background: var(--surface-0);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-lg);
@@ -463,6 +464,21 @@
     cursor: pointer;
     font-family: inherit;
     min-width: 0;
+  }
+  .ko-menu-item-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
   }
   .ko-menu-item-icon {
     width: 36px;
