@@ -4606,12 +4606,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     } else if (order.status === 'tayyorlanmoqda') {
       actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+    } else if ((role === 'kassir' || role === 'egasi') && order.orderType !== 'dostavka' && order.status === 'tayyor' && !order.customerReceivedAt) {
+      actionBtn = `<button class="order-action-btn ready" data-mark-received-id="${escapeHtml(order.id)}">${icon('check-circle', 'icon-xs')} Mijoz oldi</button>`;
     } else if (role === 'egasi' && order.orderType === 'dostavka' && order.deliveredBy) {
 
       actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
     }
     const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
       ? `<div class="order-time">✅ Yetkazib berilgan (${timeAgo(order.deliveredAt)})</div>`
+      : '';
+    const receivedNote = (order.orderType !== 'dostavka' && order.customerReceivedAt)
+      ? `<div class="order-time">✅ Mijoz oldi (${timeAgo(order.customerReceivedAt)})</div>`
       : '';
 
     return `
@@ -4627,6 +4632,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button></div>` : ''}
         <div class="order-items">${itemsHtml}</div>
         ${deliveredNote}
+        ${receivedNote}
         <div class="order-bottom">
           <span class="order-total">${fmtNum(order.total)} so'm</span>
           ${actionBtn}
@@ -4655,6 +4661,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const orderId = btn.getAttribute('data-order-id');
         const status = btn.getAttribute('data-set-status');
         const res = await apiPost('/api/update-order-status', { initData, orderId, status });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+        }
+        lastOrdersSnapshot = null;
+        await refreshOrdersBoard(role);
+      });
+    });
+    board.querySelectorAll('[data-mark-received-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-mark-received-id');
+        const res = await apiPost('/api/staff-mark-received', { initData, orderId });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
         }
