@@ -502,7 +502,28 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  let adminChatsUnreadPollTimer = null;
+
+  async function refreshAdminChatsBadge() {
+    const btn = document.querySelector('.admin-menu-grid [data-admin-menu-key="yordam"]');
+    if (!btn) { if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; } return; }
+    const res = await apiPost('/api/admin-support-inbox', { initData });
+    const stillThere = document.querySelector('.admin-menu-grid [data-admin-menu-key="yordam"]');
+    if (!stillThere) { if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; } return; }
+    if (!res.ok) return;
+    const total = (res.threads || []).reduce((sum, t) => sum + (t.unreadCount || 0), 0);
+    const existing = stillThere.querySelector('.ko-menu-item-badge');
+    if (total > 0) {
+      const text = total > 99 ? '99+' : String(total);
+      if (existing) existing.textContent = text;
+      else stillThere.insertAdjacentHTML('beforeend', `<span class="ko-menu-item-badge">${text}</span>`);
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
   async function renderAdminPanel(owners, revenue) {
+    if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; }
     setAppHeader(null, 'Pulsar', 'Admin');
     const nowMs = Date.now();
     const totalCount = owners.length;
@@ -541,7 +562,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${adminMenuItemHtml({ key: 'egalar', icon: 'users', label: "Do'kon egalari" })}
           ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
           ${adminMenuItemHtml({ key: 'tolovlar', icon: 'card', label: "Kutilayotgan to'lovlar" })}
-          ${adminMenuItemHtml({ key: 'yordam', icon: 'message-circle', label: "Egalardan xabarlar" })}
+          ${adminMenuItemHtml({ key: 'yordam', icon: 'message-circle', label: "Chatlar" })}
           ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
           ${adminMenuItemHtml({ key: 'obunaRejalari', icon: 'card', label: 'Obuna rejalari' })}
           ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
@@ -557,6 +578,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const goBack = () => loadOwnersAndRender();
     document.querySelectorAll('.admin-menu-grid [data-admin-menu-key]').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; }
         const key = btn.getAttribute('data-admin-menu-key');
         if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
         if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
@@ -572,6 +594,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       });
     });
     wireAdminBottomNav(owners, goBack);
+
+    refreshAdminChatsBadge();
+    adminChatsUnreadPollTimer = setInterval(refreshAdminChatsBadge, 7000);
   }
 
   function adminBottomNavHtml(activeKey) {
@@ -608,6 +633,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', () => {
         const key = btn.getAttribute('data-admin-nav');
         if (key === 'bosh') return;
+        if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; }
         if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
         if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
         if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
@@ -6837,7 +6863,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function renderAdminSupportInboxScreen(onBack) {
     ekran(`
       <div class="panel">
-        <div class="salom" style="font-size:20px;">Egalardan xabarlar</div>
+        <div class="salom" style="font-size:20px;">Chatlar</div>
         <button class="btn ikkinchi" id="adminSupBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <div id="adminSupInboxList"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
