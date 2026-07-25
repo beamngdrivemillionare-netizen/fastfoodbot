@@ -5896,6 +5896,38 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/api/staff-mark-received') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+      if (order.orderType === 'dostavka') return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarini kuryer belgilaydi.' });
+      if (order.status !== 'tayyor') return sendJSON(res, 200, { ok: false, reason: 'Buyurtma hali tayyor emas.' });
+      if (order.customerReceivedAt) return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon olingan deb belgilangan.' });
+
+      order.customerReceivedAt = new Date().toISOString();
+      order.customerReceivedBy = userId;
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'mijoz_oldi', orderId: order.id, note: `${fmtNum(order.total)} so'm — mijoz oldi deb belgilandi` });
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/deliver-order') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
