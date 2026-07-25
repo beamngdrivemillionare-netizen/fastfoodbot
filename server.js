@@ -739,6 +739,7 @@ const FEATURE_CATALOG = [
   { id: 'customer-menu', name: "Mijoz uchun menyu va buyurtma", group: 'mijoz' },
   { id: 'customer-account', name: "Mijoz profili va tarixi", group: 'mijoz' },
   { id: 'support-chat', name: "Tezkor qo'llab-quvvatlash chat", group: 'mijoz' },
+  { id: 'ai-waiter', name: "AI ofitsiant (tavsiyalar va sevimlilar)", group: 'mijoz' },
 
   { id: 'restaurant-brand', name: "Restoran brendi (logo, nom)", group: 'tizim' },
   { id: 'system-status', name: "Tizim holati paneli", group: 'tizim' },
@@ -4481,7 +4482,9 @@ const server = http.createServer((req, res) => {
       const promotions = (owner.promotions || []).filter(p => p.active);
 
       const banners = activeOwnerBanners(owner);
-      const recommendations = buildAiWaiterRecommendations(owner, String(check.user && check.user.id), menu);
+      const recommendations = ownerCanUseFeature(owner, 'ai-waiter')
+        ? buildAiWaiterRecommendations(owner, String(check.user && check.user.id), menu)
+        : { favorites: [], similar: [] };
       return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(owner), recommendations });
     });
     return;
@@ -4499,7 +4502,7 @@ const server = http.createServer((req, res) => {
       const owners = loadOwners();
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
+      if (!ownerCanUseFeature(owner, 'ai-waiter')) return sendJSON(res, 200, featureBlockedResult('ai-waiter'));
 
       const customer = findOrCreateCustomer(owner, userId, check.user);
       const idx = customer.favorites.indexOf(itemId);
