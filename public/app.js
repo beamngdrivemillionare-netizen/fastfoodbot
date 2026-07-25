@@ -4680,7 +4680,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
       order.items.every(it => it.directStockId);
 
     let actionBtn = '';
-    if (order.status === 'yangi') {
+    const paymentPending = order.paymentProofStatus === 'kutilmoqda';
+    if (paymentPending) {
+      // To'lov (karta skrinshoti yoki stoldagi naqd) hali tasdiqlanmagan -
+      // shu buyurtma uchun HECH QANDAY holat o'zgartirish tugmasi
+      // ko'rsatilmaydi (backend ham buni taqiqlaydi, qarang: canSetOrderStatus).
+    } else if (order.status === 'yangi') {
       if (allDirectStock && (role === 'oshpaz' || role === 'kassir')) {
         actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
       } else if (role === 'oshpaz') {
@@ -4704,6 +4709,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const receivedNote = (order.orderType !== 'dostavka' && order.customerReceivedAt)
       ? `<div class="order-time">✅ Mijoz oldi (${timeAgo(order.customerReceivedAt)})</div>`
       : '';
+    const paymentPendingNote = paymentPending
+      ? `<div class="order-time" style="color:var(--danger);">⏳ To'lov hali tasdiqlanmagan</div>`
+      : '';
 
     return `
       <div class="order-card">
@@ -4719,6 +4727,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="order-items">${itemsHtml}</div>
         ${deliveredNote}
         ${receivedNote}
+        ${paymentPendingNote}
         <div class="order-bottom">
           <span class="order-total">${fmtNum(order.total)} so'm</span>
           ${actionBtn}
