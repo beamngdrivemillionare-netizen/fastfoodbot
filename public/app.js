@@ -7698,6 +7698,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.disabled = true;
       const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
       if (res.ok) customerState.favorites = res.favorites;
+      else if (handleFeatureBlocked(res)) { btn.disabled = false; return; }
       if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
       else {
         listEl.innerHTML = customerMenuListHtml();
@@ -7775,6 +7776,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.disabled = true;
       const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
       if (res.ok) customerState.favorites = res.favorites;
+      else if (handleFeatureBlocked(res)) { btn.disabled = false; return; }
       renderCustomerMenuTab();
     });
   }
