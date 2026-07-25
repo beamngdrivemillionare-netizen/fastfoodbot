@@ -2355,3 +2355,33 @@
     cursor: pointer;
     padding: 2px 4px;
   }
+
+/* ---- PULSAR brand splash screen ---- */
+.app-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 999999;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity .45s ease;
+}
+.app-splash.app-splash-hide {
+  opacity: 0;
+  pointer-events: none;
+}
+.app-splash-logo {
+  width: 52vw;
+  max-width: 300px;
+  min-width: 140px;
+  height: auto;
+  animation: appSplashPulse 1.8s ease-in-out infinite;
+}
+@keyframes appSplashPulse {
+  0%, 100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.045); filter: brightness(1.18); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-splash-logo { animation: none; }
+}
