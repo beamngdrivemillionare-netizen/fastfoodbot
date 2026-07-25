@@ -7863,8 +7863,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="profile-view" style="margin-bottom:12px;">
         ${r.logoUrl ? `<img class="logo-preview" src="${escapeHtml(r.logoUrl)}" onerror="this.style.display='none'">` : ''}
         <div class="info">
-          <div class="salom" style="font-size:20px; margin-bottom:2px; display:flex; align-items:center; gap:8px;">
-            <span>${escapeHtml(r.name || 'Oshxona')}</span>
+          <div class="salom" style="font-size:20px; margin-bottom:2px; display:flex; align-items:center; gap:8px; min-width:0;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.name || 'Oshxona')}</span>
             <button type="button" id="custSwitchRestBtn" title="Oshxonadan chiqish" aria-label="Oshxonadan chiqish" style="flex-shrink:0; display:flex; align-items:center; gap:4px; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:3px 10px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">
               ${icon('x', 'icon-xs')}<span>Chiqish</span>
             </button>
