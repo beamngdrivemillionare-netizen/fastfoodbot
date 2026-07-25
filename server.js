@@ -4608,13 +4608,18 @@ const server = http.createServer((req, res) => {
       const owners = pruneExpiredOwners();
       const restaurants = owners
         .filter(o => isOwnerAccessValid(o) && o.profile && o.profile.completedAt)
-        .map(o => ({
-          id: o.id,
-          name: o.profile.name,
-          address: o.profile.address,
-          logoUrl: o.profile.logoUrl || null,
-          brandColor: o.profile.brandColor || null
-        }));
+        .map(o => {
+          const rating = ownerAverageRating(o);
+          return {
+            id: o.id,
+            name: o.profile.name,
+            address: o.profile.address,
+            logoUrl: o.profile.logoUrl || null,
+            brandColor: o.profile.brandColor || null,
+            avgRating: rating.avg,
+            ratingCount: rating.count
+          };
+        });
 
       return sendJSON(res, 200, { ok: true, restaurants });
     });
