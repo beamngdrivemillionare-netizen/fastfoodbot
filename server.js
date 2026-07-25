@@ -85,27 +85,27 @@ function ensureSubscriptionFields(owner) {
   return owner;
 }
 
-const DEFAULT_SUBSCRIPTION_PLANS = {
-  '1m': { id: '1m', label: '1 oy', days: 30, price: 50000, discountNote: null, tariffId: null, order: 0 },
-  '3m': { id: '3m', label: '3 oy', days: 90, price: 135000, discountNote: 'chegirmali', tariffId: null, order: 1 },
-  '12m': { id: '12m', label: '12 oy', days: 365, price: 480000, discountNote: 'chegirmali', tariffId: null, order: 2 }
-};
-
+// MUHIM: bu yerda ilgari standart namunaviy (demo) rejalar (1 oy/50 000 va
+// h.k.) avtomatik yaratilardi — bu owner tomonida admin hali sozlamagan
+// "notanish" raqamlar ko'rinishiga olib kelgan (chalkashlikka sabab bo'lgan
+// muammo shu edi). Endi bunday avtomatik demo-seed YO'Q: agar admin hali
+// birorta reja kiritmagan bo'lsa, ro'yxat shunchaki BO'SH bo'ladi va owner
+// "Obuna" bo'limida "hali rejalar sozlanmagan" ko'radi — hech qachon
+// tasodifiy/o'ylab topilgan narx ko'rsatilmaydi.
 function loadSubscriptionPlans() {
   try {
     if (!fs.existsSync(SUBSCRIPTION_PLANS_FILE)) {
-      saveSubscriptionPlans(DEFAULT_SUBSCRIPTION_PLANS);
-      return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
+      return {};
     }
     const raw = fs.readFileSync(SUBSCRIPTION_PLANS_FILE, 'utf8');
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
-      return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
     }
     return parsed;
   } catch (e) {
     console.error('subscription_plans.json o\'qishda xatolik:', e.message);
-    return Object.assign({}, DEFAULT_SUBSCRIPTION_PLANS);
+    return {};
   }
 }
 
