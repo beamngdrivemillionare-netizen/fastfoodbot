@@ -218,6 +218,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return Number(n || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
   }
 
+  function isUzPhone(str) {
+    const cleaned = String(str || '').trim().replace(/[\s\-()]/g, '');
+    // Faqat O'zbekiston raqamlarini qabul qilamiz: +998 (yoki 998) va undan keyin 9 ta raqam
+    return /^\+?998\d{9}$/.test(cleaned);
+  }
+
   // Standart brend rangi — "Pulsar" o'zining rasmiy ko'k rangi (logotipdagi
   // to'q ko'k/qora fonga mos). Owner hali o'zining brend rangini
   // tanlamagan bo'lsa, mijozlar/xodimlar ilovasida shu rang ishlatiladi.
@@ -8607,8 +8613,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.className = 'xabar err';
       return;
     }
-    if (customerState.orderType === 'dostavka' && customerState.extraPhone.trim().replace(/\D/g, '').length < 7) {
-      msgEl.textContent = 'Qo\'shimcha telefon raqamingizni kiriting.';
+    if (customerState.orderType === 'dostavka' && !isUzPhone(customerState.extraPhone)) {
+      msgEl.textContent = 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).';
       msgEl.className = 'xabar err';
       return;
     }
@@ -8744,6 +8750,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const phone = document.getElementById('regPhone').value.trim();
       if (!firstName || !lastName || !phone) {
         msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!isUzPhone(phone)) {
+        msgEl.textContent = 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).';
         msgEl.className = 'xabar err';
         return;
       }
