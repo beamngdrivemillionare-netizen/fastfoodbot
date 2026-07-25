@@ -2955,6 +2955,179 @@ function aiDirTopItem(owner) {
   return top;
 }
 
+// --- Foyda marjasi, hafta kuni, combo foydasi va kassir cheki tahlili ---
+
+function menuItemUnitCost(owner, menuItem) {
+  if (!menuItem) return null;
+  if (menuItem.directStockId) {
+    const stockItem = (owner.stock || []).find(s => s.id === menuItem.directStockId);
+    return stockItem ? (stockItem.price || 0) : null;
+  }
+  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
+  if (!recipe.length) return null;
+  let cost = 0;
+  for (const ing of recipe) {
+    const stockItem = (owner.stock || []).find(s => s.id === ing.stockId);
+    if (!stockItem) return null;
+    cost += ing.qty * (stockItem.price || 0);
+  }
+  return cost;
+}
+
+function comboUnitCost(owner, combo) {
+  if (!combo || !Array.isArray(combo.itemIds)) return null;
+  let cost = 0;
+  for (const entry of combo.itemIds) {
+    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+    const unitCost = menuItemUnitCost(owner, menuItem);
+    if (unitCost === null) return null;
+    cost += unitCost * entry.qty;
+  }
+  return cost;
+}
+
+function orderLineCost(owner, item) {
+  if (item.isCombo) {
+    const combo = findCombo(owner, item.id);
+    const unitCost = comboUnitCost(owner, combo);
+    return unitCost === null ? null : unitCost * item.qty;
+  }
+  const menuItem = (owner.menu || []).find(m => m.id === item.id);
+  const unitCost = menuItemUnitCost(owner, menuItem);
+  return unitCost === null ? null : unitCost * item.qty;
+}
+
+function aiDirItemMarginStats(owner, fromDate, toDate) {
+  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
+  const byId = new Map();
+  for (const o of orders) {
+    for (const it of (o.items || [])) {
+      const cost = orderLineCost(owner, it);
+      if (cost === null) continue;
+      const revenue = it.price * it.qty;
+      const cur = byId.get(it.id) || { id: it.id, name: it.name, revenue: 0, cost: 0, qty: 0 };
+      cur.revenue += revenue;
+      cur.cost += cost;
+      cur.qty += it.qty;
+      byId.set(it.id, cur);
+    }
+  }
+  return byId;
+}
+
+function aiDirMarginDrops(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
+  const prev7Start = new Date(todayStart.getTime() - 14 * 86400000);
+  const cur = aiDirItemMarginStats(owner, last7Start, todayStart);
+  const prev = aiDirItemMarginStats(owner, prev7Start, last7Start);
+
+  const drops = [];
+  for (const [id, c] of cur) {
+    const p = prev.get(id);
+    if (!p || p.revenue <= 0 || c.revenue <= 0 || p.qty < 3) continue;
+    const curMargin = ((c.revenue - c.cost) / c.revenue) * 100;
+    const prevMargin = ((p.revenue - p.cost) / p.revenue) * 100;
+    const diff = curMargin - prevMargin;
+    if (diff <= -5) {
+      drops.push({ id, name: c.name, curMargin: Math.round(curMargin), prevMargin: Math.round(prevMargin), diff: Math.round(diff) });
+    }
+  }
+  drops.sort((a, b) => a.diff - b.diff);
+  return drops;
+}
+
+function aiDirWeekdayStaffing(owner) {
+  const since = new Date(Date.now() - 56 * 86400000);
+  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= since);
+  if (orders.length < 14) return null;
+
+  const dayTotals = new Array(7).fill(0);
+  for (const o of orders) dayTotals[new Date(o.createdAt).getDay()]++;
+
+  const avgPerDay = orders.length / 7;
+  if (avgPerDay <= 0) return null;
+
+  let best = null;
+  for (let day = 0; day < 7; day++) {
+    const diffPercent = ((dayTotals[day] - avgPerDay) / avgPerDay) * 100;
+    if (!best || diffPercent > best.diffPercent) best = { day, count: dayTotals[day], diffPercent };
+  }
+  if (best && best.diffPercent >= 15) {
+    const weekdayLabels = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+    return { day: best.day, dayLabel: weekdayLabels[best.day], diffPercent: Math.round(best.diffPercent) };
+  }
+  return null;
+}
+
+function aiDirTopComboProfit(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last30Start = new Date(todayStart.getTime() - 30 * 86400000);
+  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= last30Start && t < todayStart; });
+
+  const byId = new Map();
+  for (const o of orders) {
+    for (const it of (o.items || [])) {
+      if (!it.isCombo) continue;
+      const cost = orderLineCost(owner, it);
+      if (cost === null) continue;
+      const revenue = it.price * it.qty;
+      const cur = byId.get(it.id) || { id: it.id, name: it.name, profit: 0, qty: 0 };
+      cur.profit += (revenue - cost);
+      cur.qty += it.qty;
+      byId.set(it.id, cur);
+    }
+  }
+  let top = null;
+  for (const c of byId.values()) {
+    if (!top || c.profit > top.profit) top = c;
+  }
+  return top;
+}
+
+function aiDirCashierName(owner, id) {
+  if (String(id) === String(owner.id)) return 'Egasi';
+  const staff = (owner.staff || []).find(s => String(s.id) === String(id));
+  return staffDisplayName(staff) || `Xodim (ID: ${id})`;
+}
+
+function aiDirCashierAvgCheck(owner) {
+  const todayStart = aiDirDayStart(new Date());
+  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
+  const orders = (owner.orders || []).filter(o => {
+    const t = new Date(o.createdAt);
+    return t >= last7Start && t < todayStart && o.createdBy && o.source !== 'customer';
+  });
+  if (orders.length < 10) return null;
+
+  const byCashier = new Map();
+  let overallSum = 0;
+  for (const o of orders) {
+    const total = o.total || 0;
+    overallSum += total;
+    const cur = byCashier.get(o.createdBy) || { id: o.createdBy, sum: 0, count: 0 };
+    cur.sum += total;
+    cur.count += 1;
+    byCashier.set(o.createdBy, cur);
+  }
+  if (byCashier.size < 2) return null;
+  const overallAvg = overallSum / orders.length;
+  if (overallAvg <= 0) return null;
+
+  let worst = null;
+  for (const c of byCashier.values()) {
+    if (c.count < 3) continue;
+    const avg = c.sum / c.count;
+    const diffPercent = ((avg - overallAvg) / overallAvg) * 100;
+    if (diffPercent <= -10 && (!worst || diffPercent < worst.diffPercent)) {
+      worst = { id: c.id, avg, diffPercent: Math.round(diffPercent), count: c.count };
+    }
+  }
+  if (!worst) return null;
+  worst.name = aiDirCashierName(owner, worst.id);
+  return worst;
+}
+
 function buildAiDirectorText(owner) {
   const todayStart = aiDirDayStart(new Date());
   const yestStart = new Date(todayStart.getTime() - 86400000);
@@ -2970,6 +3143,8 @@ function buildAiDirectorText(owner) {
   const runway = aiDirStockRunway(owner);
   const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 3);
   const declining = aiDirDecliningItems(owner);
+  const marginDrops = aiDirMarginDrops(owner);
+  const weakCashier = aiDirCashierAvgCheck(owner);
 
   const lines = ['📊 <b>Bugungi holat</b>', ''];
   lines.push(`Kecha tushum: <b>${fmtNum(yesterday.income)} so'm</b>` +
@@ -2984,6 +3159,17 @@ function buildAiDirectorText(owner) {
         ? `⚠️ ${escapeHtmlServer(s.name)} bugun tugashi mumkin.`
         : `⚠️ ${escapeHtmlServer(s.name)} taxminan ${Math.floor(s.daysLeft)} kunga yetadi.`);
     }
+  }
+
+  if (marginDrops.length) {
+    const m = marginDrops[0];
+    lines.push('');
+    lines.push(`📉 <b>${escapeHtmlServer(m.name)}</b>ning foyda marjasi pasaygan: ${m.prevMargin}% → ${m.curMargin}%.`);
+  }
+
+  if (weakCashier) {
+    lines.push('');
+    lines.push(`👤 <b>${escapeHtmlServer(weakCashier.name)}</b>ning o'rtacha cheki boshqalardan ${Math.abs(weakCashier.diffPercent)}% past (so'nggi 7 kun).`);
   }
 
   if (declining.length) {
@@ -3023,6 +3209,8 @@ function buildAiWeeklyDirectorText(owner) {
   const runway = aiDirStockRunway(owner);
   const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 5);
   const declining = aiDirDecliningItems(owner);
+  const topCombo = aiDirTopComboProfit(owner);
+  const staffing = aiDirWeekdayStaffing(owner);
 
   const lines = ['📅 <b>Haftalik hisobot</b>', ''];
   lines.push(`Haftalik tushum: <b>${fmtNum(thisWeek.income)} so'm</b>` +
@@ -3033,6 +3221,16 @@ function buildAiWeeklyDirectorText(owner) {
     lines.push('');
     lines.push('🏆 <b>Eng ko\'p sotilgan taomlar (7 kun):</b>');
     itemStats.forEach((it, i) => lines.push(`${i + 1}. ${escapeHtmlServer(it.name)} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`));
+  }
+
+  if (topCombo) {
+    lines.push('');
+    lines.push(`🎁 Eng yuqori foyda keltirgan combo (30 kun): <b>${escapeHtmlServer(topCombo.name)}</b> — ${fmtNum(topCombo.profit)} so'm sof foyda.`);
+  }
+
+  if (staffing) {
+    lines.push('');
+    lines.push(`📈 <b>${escapeHtmlServer(staffing.dayLabel)}</b> kuni sotuv o'rtachadan ${staffing.diffPercent}% yuqori. Shu kuni xodim sonini ko'paytirishni o'ylab ko'ring.`);
   }
 
   if (urgentStock.length) {
